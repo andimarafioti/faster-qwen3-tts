@@ -125,15 +125,14 @@ if results:
     avg_rtf = np.mean([r['rtf'] for r in results])
     print(f"\n=== {MODEL_SIZE} Average: {avg_ms:.1f}ms/step, RTF={avg_rtf:.3f}, TTFA={ttfa_mean:.0f}ms ===")
     
-    # Also try to decode audio
+    # Decode audio from last run
     try:
-        best = results[0]
-        print(f"\nSaving audio from first run...")
-        from qwen_tts.utils.codec import Codec
-        codec = Codec(f'{MODEL_PATH}/codec', 'cuda:0')
-        audio = codec.decode(codec_ids.unsqueeze(0))
+        print(f"\nSaving audio from last run...")
+        speech_tokenizer = model.model.speech_tokenizer
+        audio, sr = speech_tokenizer.decode({"audio_codes": codec_ids.unsqueeze(0)})
         import soundfile as sf
-        sf.write('/tmp/qwen_tts_v5.wav', audio.cpu().numpy().flatten(), 24000)
-        print("Saved to /tmp/qwen_tts_v5.wav")
+        out_wav = os.path.join(SCRIPT_DIR, f'sample_{MODEL_SIZE}.wav')
+        sf.write(out_wav, audio.cpu().numpy().flatten(), sr)
+        print(f"Saved to {out_wav}")
     except Exception as e:
         print(f"Audio decode failed: {e}")
