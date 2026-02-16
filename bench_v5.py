@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Benchmark v5: CUDA graphs for both predictor and talker."""
-import torch, time, sys, json, numpy as np
-sys.path.insert(0, '/home/andi/Documents/Qwen3-TTS-streaming')
-sys.path.insert(0, '/home/andi/Documents/qwen3-tts/cuda_graphs')
+import torch, time, sys, json, os, numpy as np
+
+# Ensure repo root is on path for local modules
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from qwen_tts import Qwen3TTSModel
 from transformers import PretrainedConfig
@@ -10,9 +11,11 @@ from manual_cudagraph_predictor import ManualPredictorGraph
 from manual_cudagraph_talker import ManualTalkerGraph
 from fast_generate_v5 import fast_generate_v5
 
-MODEL_PATH = './models/Qwen3-TTS-12Hz-0.6B-Base'
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_SIZE = os.environ.get('MODEL_SIZE', '0.6B')
+MODEL_PATH = os.path.join(SCRIPT_DIR, 'models', f'Qwen3-TTS-12Hz-{MODEL_SIZE}-Base')
 text = 'The quick brown fox jumps over the lazy dog. It was a sunny afternoon and the birds were singing in the trees.'
-ref_audio = '/home/andi/Documents/qwen3-tts/ref_audio.wav'
+ref_audio = os.path.join(SCRIPT_DIR, 'ref_audio.wav')
 ref_text = 'This is a reference audio sample.'
 MAX_SEQ = 2048
 
