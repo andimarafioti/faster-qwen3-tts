@@ -49,6 +49,10 @@ print("\nThroughput (3 runs)...", flush=True)
 for i in range(3):
     torch.cuda.synchronize()
     t0 = time.perf_counter()
+    # Cap at 512 tokens (~42s of audio at 12Hz). The vanilla generate_voice_clone
+    # doesn't suppress the top-1024 special token IDs (unlike fast_generate_v5),
+    # so the model occasionally samples those and never produces EOS, especially
+    # with the 1.7B variant. This cap prevents runaway generation.
     wav, sr = model.generate_voice_clone(text=text, voice_clone_prompt=voice_clone_prompt, max_new_tokens=512)
     torch.cuda.synchronize()
     elapsed = time.perf_counter() - t0
