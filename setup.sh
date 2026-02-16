@@ -16,7 +16,7 @@ fi
 
 # Create venv + install deps
 echo "Creating venv and installing dependencies..."
-uv venv .venv
+uv venv .venv --python 3.10
 uv pip install -e . --python .venv/bin/python
 
 # Verify CUDA
