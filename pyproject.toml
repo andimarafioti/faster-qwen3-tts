@@ -6,7 +6,7 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 dependencies = [
-    "qwen-tts>=0.1.0",
+    "qwen-tts==0.0.4",
     "transformers>=4.57",
     "torch>=2.1",
     "numpy",
