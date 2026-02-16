@@ -73,6 +73,26 @@ codec_ids, timing = fast_generate_v5(
 )
 print(f"Warmup: {timing['steps']} steps, {timing['ms_per_step']:.1f}ms/step")
 
+# TTFA (Time to First Audio) measurement
+print("\nMeasuring TTFA (5 runs)...")
+ttfa_results = []
+for i in range(5):
+    talker.rope_deltas = None
+    torch.cuda.synchronize()
+    t0 = time.perf_counter()
+    codec_ids_ttfa, timing_ttfa = fast_generate_v5(
+        talker, tie, tam, tth, tpe, config, mpg, mtg,
+        temperature=0.9, top_k=50, do_sample=True, max_new_tokens=1,
+    )
+    torch.cuda.synchronize()
+    ttfa_ms = (time.perf_counter() - t0) * 1000
+    ttfa_results.append(ttfa_ms)
+    print(f"  Run {i+1}: {ttfa_ms:.1f}ms (prefill={timing_ttfa['prefill_ms']:.1f}ms)")
+
+ttfa_mean = np.mean(ttfa_results)
+ttfa_std = np.std(ttfa_results)
+print(f"  TTFA: {ttfa_mean:.1f}ms ± {ttfa_std:.1f}ms")
+
 # Benchmark
 print("\nBenchmark runs...")
 results = []
@@ -103,7 +123,7 @@ for run in range(3):
 if results:
     avg_ms = np.mean([r['ms_per_step'] for r in results])
     avg_rtf = np.mean([r['rtf'] for r in results])
-    print(f"\n=== Average: {avg_ms:.1f}ms/step, RTF={avg_rtf:.3f} ===")
+    print(f"\n=== {MODEL_SIZE} Average: {avg_ms:.1f}ms/step, RTF={avg_rtf:.3f}, TTFA={ttfa_mean:.0f}ms ===")
     
     # Also try to decode audio
     try:
