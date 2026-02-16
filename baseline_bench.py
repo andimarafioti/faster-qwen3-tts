@@ -42,6 +42,6 @@ for i in range(3):
     wav, sr = model.generate_voice_clone(text=text, ref_audio=ref_audio, ref_text=ref_text)
     torch.cuda.synchronize()
     elapsed = time.perf_counter() - t0
-    audio_dur = len(wav) / sr
+    audio_dur = len(wav[0]) / sr
     rtf = audio_dur / elapsed
     print(f"  Run {i+1}: audio={audio_dur:.1f}s, time={elapsed:.1f}s, RTF={rtf:.3f}")
