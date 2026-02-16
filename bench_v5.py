@@ -129,10 +129,10 @@ if results:
     try:
         print(f"\nSaving audio from last run...")
         speech_tokenizer = model.model.speech_tokenizer
-        audio, sr = speech_tokenizer.decode({"audio_codes": codec_ids.unsqueeze(0)})
+        audio_list, sr = speech_tokenizer.decode({"audio_codes": codec_ids.unsqueeze(0)})
         import soundfile as sf
         out_wav = os.path.join(SCRIPT_DIR, f'sample_{MODEL_SIZE}.wav')
-        sf.write(out_wav, audio.cpu().numpy().flatten(), sr)
+        sf.write(out_wav, audio_list[0].flatten(), sr)
         print(f"Saved to {out_wav}")
     except Exception as e:
         print(f"Audio decode failed: {e}")
