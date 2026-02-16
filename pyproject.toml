@@ -6,7 +6,7 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 dependencies = [
-    "qwen-tts==0.0.4",
+    "qwen-tts @ git+https://github.com/dffdeeq/Qwen3-TTS-streaming.git",
     "transformers>=4.57",
     "torch>=2.1",
     "numpy",
