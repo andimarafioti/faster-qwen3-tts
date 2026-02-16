@@ -24,6 +24,25 @@ cd qwen3-tts-cuda-graphs
 ./benchmark.sh
 ```
 
+## Voice Cloning with Precomputed Speaker Embeddings
+
+For production use, you can extract the speaker embedding once and reuse it across all requests. This skips the speaker encoder and audio tokenizer at inference time, and enables accent-free multilingual synthesis using `x_vector_only` mode.
+
+```bash
+# 1. Extract speaker embedding from reference audio (one-time, ~10s)
+python extract_speaker.py --ref_audio voice.wav --output speaker.pt
+
+# 2. Generate speech with CUDA graphs (real-time)
+python generate_xvec.py --speaker speaker.pt --text "Hello!" --language English --output en.wav
+python generate_xvec.py --speaker speaker.pt --text "Bonjour!" --language French --output fr.wav
+python generate_xvec.py --speaker speaker.pt --text "Hallo!" --language German --output de.wav
+```
+
+The speaker embedding is a 4KB file (2048-dim bf16 vector). In x_vector_only mode:
+- **No accent bleed**: the model uses its native pronunciation for each language instead of copying the ref audio's accent
+- **Shorter prefill**: 10 tokens vs ~80+ in full ICL clone mode, so TTFT is lower
+- **No ref audio needed at runtime**: just the 4KB embedding file
+
 ## Requirements
 
 - Python 3.10+
@@ -50,9 +69,11 @@ Key techniques:
 manual_cudagraph_predictor.py   # Predictor graph (261 lines)
 manual_cudagraph_talker.py      # Talker graph (341 lines)
 fast_generate_v5.py             # Full generation loop (156 lines)
+extract_speaker.py              # Extract speaker embedding from ref audio
+generate_xvec.py                # End-to-end generation with precomputed speaker
 benchmark.sh                    # Portable benchmark script
 setup.sh                        # Install deps + download models
-bench_v5.py                     # Detailed benchmark
+bench_v5.py                     # Detailed benchmark (ICL mode)
 bench_ttft.py                   # Time-to-first-token benchmark
 ```
 
