@@ -14,9 +14,9 @@ from fast_generate_v5 import fast_generate_v5
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_SIZE = os.environ.get('MODEL_SIZE', '0.6B')
 MODEL_PATH = os.path.join(SCRIPT_DIR, 'models', f'Qwen3-TTS-12Hz-{MODEL_SIZE}-Base')
-text = 'The quick brown fox jumps over the lazy dog. It was a sunny afternoon and the birds were singing in the trees.'
+text = "Ladies and gentlemen, I have just been informed that this speech is being generated faster than I can speak it. The robots have officially won. Please remain calm."
 ref_audio = os.path.join(SCRIPT_DIR, 'ref_audio.wav')
-ref_text = 'This is a reference audio sample.'
+ref_text = "Welcome to the future of speech synthesis."
 MAX_SEQ = 2048
 
 print("Loading model...")

@@ -1,5 +1,7 @@
 models/
+sample_*.wav
 *.wav
+!ref_audio.wav
 *.json
 __pycache__/
 *.pyc
