@@ -12,8 +12,8 @@ Benchmarks include tokenization + inference (apples-to-apples with baseline). RT
 |---|---|---|---|---|---|
 | Jetson AGX Orin 64GB | 0.175 | 2,572ms | 1.38 | 555ms | 7.9x / 4.6x |
 | DGX Spark (GB10) | 1.19 | 631ms | 1.44 | — | — |
-| RTX 4090 | 1.34 | 462ms | **4.56** | — | — |
-| H100 80GB HBM3 | 0.59 | 1,049ms | **3.47** | — | — |
+| RTX 4090 | 1.34 | 462ms | **4.56** | **168ms** | 3.4x / 2.8x |
+| H100 80GB HBM3 | 0.59 | 1,049ms | **3.47** | **231ms** | 5.9x / 4.5x |
 
 ### 1.7B Model
 
@@ -21,8 +21,8 @@ Benchmarks include tokenization + inference (apples-to-apples with baseline). RT
 |---|---|---|---|---|---|
 | Jetson AGX Orin 64GB | 0.130 | 2,594ms | 1.13 | — | — |
 | DGX Spark (GB10) | 0.975 | 749ms | 1.16 | — | — |
-| RTX 4090 | 1.32 | 468ms | **4.06** | — | — |
-| H100 80GB HBM3 | 0.59 | 1,045ms | **3.30** | — | — |
+| RTX 4090 | 1.32 | 468ms | **4.06** | **186ms** | 3.1x / 2.5x |
+| H100 80GB HBM3 | 0.59 | 1,045ms | **3.30** | **245ms** | 5.6x / 4.3x |
 
 **Note:** Baseline uses standard qwen-tts with `stream_generate_voice_clone()` (default `emit_every_frames=8`). CUDA graphs uses `generate_voice_clone_streaming(chunk_size=8)` for TTFA. Both measure time to first playable audio chunk and include text tokenization for fair comparison. Speedup shows throughput / TTFA improvement.
 
