@@ -19,7 +19,7 @@ Benchmarks include tokenization + inference (apples-to-apples with baseline). RT
 
 | GPU | Baseline RTF | Baseline TTFA | CUDA Graphs RTF | CUDA Graphs TTFA | Speedup |
 |---|---|---|---|---|---|
-| Jetson AGX Orin 64GB | 0.130 | 2,594ms | 1.13 | — | — |
+| Jetson AGX Orin 64GB | 0.130 | 2,594ms | 1.13 | 669ms | 8.7x / 3.9x |
 | DGX Spark (GB10) | 0.975 | 749ms | 1.16 | — | — |
 | RTX 4090 | 1.32 | 468ms | **4.06** | **186ms** | 3.1x / 2.5x |
 | H100 80GB HBM3 | 0.59 | 1,045ms | **3.30** | **245ms** | 5.6x / 4.3x |
