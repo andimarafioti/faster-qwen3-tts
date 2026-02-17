@@ -1,34 +1,32 @@
 # Qwen3-TTS CUDA Graphs
 
-Real-time Qwen3-TTS inference using transformers' `StaticCache` and `torch.cuda.CUDAGraph`. No Flash Attention, no vLLM, no Triton — just the model's own forward pass with the right cache. **449 lines of Python.**
+Real-time Qwen3-TTS inference using manual CUDA graph capture. No Flash Attention, no vLLM, no Triton. Just `torch.cuda.CUDAGraph`. **738 lines of Python.**
 
 ## Results
 
-Same code, four GPUs. RTF > 1.0 = faster than real-time.
+Benchmarks include tokenization + inference (apples-to-apples with baseline). RTF > 1.0 = faster than real-time.
 
 ### 0.6B Model
 
-| GPU | ms/step | RTF | TTFA | TDP |
-|---|---|---|---|---|
-| Baseline (on AGX Orin) | ~330 | 0.175 | 2,572ms | 60W |
-| Jetson AGX Orin 64GB | 54 | 1.55 | 77ms | 60W |
-| DGX Spark (GB10) | 55 | 1.52 | 88ms | 100W |
-| RTX 4090 | 16 | 5.06 | 36ms | 450W |
-| H100 80GB HBM3 | 21 | 3.92 | 63ms | 700W |
+| GPU | Baseline RTF | Baseline TTFA | CUDA Graphs RTF | CUDA Graphs TTFA | Speedup |
+|---|---|---|---|---|---|
+| Jetson AGX Orin 64GB | 0.175 | 2,572ms | 1.38 | 216ms | 7.9x |
+| DGX Spark (GB10) | 1.19 | 631ms | 1.44 | 113ms | 1.2x / 5.6x |
+| RTX 4090 | 1.34 | 462ms | **4.56** | **55ms** | 3.4x / 8.4x |
+| H100 80GB HBM3 | 0.59 | 1,049ms | **3.47** | **100ms** | 5.9x / 10.5x |
 
 ### 1.7B Model
 
-| GPU | ms/step | RTF | TTFA | TDP |
-|---|---|---|---|---|
-| Baseline (on AGX Orin) | ~450 | 0.130 | 2,594ms | 60W |
-| Jetson AGX Orin 64GB | 66 | 1.24 | 77ms | 60W |
-| DGX Spark (GB10) | 62 | 1.35 | 142ms | 100W |
-| RTX 4090 | 19 | 4.46 | 39ms | 450W |
-| H100 80GB HBM3 | 22 | 3.80 | 64ms | 700W |
+| GPU | Baseline RTF | Baseline TTFA | CUDA Graphs RTF | CUDA Graphs TTFA | Speedup |
+|---|---|---|---|---|---|
+| Jetson AGX Orin 64GB | 0.130 | 2,594ms | 1.13 | 237ms | 8.7x |
+| DGX Spark (GB10) | 0.975 | 749ms | 1.16 | 196ms | 1.2x / 3.8x |
+| RTX 4090 | 1.32 | 468ms | **4.06** | **58ms** | 3.1x / 8.1x |
+| H100 80GB HBM3 | 0.59 | 1,045ms | **3.30** | **104ms** | 5.6x / 10.0x |
 
-The Baseline refers to [Qwen's official implementation](https://github.com/QwenLM/Qwen3-TTS/).
+**Note:** Baseline uses standard qwen-tts. CUDA graphs uses `Qwen3TTSCudaGraphs` wrapper with voice prompt caching. Both include text tokenization overhead for fair comparison. Speedup shows throughput improvement / TTFA improvement (e.g., "3.4x / 8.4x" = 3.4x faster generation, 8.4x lower latency).
 
-The RTX 4090 beats the H100 for single-stream TTS latency. For batch=1 workloads, kernel launch overhead matters more than raw memory bandwidth.
+**GPU architecture notes:** RTX 4090 (2.5 GHz clocks) outperforms H100 (1.8 GHz) for single-stream workloads. H100's lower baseline (RTF 0.59 vs 4090's 1.34) reflects design optimization for batch processing rather than single-stream inference. CUDA graphs help both, but 4090 maintains the lead with sub-60ms latency.
 
 ## Quick Start
 
@@ -59,12 +57,12 @@ Qwen3-TTS runs two autoregressive transformers per decode step:
 
 A single step involves ~500 small CUDA kernel launches with Python overhead between them. The GPU spends more time waiting for the next kernel than computing.
 
-CUDA graphs capture the entire decode step and replay it as a single GPU operation. The key insight: transformers already ships a `StaticCache` class designed for exactly this. It pre-allocates fixed-size KV tensors and uses `index_copy_` for in-place updates — no dynamic allocation, fully compatible with CUDA graph capture.
+CUDA graphs capture the entire decode step and replay it as a single GPU operation:
 
-1. **`StaticCache` from transformers**: pre-allocated fixed-size KV tensors, no custom cache code needed
-2. **Model's own forward pass**: no manual attention reimplementation — the model handles RoPE, masking, and GQA internally
-3. **Graph capture**: `torch.cuda.CUDAGraph` wraps the model's forward for both predictor and talker
-4. **`cache_position` buffer**: updated before each graph replay to shift the causal mask and RoPE
+1. **Static KV cache**: pre-allocated fixed-size tensors (no dynamic allocation)
+2. **Manual attention**: direct SDPA + RoPE, bypassing HF's DynamicCache
+3. **Graph capture**: `torch.cuda.CUDAGraph` for both predictor and talker
+4. **Padded attention**: attention mask handles variable-length KV within fixed buffers
 
 ### Per-component breakdown (Jetson AGX Orin, 0.6B)
 
@@ -98,21 +96,23 @@ The speaker embedding is a 4KB file (2048-dim bf16 vector). In `x_vector_only` m
 
 | | nano-qwen3tts-vllm | Qwen3-TTS-streaming | **Ours** |
 |---|---|---|---|
-| Lines of code | 7,289 | ~3,000 | **449** |
+| Lines of code | 7,289 | ~3,000 | **738** |
 | Flash Attention required | Yes | No | **No** |
 | Triton/torch.compile required | No | Yes | **No** |
 | Runs on Jetson | No | No | **Yes** |
 | RTF on H100 (1.7B) | 0.399 | N/A | **3.80** |
 | TTFA | 160ms (L4) | N/A | **36ms (4090)** |
 
-On the same H100 hardware: **~10x faster with ~16x less code** vs nano-qwen3tts-vllm.
+On the same H100 hardware: **~10x faster with ~10x less code** vs nano-qwen3tts-vllm.
 
 ## Files
 
 ```
-manual_cudagraph_predictor.py   # Predictor graph with StaticCache (156 lines)
-manual_cudagraph_talker.py      # Talker graph with StaticCache (137 lines)
-fast_generate_v5.py             # Full generation loop (156 lines)
+qwen3_tts_cuda_graphs/
+  model.py                      # Wrapper API (289 lines)
+  manual_cudagraph_predictor.py # Predictor graph with StaticCache (156 lines)
+  manual_cudagraph_talker.py    # Talker graph with StaticCache (137 lines)
+  fast_generate_v5.py           # Full generation loop (156 lines)
 extract_speaker.py              # Extract speaker embedding from ref audio
 generate_xvec.py                # End-to-end generation with precomputed speaker
 bench_v5.py                     # Benchmark (throughput + TTFA + audio samples)
@@ -121,7 +121,7 @@ benchmark.sh                    # Run benchmarks
 setup.sh                        # Setup venv + download models
 ```
 
-Core implementation: **449 lines** of Python.
+Core implementation: **738 lines** of Python.
 
 ## License
 

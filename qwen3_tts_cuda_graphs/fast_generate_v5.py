@@ -9,8 +9,8 @@ import torch
 import torch.nn.functional as F
 import time
 from typing import Optional, Tuple
-from manual_cudagraph_predictor import ManualPredictorGraph
-from manual_cudagraph_talker import ManualTalkerGraph
+from .manual_cudagraph_predictor import ManualPredictorGraph
+from .manual_cudagraph_talker import ManualTalkerGraph
 
 
 @torch.inference_mode()
