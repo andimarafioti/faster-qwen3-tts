@@ -4,29 +4,27 @@ Real-time Qwen3-TTS inference using manual CUDA graph capture. No Flash Attentio
 
 ## Results
 
-Same code, four GPUs. RTF > 1.0 = faster than real-time.
+Benchmarks include tokenization + inference (apples-to-apples with baseline). RTF > 1.0 = faster than real-time.
 
 ### 0.6B Model
 
-| GPU | ms/step | RTF | TTFA | TDP |
-|---|---|---|---|---|
-| Baseline (on AGX Orin) | ~330 | 0.175 | 2,572ms | 60W |
-| Jetson AGX Orin 64GB | 54 | 1.55 | 162ms | 60W |
-| DGX Spark (GB10) | 56 | 1.49 | 86ms | 100W |
-| RTX 4090 | 16 | 5.06 | 36ms | 450W |
-| H100 80GB HBM3 | 21 | 3.92 | 63ms | 700W |
+| GPU | Baseline RTF | Baseline TTFA | CUDA Graphs RTF | CUDA Graphs TTFA | Speedup |
+|---|---|---|---|---|---|
+| Jetson AGX Orin 64GB | 0.175 | 2,572ms | 1.38 | 216ms | 7.9x |
+| RTX 4090 | 1.34 | 462ms | TBD | TBD | TBD |
+| DGX Spark (GB10) | TBD | TBD | TBD | TBD | TBD |
+| H100 80GB HBM3 | TBD | TBD | TBD | TBD | TBD |
 
 ### 1.7B Model
 
-| GPU | ms/step | RTF | TTFA | TDP |
-|---|---|---|---|---|
-| Baseline (on AGX Orin) | ~450 | 0.130 | 2,594ms | 60W |
-| Jetson AGX Orin 64GB | 66 | 1.24 | 174ms | 60W |
-| DGX Spark (GB10) | 67 | 1.23 | 104ms | 100W |
-| RTX 4090 | 19 | 4.46 | 39ms | 450W |
-| H100 80GB HBM3 | 22 | 3.80 | 64ms | 700W |
+| GPU | Baseline RTF | Baseline TTFA | CUDA Graphs RTF | CUDA Graphs TTFA | Speedup |
+|---|---|---|---|---|---|
+| Jetson AGX Orin 64GB | 0.130 | 2,594ms | 1.13 | 237ms | 8.7x |
+| RTX 4090 | 1.32 | 468ms | TBD | TBD | TBD |
+| DGX Spark (GB10) | TBD | TBD | TBD | TBD | TBD |
+| H100 80GB HBM3 | TBD | TBD | TBD | TBD | TBD |
 
-The RTX 4090 beats the H100 for single-stream TTS latency. For batch=1 workloads, kernel launch overhead matters more than raw memory bandwidth.
+**Note:** Baseline uses standard qwen-tts. CUDA graphs uses `Qwen3TTSCudaGraphs` wrapper with voice prompt caching. Both include text tokenization overhead for fair comparison.
 
 ## Quick Start
 
