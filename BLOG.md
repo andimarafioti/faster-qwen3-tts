@@ -1,6 +1,6 @@
 # Real-Time Qwen3-TTS: Unlocking 5x Speed on Consumer Hardware
 
-**TL;DR:** Qwen3-TTS is an incredible open-source model, but running it at production speeds requires bypassing the Python overhead. By combining transformers' `StaticCache` with `torch.cuda.CUDAGraph`, we unlocked RTF 5.0 on an RTX 4090 and RTF 1.5 on a Jetson Orin — all in just 449 lines of pure PyTorch, with zero custom attention code.
+**TL;DR:** Qwen3-TTS is an incredible open-source model, but running it at production speeds requires bypassing the Python overhead. By combining transformers' `StaticCache` with `torch.cuda.CUDAGraph`, we unlocked RTF 5.0 on an RTX 4090 and RTF 1.5 on a Jetson Orin — all in just 738 lines of pure PyTorch, with zero custom attention code.
 
 ## The Challenge: The "Reference Code" Gap
 
@@ -52,7 +52,7 @@ On **edge devices (Jetson Orin)**: Baseline can't keep up (RTF 0.13–0.18). CUD
 
 ## How We Did It (The "Magic")
 
-We didn't rewrite the model in C++ or use a complex serving engine like vLLM. We kept it entirely within the PyTorch/Hugging Face ecosystem, using just **449 lines of Python**, and we didn't reimplement a single attention layer.
+We didn't rewrite the model in C++ or use a complex serving engine like vLLM. We kept it entirely within the PyTorch/Hugging Face ecosystem, using just **738 lines of Python**, and we didn't reimplement a single attention layer.
 
 The key insight: transformers already ships everything you need. Its `StaticCache` class pre-allocates fixed-size KV tensors and updates them in-place via `index_copy_` — exactly what CUDA graphs require. Instead of reimplementing 28 layers of attention, RoPE, and GQA by hand, we just call the model's own forward pass with a `StaticCache` and a `cache_position` buffer, then wrap the whole thing in `torch.cuda.CUDAGraph`.
 
