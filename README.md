@@ -10,7 +10,7 @@ Same code, four GPUs. RTF > 1.0 = faster than real-time.
 
 | GPU | ms/step | RTF | TTFA | TDP |
 |---|---|---|---|---|
-| Baseline (HF streaming) | ~330 | 0.175 | 2,572ms | — |
+| Baseline (on AGX Orin) | ~330 | 0.175 | 2,572ms | 60W |
 | Jetson AGX Orin 64GB | 54 | 1.55 | 162ms | 60W |
 | DGX Spark (GB10) | 56 | 1.49 | 86ms | 100W |
 | RTX 4090 | 16 | 5.06 | 36ms | 450W |
@@ -20,7 +20,7 @@ Same code, four GPUs. RTF > 1.0 = faster than real-time.
 
 | GPU | ms/step | RTF | TTFA | TDP |
 |---|---|---|---|---|
-| Baseline (HF streaming) | ~450 | 0.130 | 2,594ms | — |
+| Baseline (on AGX Orin) | ~450 | 0.130 | 2,594ms | 60W |
 | Jetson AGX Orin 64GB | 66 | 1.24 | 174ms | 60W |
 | DGX Spark (GB10) | 67 | 1.23 | 104ms | 100W |
 | RTX 4090 | 19 | 4.46 | 39ms | 450W |
