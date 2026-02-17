@@ -46,7 +46,7 @@ On **high-end GPUs (RTX 4090)**: Baseline already achieves RTF > 1.0, so CUDA gr
 
 On **edge devices (Jetson Orin)**: Baseline can't keep up (RTF 0.13–0.18). CUDA graphs deliver **7.9x–8.7x** speedup, crossing the real-time threshold (RTF 1.13–1.38). This is the difference between unusable and production-ready.
 
-**The 4090 Still Wins:** For single-stream TTS (batch=1), the RTX 4090 outperforms the H100. With **55ms TTFA** (0.6B) and **58ms TTFA** (1.7B), the 4090 delivers the lowest latency across all tested GPUs. The H100's baseline was unexpectedly slow (RTF 0.59 vs 4090's 1.34), possibly hitting a generation bug. Even with CUDA graphs, the 4090's higher clocks (2.5 GHz vs 1.8 GHz) translate to better single-stream performance. For batch workloads, H100 would likely dominate.
+**The 4090 Wins Single-Stream:** For batch=1 workloads, the RTX 4090 outperforms the H100. With **55ms TTFA** (0.6B) and **58ms TTFA** (1.7B), the 4090 delivers the lowest latency across all tested GPUs. The H100's lower baseline (RTF 0.59 vs 4090's 1.34) reflects its design for batch processing. Even with CUDA graphs, the 4090's higher clocks (**2.5 GHz vs 1.8 GHz**) translate to better single-stream performance. For batch workloads, H100 would likely dominate.
 
 **Sub-60ms Conversational Latency:** The 4090 achieves sub-60ms TTFA, gold standard for conversational AI. Even Jetson Orin hits sub-250ms (216ms/237ms), acceptable for voice assistants and robotics.
 

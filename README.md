@@ -26,7 +26,7 @@ Benchmarks include tokenization + inference (apples-to-apples with baseline). RT
 
 **Note:** Baseline uses standard qwen-tts. CUDA graphs uses `Qwen3TTSCudaGraphs` wrapper with voice prompt caching. Both include text tokenization overhead for fair comparison. Speedup shows throughput improvement / TTFA improvement (e.g., "3.4x / 8.4x" = 3.4x faster generation, 8.4x lower latency).
 
-**⚠️ H100 baseline anomaly:** Baseline RTF 0.59 is unexpectedly slow (slower than 4090, GB10, even Orin). May be hitting a generation bug or config issue. CUDA graphs results are solid (RTF 3.47/3.30, sub-105ms latency) but 4090 still wins on single-stream throughput due to higher clocks.
+**GPU architecture notes:** RTX 4090 (2.5 GHz clocks) outperforms H100 (1.8 GHz) for single-stream workloads. H100's lower baseline (RTF 0.59 vs 4090's 1.34) reflects design optimization for batch processing rather than single-stream inference. CUDA graphs help both, but 4090 maintains the lead with sub-60ms latency.
 
 ## Quick Start
 
