@@ -172,7 +172,7 @@ faster-qwen3-tts design \
   --output out.wav
 ```
 
-Streaming visualization:
+Streaming (prints RTF after write):
 
 ```bash
 faster-qwen3-tts custom \
@@ -181,8 +181,7 @@ faster-qwen3-tts custom \
   --text "Hello!" \
   --language English \
   --output out.wav \
-  --streaming \
-  --visualize
+  --streaming
 ```
 
 Server mode (keep model hot, stop with `exit`):
@@ -193,8 +192,7 @@ faster-qwen3-tts serve \
   --model Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice \
   --speaker aiden \
   --language English \
-  --streaming \
-  --visualize
+  --streaming
 ```
 
 ### How it works

@@ -3,6 +3,7 @@
 import argparse
 import os
 import sys
+import time
 import numpy as np
 import soundfile as sf
 import torch
@@ -32,26 +33,11 @@ def _write_audio(out_path: str, audio: np.ndarray, sr: int):
     sf.write(out_path, audio, sr)
 
 
-def _stream_to_audio(gen, visualize: bool = False):
+def _stream_to_audio(gen):
     chunks = []
     sr = None
-    bar = None
-    if visualize:
-        try:
-            from tqdm import tqdm  # type: ignore
-            bar = tqdm(unit="sec", desc="Streaming audio", leave=True)
-        except Exception:
-            bar = None
     for audio_chunk, sr, _ in gen:
         chunks.append(audio_chunk)
-        if visualize:
-            dur = len(audio_chunk) / sr if sr else 0.0
-            if bar is not None:
-                bar.update(dur)
-            else:
-                print(f"  +{dur:.2f}s")
-    if bar is not None:
-        bar.close()
     if not chunks:
         return np.zeros(1, dtype=np.float32), 12000
     return np.concatenate(chunks), sr
@@ -61,6 +47,7 @@ def cmd_clone(args):
     model = _load_model(args.model, args.device, args.dtype)
 
     if args.streaming:
+        start = time.perf_counter()
         gen = model.generate_voice_clone_streaming(
             text=args.text,
             language=args.language,
@@ -74,8 +61,12 @@ def cmd_clone(args):
             repetition_penalty=args.repetition_penalty,
             xvec_only=args.xvec_only,
         )
-        audio, sr = _stream_to_audio(gen, visualize=args.visualize)
+        audio, sr = _stream_to_audio(gen)
+        total_time = time.perf_counter() - start
+        audio_dur = len(audio) / sr if sr else 0.0
+        rtf = audio_dur / total_time if total_time > 0 else 0.0
     else:
+        start = time.perf_counter()
         audio_list, sr = model.generate_voice_clone(
             text=args.text,
             language=args.language,
@@ -89,9 +80,12 @@ def cmd_clone(args):
             xvec_only=args.xvec_only,
         )
         audio = audio_list[0]
+        total_time = time.perf_counter() - start
+        audio_dur = len(audio) / sr if sr else 0.0
+        rtf = audio_dur / total_time if total_time > 0 else 0.0
 
     _write_audio(args.output, audio, sr)
-    print(f"Wrote {args.output}")
+    print(f"Wrote {args.output} (dur {audio_dur:.2f}s, RTF {rtf:.2f})")
 
 
 def cmd_custom(args):
@@ -107,6 +101,7 @@ def cmd_custom(args):
         sys.exit(2)
 
     if args.streaming:
+        start = time.perf_counter()
         gen = model.generate_custom_voice_streaming(
             text=args.text,
             speaker=args.speaker,
@@ -119,8 +114,12 @@ def cmd_custom(args):
             do_sample=not args.greedy,
             repetition_penalty=args.repetition_penalty,
         )
-        audio, sr = _stream_to_audio(gen, visualize=args.visualize)
+        audio, sr = _stream_to_audio(gen)
+        total_time = time.perf_counter() - start
+        audio_dur = len(audio) / sr if sr else 0.0
+        rtf = audio_dur / total_time if total_time > 0 else 0.0
     else:
+        start = time.perf_counter()
         audio_list, sr = model.generate_custom_voice(
             text=args.text,
             speaker=args.speaker,
@@ -133,15 +132,19 @@ def cmd_custom(args):
             repetition_penalty=args.repetition_penalty,
         )
         audio = audio_list[0]
+        total_time = time.perf_counter() - start
+        audio_dur = len(audio) / sr if sr else 0.0
+        rtf = audio_dur / total_time if total_time > 0 else 0.0
 
     _write_audio(args.output, audio, sr)
-    print(f"Wrote {args.output}")
+    print(f"Wrote {args.output} (dur {audio_dur:.2f}s, RTF {rtf:.2f})")
 
 
 def cmd_design(args):
     model = _load_model(args.model, args.device, args.dtype)
 
     if args.streaming:
+        start = time.perf_counter()
         gen = model.generate_voice_design_streaming(
             text=args.text,
             instruct=args.instruct,
@@ -153,8 +156,12 @@ def cmd_design(args):
             do_sample=not args.greedy,
             repetition_penalty=args.repetition_penalty,
         )
-        audio, sr = _stream_to_audio(gen, visualize=args.visualize)
+        audio, sr = _stream_to_audio(gen)
+        total_time = time.perf_counter() - start
+        audio_dur = len(audio) / sr if sr else 0.0
+        rtf = audio_dur / total_time if total_time > 0 else 0.0
     else:
+        start = time.perf_counter()
         audio_list, sr = model.generate_voice_design(
             text=args.text,
             instruct=args.instruct,
@@ -166,9 +173,12 @@ def cmd_design(args):
             repetition_penalty=args.repetition_penalty,
         )
         audio = audio_list[0]
+        total_time = time.perf_counter() - start
+        audio_dur = len(audio) / sr if sr else 0.0
+        rtf = audio_dur / total_time if total_time > 0 else 0.0
 
     _write_audio(args.output, audio, sr)
-    print(f"Wrote {args.output}")
+    print(f"Wrote {args.output} (dur {audio_dur:.2f}s, RTF {rtf:.2f})")
 
 
 def cmd_serve(args):
@@ -197,6 +207,8 @@ def cmd_serve(args):
         out_path = os.path.join(args.output_dir, f"out_{idx:04d}.wav")
         idx += 1
 
+        start = time.perf_counter()
+
         if args.mode == "clone":
             if args.streaming:
                 gen = model.generate_voice_clone_streaming(
@@ -212,7 +224,7 @@ def cmd_serve(args):
                     repetition_penalty=args.repetition_penalty,
                     xvec_only=False,
                 )
-                audio, sr = _stream_to_audio(gen, visualize=args.visualize)
+                audio, sr = _stream_to_audio(gen)
             else:
                 audio_list, sr = model.generate_voice_clone(
                     text=text,
@@ -241,7 +253,7 @@ def cmd_serve(args):
                     do_sample=not args.greedy,
                     repetition_penalty=args.repetition_penalty,
                 )
-                audio, sr = _stream_to_audio(gen, visualize=args.visualize)
+                audio, sr = _stream_to_audio(gen)
             else:
                 audio_list, sr = model.generate_custom_voice(
                     text=text,
@@ -268,7 +280,7 @@ def cmd_serve(args):
                     do_sample=not args.greedy,
                     repetition_penalty=args.repetition_penalty,
                 )
-                audio, sr = _stream_to_audio(gen, visualize=args.visualize)
+                audio, sr = _stream_to_audio(gen)
             else:
                 audio_list, sr = model.generate_voice_design(
                     text=text,
@@ -283,7 +295,10 @@ def cmd_serve(args):
                 audio = audio_list[0]
 
         _write_audio(out_path, audio, sr)
-        print(f"Wrote {out_path}")
+        total_time = time.perf_counter() - start
+        audio_dur = len(audio) / sr if sr else 0.0
+        rtf = audio_dur / total_time if total_time > 0 else 0.0
+        print(f"Wrote {out_path} (dur {audio_dur:.2f}s, RTF {rtf:.2f})")
 
 
 def build_parser():
@@ -304,7 +319,6 @@ def build_parser():
         sp.add_argument("--greedy", action="store_true", help="Disable sampling")
         sp.add_argument("--streaming", action="store_true", help="Use streaming generation")
         sp.add_argument("--chunk-size", type=int, default=8, help="Streaming chunk size")
-        sp.add_argument("--visualize", action="store_true", help="Show streaming progress")
 
     sp = sub.add_parser("clone", help="Voice cloning (reference audio)")
     add_common(sp)
@@ -340,7 +354,6 @@ def build_parser():
     sp.add_argument("--top-k", type=int, default=50)
     sp.add_argument("--repetition-penalty", type=float, default=1.05)
     sp.add_argument("--greedy", action="store_true", help="Disable sampling")
-    sp.add_argument("--visualize", action="store_true", help="Show streaming progress")
     sp.add_argument("--output-dir", default="outputs", help="Directory for output wavs")
     sp.set_defaults(fn=cmd_serve)
 
