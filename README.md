@@ -172,6 +172,31 @@ faster-qwen3-tts design \
   --output out.wav
 ```
 
+Streaming visualization:
+
+```bash
+faster-qwen3-tts custom \
+  --model Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice \
+  --speaker aiden \
+  --text "Hello!" \
+  --language English \
+  --output out.wav \
+  --streaming \
+  --visualize
+```
+
+Server mode (keep model hot, stop with `exit`):
+
+```bash
+faster-qwen3-tts serve \
+  --mode custom \
+  --model Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice \
+  --speaker aiden \
+  --language English \
+  --streaming \
+  --visualize
+```
+
 ### How it works
 
 The CUDA graphs are unchanged — both predictor and talker graphs are replayed per step. The streaming generator yields codec ID chunks every `chunk_size` steps, and the model wrapper decodes each chunk to audio using a sliding window with 25-frame left context (matching the upstream codec's `chunked_decode` pattern) to avoid boundary artifacts.

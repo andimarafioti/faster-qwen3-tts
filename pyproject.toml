@@ -20,6 +20,7 @@ dependencies = [
     "numpy",
     "soundfile",
     "huggingface-hub",
+    "tqdm",
 ]
 
 [project.scripts]

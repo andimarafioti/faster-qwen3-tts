@@ -32,11 +32,26 @@ def _write_audio(out_path: str, audio: np.ndarray, sr: int):
     sf.write(out_path, audio, sr)
 
 
-def _stream_to_audio(gen):
+def _stream_to_audio(gen, visualize: bool = False):
     chunks = []
     sr = None
+    bar = None
+    if visualize:
+        try:
+            from tqdm import tqdm  # type: ignore
+            bar = tqdm(unit="sec", desc="Streaming audio", leave=True)
+        except Exception:
+            bar = None
     for audio_chunk, sr, _ in gen:
         chunks.append(audio_chunk)
+        if visualize:
+            dur = len(audio_chunk) / sr if sr else 0.0
+            if bar is not None:
+                bar.update(dur)
+            else:
+                print(f"  +{dur:.2f}s")
+    if bar is not None:
+        bar.close()
     if not chunks:
         return np.zeros(1, dtype=np.float32), 12000
     return np.concatenate(chunks), sr
@@ -59,7 +74,7 @@ def cmd_clone(args):
             repetition_penalty=args.repetition_penalty,
             xvec_only=args.xvec_only,
         )
-        audio, sr = _stream_to_audio(gen)
+        audio, sr = _stream_to_audio(gen, visualize=args.visualize)
     else:
         audio_list, sr = model.generate_voice_clone(
             text=args.text,
@@ -104,7 +119,7 @@ def cmd_custom(args):
             do_sample=not args.greedy,
             repetition_penalty=args.repetition_penalty,
         )
-        audio, sr = _stream_to_audio(gen)
+        audio, sr = _stream_to_audio(gen, visualize=args.visualize)
     else:
         audio_list, sr = model.generate_custom_voice(
             text=args.text,
@@ -138,7 +153,7 @@ def cmd_design(args):
             do_sample=not args.greedy,
             repetition_penalty=args.repetition_penalty,
         )
-        audio, sr = _stream_to_audio(gen)
+        audio, sr = _stream_to_audio(gen, visualize=args.visualize)
     else:
         audio_list, sr = model.generate_voice_design(
             text=args.text,
@@ -154,6 +169,121 @@ def cmd_design(args):
 
     _write_audio(args.output, audio, sr)
     print(f"Wrote {args.output}")
+
+
+def cmd_serve(args):
+    model = _load_model(args.model, args.device, args.dtype)
+
+    if args.mode == "clone":
+        if not args.ref_audio or not args.ref_text:
+            print("ERROR: --ref-audio and --ref-text are required for clone mode")
+            sys.exit(2)
+    if args.mode == "custom" and not args.speaker:
+        print("ERROR: --speaker is required for custom mode")
+        sys.exit(2)
+    if args.mode == "design" and not args.instruct:
+        print("ERROR: --instruct is required for design mode")
+        sys.exit(2)
+
+    print("Server started. Enter text per line. Type 'exit' or 'quit' to stop.")
+    idx = 1
+    for line in sys.stdin:
+        text = line.strip()
+        if not text:
+            continue
+        if text.lower() in ("exit", "quit", "stop"):
+            break
+
+        out_path = os.path.join(args.output_dir, f"out_{idx:04d}.wav")
+        idx += 1
+
+        if args.mode == "clone":
+            if args.streaming:
+                gen = model.generate_voice_clone_streaming(
+                    text=text,
+                    language=args.language,
+                    ref_audio=args.ref_audio,
+                    ref_text=args.ref_text,
+                    chunk_size=args.chunk_size,
+                    max_new_tokens=args.max_new_tokens,
+                    temperature=args.temperature,
+                    top_k=args.top_k,
+                    do_sample=not args.greedy,
+                    repetition_penalty=args.repetition_penalty,
+                    xvec_only=False,
+                )
+                audio, sr = _stream_to_audio(gen, visualize=args.visualize)
+            else:
+                audio_list, sr = model.generate_voice_clone(
+                    text=text,
+                    language=args.language,
+                    ref_audio=args.ref_audio,
+                    ref_text=args.ref_text,
+                    max_new_tokens=args.max_new_tokens,
+                    temperature=args.temperature,
+                    top_k=args.top_k,
+                    do_sample=not args.greedy,
+                    repetition_penalty=args.repetition_penalty,
+                    xvec_only=False,
+                )
+                audio = audio_list[0]
+        elif args.mode == "custom":
+            if args.streaming:
+                gen = model.generate_custom_voice_streaming(
+                    text=text,
+                    speaker=args.speaker,
+                    language=args.language,
+                    instruct=args.instruct,
+                    chunk_size=args.chunk_size,
+                    max_new_tokens=args.max_new_tokens,
+                    temperature=args.temperature,
+                    top_k=args.top_k,
+                    do_sample=not args.greedy,
+                    repetition_penalty=args.repetition_penalty,
+                )
+                audio, sr = _stream_to_audio(gen, visualize=args.visualize)
+            else:
+                audio_list, sr = model.generate_custom_voice(
+                    text=text,
+                    speaker=args.speaker,
+                    language=args.language,
+                    instruct=args.instruct,
+                    max_new_tokens=args.max_new_tokens,
+                    temperature=args.temperature,
+                    top_k=args.top_k,
+                    do_sample=not args.greedy,
+                    repetition_penalty=args.repetition_penalty,
+                )
+                audio = audio_list[0]
+        else:
+            if args.streaming:
+                gen = model.generate_voice_design_streaming(
+                    text=text,
+                    instruct=args.instruct,
+                    language=args.language,
+                    chunk_size=args.chunk_size,
+                    max_new_tokens=args.max_new_tokens,
+                    temperature=args.temperature,
+                    top_k=args.top_k,
+                    do_sample=not args.greedy,
+                    repetition_penalty=args.repetition_penalty,
+                )
+                audio, sr = _stream_to_audio(gen, visualize=args.visualize)
+            else:
+                audio_list, sr = model.generate_voice_design(
+                    text=text,
+                    instruct=args.instruct,
+                    language=args.language,
+                    max_new_tokens=args.max_new_tokens,
+                    temperature=args.temperature,
+                    top_k=args.top_k,
+                    do_sample=not args.greedy,
+                    repetition_penalty=args.repetition_penalty,
+                )
+                audio = audio_list[0]
+
+        _write_audio(out_path, audio, sr)
+        print(f"Wrote {out_path}")
 
 
 def build_parser():
@@ -174,6 +304,7 @@ def build_parser():
         sp.add_argument("--greedy", action="store_true", help="Disable sampling")
         sp.add_argument("--streaming", action="store_true", help="Use streaming generation")
         sp.add_argument("--chunk-size", type=int, default=8, help="Streaming chunk size")
+        sp.add_argument("--visualize", action="store_true", help="Show streaming progress")
 
     sp = sub.add_parser("clone", help="Voice cloning (reference audio)")
     add_common(sp)
@@ -193,6 +324,25 @@ def build_parser():
     add_common(sp)
     sp.add_argument("--instruct", required=True, help="Voice/style instruction")
     sp.set_defaults(fn=cmd_design)
+
+    sp = sub.add_parser("serve", help="Keep model hot and generate multiple requests from stdin")
+    sp.add_argument("--mode", required=True, choices=["clone", "custom", "design"])
+    sp.add_argument("--model", required=True, help="Model id or local path")
+    sp.add_argument("--language", default="Auto", help="Language (Auto, English, French, ...)")
+    sp.add_argument("--ref-audio", help="Reference audio path (clone)")
+    sp.add_argument("--ref-text", help="Reference transcript (clone)")
+    sp.add_argument("--speaker", help="Speaker ID (custom)")
+    sp.add_argument("--instruct", default="", help="Instruction (custom/design)")
+    sp.add_argument("--streaming", action="store_true", help="Use streaming generation")
+    sp.add_argument("--chunk-size", type=int, default=8, help="Streaming chunk size")
+    sp.add_argument("--max-new-tokens", type=int, default=2048)
+    sp.add_argument("--temperature", type=float, default=0.9)
+    sp.add_argument("--top-k", type=int, default=50)
+    sp.add_argument("--repetition-penalty", type=float, default=1.05)
+    sp.add_argument("--greedy", action="store_true", help="Disable sampling")
+    sp.add_argument("--visualize", action="store_true", help="Show streaming progress")
+    sp.add_argument("--output-dir", default="outputs", help="Directory for output wavs")
+    sp.set_defaults(fn=cmd_serve)
 
     return p
 
