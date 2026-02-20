@@ -4,14 +4,19 @@ FasterQwen3TTS: Real-time TTS using CUDA graph capture.
 Wrapper class that provides a Qwen3-TTS API while using
 CUDA graphs for 6-10x speedup.
 """
-import torch
-import numpy as np
-import soundfile as sf
+import logging
 from pathlib import Path
 from typing import Generator, Optional, Tuple, Union
-import logging
+
+import numpy as np
+import soundfile as sf
+import torch
+
+from .utils import suppress_flash_attn_warning
 
 logger = logging.getLogger(__name__)
+
+
 
 
 class FasterQwen3TTS:
@@ -71,8 +76,9 @@ class FasterQwen3TTS:
         
         logger.info(f"Loading Qwen3-TTS model: {model_name}")
         
-        # Import here to avoid dependency issues
-        from qwen_tts import Qwen3TTSModel
+        # Import here to avoid dependency issues (and suppress flash-attn warning)
+        with suppress_flash_attn_warning():
+            from qwen_tts import Qwen3TTSModel
         from .predictor_graph import PredictorGraph
         from .talker_graph import TalkerGraph
         # Load base model using qwen-tts library
