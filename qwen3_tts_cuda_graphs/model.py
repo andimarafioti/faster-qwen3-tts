@@ -6,6 +6,7 @@ CUDA graphs for 6-10x speedup.
 """
 import torch
 import numpy as np
+import soundfile as sf
 from pathlib import Path
 from typing import Generator, Optional, Tuple, Union
 import logging
@@ -150,6 +151,21 @@ class Qwen3TTSCudaGraphs:
             "Use generate_voice_clone() with reference audio."
         )
     
+    def _load_ref_audio_with_silence(self, ref_audio: Union[str, Path], silence_secs: float = 0.5) -> Tuple[np.ndarray, int]:
+        """Load reference audio and append trailing silence.
+
+        The ICL voice-cloning prompt ends with the last codec token of the reference
+        audio, so the model's first generated token is conditioned on whatever phoneme
+        the reference ends with.  Appending a short silence makes the last tokens
+        encode silence instead, preventing that phoneme from bleeding into the start
+        of the generated speech.
+        """
+        audio, sr = sf.read(str(ref_audio), dtype="float32", always_2d=False)
+        if audio.ndim > 1:
+            audio = audio.mean(axis=1)  # convert to mono
+        silence = np.zeros(int(silence_secs * sr), dtype=np.float32)
+        return np.concatenate([audio, silence]), sr
+
     def _prepare_generation(self, text: str, ref_audio: Union[str, Path], ref_text: str):
         """Prepare inputs for generation (shared by streaming and non-streaming)."""
         input_texts = [f"<|im_start|>assistant\n{text}<|im_end|>\n<|im_start|>assistant\n"]
@@ -163,8 +179,9 @@ class Qwen3TTSCudaGraphs:
         if cache_key in self._voice_prompt_cache:
             vcp, ref_ids = self._voice_prompt_cache[cache_key]
         else:
+            ref_audio_input = self._load_ref_audio_with_silence(ref_audio)
             prompt_items = self.model.create_voice_clone_prompt(
-                ref_audio=str(ref_audio),
+                ref_audio=ref_audio_input,
                 ref_text=ref_text
             )
             vcp = self.model._prompt_items_to_voice_clone_prompt(prompt_items)
