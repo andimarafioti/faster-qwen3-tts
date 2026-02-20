@@ -1,5 +1,5 @@
 """
-Qwen3TTSCudaGraphs: Real-time TTS using CUDA graph capture.
+FasterQwen3TTS: Real-time TTS using CUDA graph capture.
 
 Wrapper class that provides a Qwen3-TTS API while using
 CUDA graphs for 6-10x speedup.
@@ -14,7 +14,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-class Qwen3TTSCudaGraphs:
+class FasterQwen3TTS:
     """
     Qwen3-TTS model with CUDA graphs for real-time inference.
     
@@ -61,7 +61,7 @@ class Qwen3TTSCudaGraphs:
             max_seq_len: Maximum sequence length for static cache
             
         Returns:
-            Qwen3TTSCudaGraphs instance
+            FasterQwen3TTS instance
         """
         if isinstance(dtype, str):
             dtype = getattr(torch, dtype)
