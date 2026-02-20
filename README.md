@@ -50,6 +50,18 @@ cd faster-qwen3-tts
 
 Requires: Python 3.10+, NVIDIA GPU with CUDA, [uv](https://docs.astral.sh/uv/).
 
+### Install (PyPI)
+
+```bash
+pip install faster-qwen3-tts
+```
+
+Or from source:
+
+```bash
+pip install -e .
+```
+
 ### Benchmark a specific model
 
 ```bash
@@ -121,6 +133,43 @@ audio_list, sr = model.generate_voice_clone(
     text="Hello world!", language="English",
     ref_audio="ref.wav", ref_text="...",
 )
+```
+
+### CLI
+
+Voice cloning (reference audio):
+
+```bash
+faster-qwen3-tts clone \
+  --model Qwen/Qwen3-TTS-12Hz-1.7B-Base \
+  --text "Hello world!" \
+  --language English \
+  --ref-audio ref.wav \
+  --ref-text "Reference transcript" \
+  --output out.wav
+```
+
+CustomVoice (predefined speaker IDs):
+
+```bash
+faster-qwen3-tts custom --model Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice --list-speakers
+faster-qwen3-tts custom \
+  --model Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice \
+  --speaker aiden \
+  --text "Hello!" \
+  --language English \
+  --output out.wav
+```
+
+VoiceDesign (instruction-based):
+
+```bash
+faster-qwen3-tts design \
+  --model Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign \
+  --instruct "Warm, confident narrator with slight British accent" \
+  --text "Welcome to the show." \
+  --language English \
+  --output out.wav
 ```
 
 ### How it works
