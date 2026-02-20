@@ -88,6 +88,35 @@ The streaming generator accumulates codec tokens in chunks (configurable size), 
 
 `chunk_size=4` is the smallest that stays real-time on Jetson. On faster GPUs, even `chunk_size=1` should remain above RTF 1.0.
 
+## An Unexpected Discovery: The ICL Phoneme Artifact
+
+While testing voice cloning, we noticed something odd: every generated sample started with a brief, consistent sound that wasn't in the target text — something like a "thumbs" or a "comes" sound depending on the reference audio used. It appeared reliably at the very start of every generation, regardless of what we asked the model to say.
+
+Tracking it down required reading through the upstream `qwen_tts` library's model code to understand exactly what the prefill sequence looks like.
+
+Qwen3-TTS voice cloning operates in **ICL (In-Context Learning) mode**: rather than extracting a static speaker embedding, it feeds the reference audio's raw codec tokens directly into the transformer's context. This gives the model a rich, frame-level representation of the target voice. The prefill sequence looks roughly like this:
+
+```
+[text role tokens] [speaker embedding] [codec BOS]
+[ref_text_tok₀ + ref_code₀] [ref_text_tok₁ + ref_code₁] ... [ref_text_tokₙ + ref_codeₙ]
+                                                               ↑
+                                              last position before generation starts
+```
+
+Text and codec embeddings are **summed by position** across the reference audio's length. The last position in the prefill is the last codec token of the reference audio — and the model's first generated token is predicted from exactly there.
+
+The consequence: whatever phoneme the reference audio ends on directly conditions the model's first output token. If the reference ends on a consonant cluster like the "mz" in "thumbs", the model treats that as the acoustic context it's continuing from, and generates a token that completes or continues that phoneme before transitioning to the target text. The effect is small but clearly audible — especially noticeable in conversation applications where clean turn boundaries matter.
+
+The fix is a single operation: **append 0.5 seconds of silence to the reference audio before encoding it**. When the last codec tokens represent silence, the model's starting context is acoustic silence, and it generates the target speech cleanly from the first frame.
+
+```python
+audio, sr = sf.read(ref_audio_path, dtype="float32", always_2d=False)
+silence = np.zeros(int(0.5 * sr), dtype=np.float32)
+ref_audio_input = (np.concatenate([audio, silence]), sr)
+```
+
+This is now applied automatically in `_prepare_generation()` before the reference audio is passed to `create_voice_clone_prompt()`, so it works transparently regardless of what reference recording the user provides.
+
 ## Code
 
 We've open-sourced this implementation to help the community deploy Qwen3-TTS in production environments:
