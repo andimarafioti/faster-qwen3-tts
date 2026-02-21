@@ -25,11 +25,23 @@ CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", "1"))
 MAX_NEW_TOKENS = int(os.environ.get("MAX_NEW_TOKENS", "512"))
 CONTEXT_FRAMES = int(os.environ.get("CONTEXT_FRAMES", "25"))
 SMOOTH_MS = float(os.environ.get("SMOOTH_MS", "5.0"))
+DETERMINISTIC = os.environ.get("DETERMINISTIC", "0")
+MODE = os.environ.get("MODE", "full")
+LOOKAHEAD_FRAMES = int(os.environ.get("LOOKAHEAD_FRAMES", "0"))
+SAVE_WAV = os.environ.get("SAVE_WAV", "0") == "1"
 
 
 def main():
     model_id = "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
     model = FasterQwen3TTS.from_pretrained(model_id, device="cuda", dtype=torch.bfloat16)
+
+    if DETERMINISTIC == "1":
+        torch.use_deterministic_algorithms(True)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    elif DETERMINISTIC == "2":
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
 
     m, talker, config, tie, tam, tth, tpe = model._prepare_generation(
         TEXT, REF_AUDIO, REF_TEXT, language=LANG, xvec_only=True
@@ -65,14 +77,19 @@ def main():
             yield c, t
 
     stream_audio = []
+    boundaries = []
+    total_len = 0
     for audio_chunk, sr, timing in _stream_decode_chunks(
         m.speech_tokenizer,
         chunk_iter(),
         context_frames=CONTEXT_FRAMES,
-        lookahead_frames=0,
+        lookahead_frames=LOOKAHEAD_FRAMES,
         smooth_ms=SMOOTH_MS,
+        mode=MODE,
     ):
         stream_audio.append(audio_chunk)
+        total_len += len(audio_chunk)
+        boundaries.append(total_len)
 
     if not stream_audio:
         print("No streaming audio produced.")
@@ -91,11 +108,9 @@ def main():
 
     # Compute boundary discontinuities in streaming output
     boundary = []
-    step = max(1, CHUNK_SIZE * spf)
-    for idx in range(step, len(stream_audio), step):
-        if idx >= len(stream_audio):
-            break
-        boundary.append(abs(stream_audio[idx] - stream_audio[idx - 1]))
+    for idx in boundaries[:-1]:
+        if 0 < idx < len(stream_audio):
+            boundary.append(abs(stream_audio[idx] - stream_audio[idx - 1]))
 
     boundary = np.array(boundary)
     rand_idx = np.random.default_rng(0).integers(1, len(stream_audio) - 1, size=min(1000, len(stream_audio) - 2))
@@ -106,6 +121,19 @@ def main():
     print(f"Boundary delta mean: {boundary.mean():.6f}, median: {np.median(boundary):.6f}")
     print(f"Random delta mean:   {random_deltas.mean():.6f}, median: {np.median(random_deltas):.6f}")
     print(f"Boundary/Random median ratio: {np.median(boundary) / (np.median(random_deltas) + 1e-8):.2f}x")
+    
+    # Compare streaming to full decode prefix
+    min_len = min(len(stream_audio), len(full_audio))
+    diff = np.abs(stream_audio[:min_len] - full_audio[:min_len])
+    max_diff = float(diff.max()) if diff.size else 0.0
+    p99 = float(np.percentile(diff, 99)) if diff.size else 0.0
+    print(f"Streaming vs full prefix max diff: {max_diff:.6f}, p99: {p99:.6f}")
+
+    if SAVE_WAV:
+        import soundfile as sf
+        sf.write("streaming_output.wav", stream_audio, sr)
+        sf.write("full_output.wav", full_audio, sr_full)
+        print("Wrote streaming_output.wav and full_output.wav")
 
 
 if __name__ == "__main__":

@@ -30,6 +30,8 @@ def _stream_decode_chunks(
 
     spf = int(speech_tokenizer.get_decode_upsample_rate())
     sr_out = int(speech_tokenizer.get_output_sample_rate())
+    if mode == "full":
+        smooth_ms = 0.0
     smooth_samples = int(sr_out * smooth_ms / 1000.0)
     smooth_samples = max(0, smooth_samples)
     all_codes = []
@@ -43,6 +45,8 @@ def _stream_decode_chunks(
         all_flat = torch.cat(all_codes, dim=0)
         n_total = all_flat.shape[0]
 
+        right_ctx = 0 if timing.get("is_final", False) else max(0, lookahead_frames)
+
         if mode == "full":
             audio_list, sr = speech_tokenizer.decode({"audio_codes": all_flat.unsqueeze(0)})
             audio = audio_list[0]
@@ -51,10 +55,17 @@ def _stream_decode_chunks(
             else:
                 audio = audio.flatten() if hasattr(audio, "flatten") else audio
 
-            new_audio = audio[prev_audio_len:]
-            prev_audio_len = len(audio)
+            if timing.get("is_final", False):
+                commit_samples = len(audio)
+            else:
+                commit_frames = max(0, n_total - right_ctx)
+                commit_samples = int(round((commit_frames / max(n_total, 1)) * len(audio)))
+                commit_samples = min(commit_samples, len(audio))
+            if commit_samples <= prev_audio_len:
+                continue
+            new_audio = audio[prev_audio_len:commit_samples]
+            prev_audio_len = commit_samples
         else:
-            right_ctx = 0 if timing.get("is_final", False) else max(0, lookahead_frames)
             if n_total <= right_ctx:
                 continue
 
@@ -728,7 +739,7 @@ class FasterQwen3TTS:
 
         speech_tokenizer = m.speech_tokenizer
         context_frames = 25
-        lookahead_frames = 0
+        lookahead_frames = 3 if chunk_size >= 4 else max(0, chunk_size - 1)
 
         codec_iter = fast_generate_streaming(
             talker=talker,
@@ -863,7 +874,7 @@ class FasterQwen3TTS:
 
         speech_tokenizer = m.speech_tokenizer
         context_frames = 25
-        lookahead_frames = 0
+        lookahead_frames = 3 if chunk_size >= 4 else max(0, chunk_size - 1)
 
         codec_iter = fast_generate_streaming(
             talker=talker,
@@ -988,7 +999,7 @@ class FasterQwen3TTS:
 
         speech_tokenizer = m.speech_tokenizer
         context_frames = 25
-        lookahead_frames = 0
+        lookahead_frames = 3 if chunk_size >= 4 else max(0, chunk_size - 1)
 
         codec_iter = fast_generate_streaming(
             talker=talker,
