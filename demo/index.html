@@ -565,10 +565,11 @@ let loadedModelName = null;
 
 // Web Audio
 let actx        = null;
-let sproc       = null;   // ScriptProcessorNode — reads continuously from pcmQueue
+let sproc       = null;
 let pcmQueue    = [];     // [{data: Float32Array, pos: number}]
 let sprocActive = false;
-let collectBufs = [];     // AudioBuffers kept for WAV rebuild after streaming
+let rawPcmParts = [];     // raw int16 bytes from server (for download WAV)
+let rawPcmSr    = 12000;
 let chunkQ      = Promise.resolve();
 
 // Download
@@ -659,19 +660,21 @@ function setRef(f) {
   document.getElementById('dzName').textContent = '✓ ' + f.name;
 }
 
-// ─── Web Audio: gapless streaming via ScriptProcessor ────────────────────────
-// A ScriptProcessorNode reads continuously from a PCM queue, eliminating the
-// timestamp-scheduling gaps that caused clicks between AudioBufferSourceNodes.
-function initAudio() {
+// ─── Web Audio: gapless streaming via ScriptProcessor + raw PCM ───────────────
+// Skips decodeAudioData entirely — parsing int16 PCM directly from the server's
+// WAV bytes avoids per-chunk resampling boundary artifacts. AudioContext runs at
+// the model's native 12 kHz so the browser resamples one continuous stream
+// to the device rate rather than each chunk independently.
+function initAudio(sr) {
   if (actx) { try { actx.close(); } catch {} }
-  actx        = new (window.AudioContext || window.webkitAudioContext)();
+  rawPcmSr    = sr || 12000;
+  actx        = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: rawPcmSr });
   pcmQueue    = [];
   sprocActive = false;
-  collectBufs = [];
+  rawPcmParts = [];
   chunkQ      = Promise.resolve();
   dlBlob      = null;
 
-  // 512 frames ≈ 12 ms at 44.1 kHz — low latency, still stable
   sproc = actx.createScriptProcessor(512, 0, 1);
   sproc.onaudioprocess = e => {
     const out = e.outputBuffer.getChannelData(0);
@@ -688,56 +691,68 @@ function initAudio() {
   };
 }
 
+// Parse a WAV Uint8Array → {pcm: Float32Array, rawPcm: Uint8Array, sr: number}
+function parseWav(bytes) {
+  const v  = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const sr = v.getUint32(24, true);
+  let off  = 12;
+  while (off + 8 <= bytes.length) {
+    const id   = String.fromCharCode(bytes[off], bytes[off+1], bytes[off+2], bytes[off+3]);
+    const size = v.getUint32(off + 4, true);
+    if (id === 'data') {
+      const rawPcm = bytes.slice(off + 8, off + 8 + size);
+      const i16    = new Int16Array(rawPcm.buffer, rawPcm.byteOffset, rawPcm.byteLength / 2);
+      const f32    = new Float32Array(i16.length);
+      for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768.0;
+      return { pcm: f32, rawPcm, sr };
+    }
+    off += 8 + size;
+  }
+  return null;
+}
+
 function enqueueChunk(b64wav) {
   chunkQ = chunkQ.then(() => _processChunk(b64wav));
 }
 
-async function _processChunk(b64wav) {
+function _processChunk(b64wav) {
   if (!actx) return;
-  const bytes = Uint8Array.from(atob(b64wav), c => c.charCodeAt(0));
-  let buf;
-  try {
-    buf = await actx.decodeAudioData(bytes.buffer);
-  } catch (e) { console.warn('decode error', e); return; }
+  const bytes  = Uint8Array.from(atob(b64wav), c => c.charCodeAt(0));
+  const parsed = parseWav(bytes);
+  if (!parsed) return;
 
-  collectBufs.push(buf);
-  pcmQueue.push({ data: buf.getChannelData(0).slice(), pos: 0 });
+  rawPcmParts.push(parsed.rawPcm);
+  pcmQueue.push({ data: parsed.pcm, pos: 0 });
 
   if (!sprocActive) {
-    if (actx.state === 'suspended') await actx.resume();
+    if (actx.state === 'suspended') actx.resume();
     sproc.connect(actx.destination);
     sprocActive = true;
   }
 }
 
-// Build a mono 16-bit WAV blob from collected AudioBuffers
+// Build download WAV from raw server bytes — exact 12 kHz model output, no resampling
 function buildWav() {
-  if (!collectBufs.length) return null;
-  const sr  = collectBufs[0].sampleRate;
-  const len = collectBufs.reduce((s, b) => s + b.length, 0);
-  const pcm = new Float32Array(len);
-  let off = 0;
-  for (const b of collectBufs) { pcm.set(b.getChannelData(0), off); off += b.length; }
-
-  const dataBytes = len * 2;
-  const ab  = new ArrayBuffer(44 + dataBytes);
+  if (!rawPcmParts.length) return null;
+  const totalPcm = rawPcmParts.reduce((s, p) => s + p.length, 0);
+  const ab  = new ArrayBuffer(44 + totalPcm);
   const v   = new DataView(ab);
   const ws  = (o, s) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
 
-  ws(0,  'RIFF'); v.setUint32(4,  36 + dataBytes, true);
+  ws(0,  'RIFF'); v.setUint32(4,  36 + totalPcm, true);
   ws(8,  'WAVE'); ws(12, 'fmt ');
-  v.setUint32(16, 16, true);    // PCM chunk size
-  v.setUint16(20,  1, true);    // PCM format
-  v.setUint16(22,  1, true);    // mono
-  v.setUint32(24, sr, true);    // sample rate
-  v.setUint32(28, sr * 2, true);// byte rate
-  v.setUint16(32,  2, true);    // block align
-  v.setUint16(34, 16, true);    // bits per sample
-  ws(36, 'data'); v.setUint32(40, dataBytes, true);
+  v.setUint32(16, 16, true);
+  v.setUint16(20,  1, true);           // PCM
+  v.setUint16(22,  1, true);           // mono
+  v.setUint32(24, rawPcmSr, true);
+  v.setUint32(28, rawPcmSr * 2, true);
+  v.setUint16(32,  2, true);
+  v.setUint16(34, 16, true);
+  ws(36, 'data'); v.setUint32(40, totalPcm, true);
 
-  const i16 = new Int16Array(ab, 44);
-  for (let i = 0; i < pcm.length; i++)
-    i16[i] = Math.max(-32768, Math.min(32767, Math.round(pcm[i] * 32767)));
+  const out = new Uint8Array(ab, 44);
+  let offset = 0;
+  for (const part of rawPcmParts) { out.set(part, offset); offset += part.length; }
 
   return new Blob([ab], { type: 'audio/wav' });
 }
@@ -882,7 +897,6 @@ async function generate() {
 }
 
 async function runStreaming(fd) {
-  initAudio();
   document.getElementById('waveRow').classList.remove('hidden');
 
   const res = await fetch('/generate/stream', { method: 'POST', body: fd });
@@ -894,6 +908,7 @@ async function runStreaming(fd) {
   const reader  = res.body.getReader();
   const decoder = new TextDecoder();
   let buf = '';
+  let audioInited = false;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -907,6 +922,7 @@ async function runStreaming(fd) {
       const d = JSON.parse(line.slice(6));
 
       if (d.type === 'chunk') {
+        if (!audioInited) { initAudio(d.sample_rate); audioInited = true; }
         pushMetrics(d.ttfa_ms, d.rtf, d.total_audio_s);
         enqueueChunk(d.audio_b64);
 
