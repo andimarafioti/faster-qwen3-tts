@@ -615,6 +615,7 @@
 let activeTab       = 'clone';
 let genMode         = 'stream';
 let refFile         = null;
+let refB64          = null;
 let busy            = false;
 let loadedModelName = null;
 let useWebSocket    = true;
@@ -730,7 +731,15 @@ function dzDrop(e) {
 function dzPick(e) { const f = e.target.files[0]; if (f) setRef(f); }
 function setRef(f) {
   refFile = f;
+  refB64 = null;
   document.getElementById('dzName').textContent = '✓ ' + f.name;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const res = reader.result || '';
+    const parts = res.split(',');
+    refB64 = parts.length > 1 ? parts[1] : null;
+  };
+  reader.readAsDataURL(f);
 }
 
 // ─── Web Audio: gapless streaming via ScriptProcessor + raw PCM ───────────────
@@ -1207,7 +1216,7 @@ async function runStreaming(fd) {
   firstWorkletMsgAt = null;
 
   if (useWebSocket) {
-    await initAudio(12000);
+    await initAudio(24000);
     const ws = new WebSocket(`ws://${location.host}/ws/stream`);
     let audioInited = false;
     ws.onopen = () => {
@@ -1223,17 +1232,10 @@ async function runStreaming(fd) {
         repetition_penalty: fd.get('repetition_penalty'),
         ref_audio_b64: null,
       };
-      const ref = fd.get('ref_audio');
-      if (ref) {
-        const reader = new FileReader();
-        reader.onload = () => {
-          payload.ref_audio_b64 = reader.result.split(',')[1];
-          ws.send(JSON.stringify(payload));
-        };
-        reader.readAsDataURL(ref);
-      } else {
-        ws.send(JSON.stringify(payload));
+      if (refB64) {
+        payload.ref_audio_b64 = refB64;
       }
+      ws.send(JSON.stringify(payload));
     };
 
     ws.onmessage = async (ev) => {
