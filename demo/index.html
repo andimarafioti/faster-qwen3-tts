@@ -736,7 +736,11 @@ function setRef(f) {
 // to the device rate rather than each chunk independently.
 async function warmAudio() {
   if (actx) return;
-  await initAudio(12000);
+  try {
+    await initAudio(12000);
+  } catch (e) {
+    console.warn('Audio warmup failed (will retry on generate):', e);
+  }
 }
 
 async function initAudio(sr) {
@@ -751,9 +755,18 @@ async function initAudio(sr) {
     firstAudioAt = null;
     lastBufS = 0;
     pendingChunks = [];
-    workletReady = !!workletNode;
-    pushClientMetrics();
-    return;
+    // If worklet never initialized (e.g., autoplay blocked), rebuild it.
+    if (!workletNode) {
+      try { await actx.close(); } catch {}
+      actx = null;
+    } else {
+      if (actx.state === 'suspended') {
+        try { await actx.resume(); } catch {}
+      }
+      workletReady = true;
+      pushClientMetrics();
+      return;
+    }
   }
   initAudioAt = performance.now();
   rawPcmSr    = sr || 12000;
