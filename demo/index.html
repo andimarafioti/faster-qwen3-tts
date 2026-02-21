@@ -23,6 +23,22 @@
       --amber:        #f59e0b;
       --red:          #ef4444;
     }
+    :root[data-theme="light"] {
+      --bg:           #f6f7fb;
+      --surface:      #ffffff;
+      --surface2:     #f3f4f6;
+      --border:       #e6e8ef;
+      --border2:      #d6dae6;
+      --text:         #10131a;
+      --dim:          #6b7280;
+      --dimmer:       #9aa3b2;
+      --accent:       #0ea5e9;
+      --accent-bg:    rgba(14, 165, 233, 0.12);
+      --accent-ring:  rgba(14, 165, 233, 0.25);
+      --green:        #10b981;
+      --amber:        #f59e0b;
+      --red:          #ef4444;
+    }
 
     body {
       background: var(--bg);
@@ -39,6 +55,14 @@
     /* ── Header ── */
     .hdr { margin-bottom: 28px; }
     .hdr-top { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; }
+    .hdr-top .spacer { flex: 1; }
+    .btn-theme {
+      font-size: 11px; padding: 5px 10px;
+      background: transparent; border: 1px solid var(--border2);
+      border-radius: 999px; color: var(--dim); cursor: pointer;
+      font-family: inherit; transition: all 0.15s;
+    }
+    .btn-theme:hover { border-color: var(--accent); color: var(--accent); }
     .hdr h1 {
       font-size: 20px; font-weight: 600; letter-spacing: -0.4px; color: #f0f0f0;
     }
@@ -63,6 +87,7 @@
       font-size: 13px; font-family: inherit; outline: none; cursor: pointer;
     }
     #modelSelect option { background: #1a1a1a; }
+    :root[data-theme="light"] #modelSelect option { background: #ffffff; }
     .model-pill {
       display: flex; align-items: center; gap: 5px;
       font-size: 11px; color: var(--dim); white-space: nowrap;
@@ -115,6 +140,22 @@
     }
     textarea:focus, input[type="text"]:focus { border-color: var(--border2); }
     textarea::placeholder, input::placeholder { color: var(--dimmer); }
+
+    .note {
+      font-size: 12px; color: var(--dimmer);
+      margin-top: -6px; margin-bottom: 8px;
+    }
+
+    .record-row {
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+      margin-top: 8px;
+    }
+    .rec-status {
+      font-size: 12px; color: var(--dim);
+    }
+    .rec-preview {
+      width: 100%; margin-top: 6px;
+    }
 
     /* ── Dropzone ── */
     .dropzone {
@@ -369,6 +410,8 @@
     <div class="hdr-top">
       <h1>faster-qwen3-tts</h1>
       <span class="badge">CUDA GRAPHS</span>
+      <span class="spacer"></span>
+      <button class="btn-theme" id="themeToggle" onclick="toggleTheme()">Dark</button>
     </div>
     <p>Real-time TTS — watch TTFA and RTF update live as audio streams to your speakers</p>
   </header>
@@ -379,6 +422,8 @@
     <select id="modelSelect">
       <option value="Qwen/Qwen3-TTS-12Hz-0.6B-Base">0.6B Base</option>
       <option value="Qwen/Qwen3-TTS-12Hz-1.7B-Base">1.7B Base</option>
+      <option value="Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice">0.6B CustomVoice</option>
+      <option value="Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice">1.7B CustomVoice</option>
       <option value="Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign">1.7B VoiceDesign</option>
     </select>
     <div class="model-pill">
@@ -394,6 +439,7 @@
     <!-- Tabs -->
     <div class="tabs">
       <div class="tab active" id="tabClone" onclick="switchTab('clone')">Voice Clone</div>
+      <div class="tab" id="tabCustom" onclick="switchTab('custom')">Custom Voice</div>
       <div class="tab" id="tabDesign" onclick="switchTab('design')">Voice Design</div>
     </div>
 
@@ -410,15 +456,55 @@
           ondragover="dzOver(event)" ondragleave="dzLeave(event)" ondrop="dzDrop(event)">
           <input type="file" id="refAudio" accept=".wav,.mp3,.flac,.ogg" onchange="dzPick(event)">
           <div class="dz-icon">🎙</div>
-          <div class="dz-hint">Drop a WAV here or click to browse</div>
+          <div class="dz-hint">Drop a WAV here, record, or click to browse</div>
           <div class="dz-name" id="dzName"></div>
         </div>
+        <div class="record-row">
+          <button class="btn-sm" id="recBtn" onclick="startRecording()">Record</button>
+          <button class="btn-sm" id="stopBtn" onclick="stopRecording()" disabled>Stop</button>
+          <span class="rec-status" id="recStatus">Not recording</span>
+        </div>
+        <div class="note">Recording requires microphone permission (HTTPS or localhost).</div>
+        <audio id="recPreview" class="rec-preview" controls></audio>
       </div>
       <div class="field">
+        <label>Clone Mode</label>
+        <div class="toggle">
+          <div class="toggle-btn active" id="xvecOnlyOn" onclick="setXvecOnly(true)">x-vector only</div>
+          <div class="toggle-btn" id="xvecOnlyOff" onclick="setXvecOnly(false)">full ICL</div>
+        </div>
+      </div>
+      <div class="note">x-vector only is faster and does not require a transcript. Full ICL may better match prosody but can add latency.</div>
+      <div class="field" id="refTextField">
         <label>Reference Transcript</label>
         <textarea id="refText" rows="2"
           placeholder="Transcription of the reference audio clip…"></textarea>
       </div>
+    </div>
+
+    <!-- Custom Voice pane -->
+    <div class="tab-pane" id="paneCustom">
+      <div class="field">
+        <label>Text</label>
+        <textarea id="customText" rows="4"
+          placeholder="Enter text to synthesize…">Welcome! This is a custom voice from the model's built-in speaker library.</textarea>
+      </div>
+      <div class="field">
+        <label>Speaker ID</label>
+        <select id="speakerId">
+          <option value="">Select a speaker…</option>
+        </select>
+        <div class="note" id="speakerHint">Load a CustomVoice model to populate speakers.</div>
+        <div class="note" id="speakerDesc"></div>
+      </div>
+      <div class="field">
+        <label>Voice Instruction (optional)</label>
+        <textarea id="customInstruct" rows="2"
+          placeholder="e.g. a calm, neutral narrator…"></textarea>
+      </div>
+      <p style="font-size:12px;color:var(--dimmer);margin-top:-8px;margin-bottom:6px">
+        Requires a <code style="color:var(--dim)">CustomVoice</code> model.
+      </p>
     </div>
 
     <!-- Voice Design pane -->
@@ -607,6 +693,19 @@ let genMode         = 'stream';
 let refFile         = null;
 let busy            = false;
 let loadedModelName = null;
+let loadedModelType = null;
+let xvecOnly        = true;
+const defaultSpeakers = [
+  { id: 'Vivian', lang: 'Chinese', desc: 'Bright, slightly edgy young female voice.' },
+  { id: 'Serena', lang: 'Chinese', desc: 'Warm, gentle young female voice.' },
+  { id: 'Uncle_Fu', lang: 'Chinese', desc: 'Seasoned male voice with a low, mellow timbre.' },
+  { id: 'Dylan', lang: 'Chinese (Beijing)', desc: 'Youthful Beijing male voice with a clear, natural timbre.' },
+  { id: 'Eric', lang: 'Chinese (Sichuan)', desc: 'Lively Chengdu male voice with a slightly husky brightness.' },
+  { id: 'Ryan', lang: 'English', desc: 'Dynamic male voice with strong rhythmic drive.' },
+  { id: 'Aiden', lang: 'English', desc: 'Sunny American male voice with a clear midrange.' },
+  { id: 'Ono_Anna', lang: 'Japanese', desc: 'Playful Japanese female voice with a light, nimble timbre.' },
+  { id: 'Sohee', lang: 'Korean', desc: 'Warm Korean female voice with rich emotion.' },
+];
 
 // Web Audio
 let actx        = null;
@@ -621,12 +720,19 @@ let firstAudioAt = null;
 let lastBufS     = 0;
 let firstServerWall = null;
 
+// Recording
+let recStream = null;
+let recorder = null;
+let recChunks = [];
+
 // Download
 let dlBlob = null;
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 window.addEventListener('load', () => {
+  initTheme();
   fetchStatus();
+  setXvecOnly(true);
   // Pre-warm audio graph to avoid first-run latency.
   setTimeout(() => { warmAudio(); }, 0);
   // Ensure warmup runs after a user gesture (autoplay policies).
@@ -634,16 +740,38 @@ window.addEventListener('load', () => {
   window.addEventListener('pointerdown', _warmOnce, { passive: true });
 });
 
-async function fetchStatus() {
+async function fetchStatus(opts = {}) {
   try {
     const d = await fetch('/status').then(r => r.json());
     if (d.model) {
       loadedModelName = d.model;
+      loadedModelType = d.model_type || null;
       const sel = document.getElementById('modelSelect');
       for (const o of sel.options) { if (o.value === d.model) { o.selected = true; break; } }
     }
+    if (opts.skipSpeakers !== true) {
+      updateSpeakers(d.speakers || []);
+    }
     setModelPill(d.loaded ? 'loaded' : 'off', d.model ? 'ready' : 'not loaded');
   } catch { setModelPill('off', 'offline'); }
+}
+
+function initTheme() {
+  const t = localStorage.getItem('theme') || 'dark';
+  applyTheme(t);
+}
+
+function applyTheme(theme) {
+  const root = document.documentElement;
+  root.dataset.theme = theme;
+  const btn = document.getElementById('themeToggle');
+  if (btn) btn.textContent = theme === 'dark' ? 'Dark' : 'Light';
+  localStorage.setItem('theme', theme);
+}
+
+function toggleTheme() {
+  const current = document.documentElement.dataset.theme || 'dark';
+  applyTheme(current === 'dark' ? 'light' : 'dark');
 }
 
 // ─── Model ────────────────────────────────────────────────────────────────────
@@ -660,6 +788,7 @@ async function loadModel() {
     if (d.status === 'loaded' || d.status === 'already_loaded') {
       loadedModelName = modelId;
       setModelPill('loaded', 'ready');
+      await fetchStatus({ skipSpeakers: true });
     } else {
       setModelPill('error', 'failed');
     }
@@ -679,9 +808,20 @@ function setModelPill(state, label) {
 function switchTab(t) {
   activeTab = t;
   document.getElementById('tabClone').classList.toggle('active', t === 'clone');
+  document.getElementById('tabCustom').classList.toggle('active', t === 'custom');
   document.getElementById('tabDesign').classList.toggle('active', t === 'design');
   document.getElementById('paneClone').classList.toggle('active', t === 'clone');
+  document.getElementById('paneCustom').classList.toggle('active', t === 'custom');
   document.getElementById('paneDesign').classList.toggle('active', t === 'design');
+  if (t === 'custom') refreshSpeakers();
+}
+
+function setXvecOnly(v) {
+  xvecOnly = v;
+  document.getElementById('xvecOnlyOn').classList.toggle('active', v);
+  document.getElementById('xvecOnlyOff').classList.toggle('active', !v);
+  const refField = document.getElementById('refTextField');
+  if (refField) refField.style.display = v ? 'none' : 'block';
 }
 
 // ─── Mode toggle ──────────────────────────────────────────────────────────────
@@ -708,6 +848,51 @@ function toggleMetricsAdv() {
   btn.classList.toggle('on', open);
 }
 
+function updateSpeakers(speakers) {
+  const sel = document.getElementById('speakerId');
+  const hint = document.getElementById('speakerHint');
+  const desc = document.getElementById('speakerDesc');
+  if (!sel || !hint) return;
+  const prev = sel.value;
+  sel.innerHTML = '<option value=\"\">Select a speaker…</option>';
+  let list = [];
+  if (Array.isArray(speakers)) list = speakers;
+  else if (speakers && typeof speakers === 'object') list = Object.keys(speakers);
+  if (!list || list.length === 0) {
+    list = defaultSpeakers.map(s => s.id);
+  }
+  if (prev && !list.includes(prev)) {
+    list = [prev, ...list];
+  }
+  list.forEach((spk) => {
+    const opt = document.createElement('option');
+    opt.value = spk;
+    opt.textContent = spk;
+    sel.appendChild(opt);
+  });
+  if (prev && list.includes(prev)) sel.value = prev;
+  if (!list || list.length === 0) {
+    hint.textContent = 'Load a CustomVoice model to populate speakers.';
+  } else {
+    hint.textContent = `Loaded ${list.length} speakers.`;
+  }
+  if (desc) desc.textContent = '';
+  sel.onchange = () => {
+    if (!desc) return;
+    const item = defaultSpeakers.find(s => s.id === sel.value);
+    desc.textContent = item ? `${item.lang} — ${item.desc}` : '';
+  };
+}
+
+async function refreshSpeakers() {
+  try {
+    const d = await fetch('/status').then(r => r.json());
+    updateSpeakers(d.speakers || []);
+  } catch {
+    updateSpeakers([]);
+  }
+}
+
 // ─── Dropzone ─────────────────────────────────────────────────────────────────
 function dzOver(e) { e.preventDefault(); document.getElementById('dz').classList.add('over'); }
 function dzLeave()  { document.getElementById('dz').classList.remove('over'); }
@@ -719,6 +904,97 @@ function dzPick(e) { const f = e.target.files[0]; if (f) setRef(f); }
 function setRef(f) {
   refFile = f;
   document.getElementById('dzName').textContent = '✓ ' + f.name;
+}
+
+async function startRecording() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    showErr('Recording is not supported in this browser.');
+    return;
+  }
+  hideErr();
+  document.getElementById('recBtn').disabled = true;
+  document.getElementById('stopBtn').disabled = false;
+  document.getElementById('recStatus').textContent = 'Recording…';
+
+  try {
+    recChunks = [];
+    recStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+      ? 'audio/webm;codecs=opus'
+      : 'audio/webm';
+    recorder = new MediaRecorder(recStream, { mimeType: mime });
+    recorder.ondataavailable = (e) => { if (e.data.size) recChunks.push(e.data); };
+    recorder.onstop = async () => {
+      const blob = new Blob(recChunks, { type: recorder.mimeType });
+      const wavBlob = await blobToWav(blob);
+      const file = new File([wavBlob], 'recorded.wav', { type: 'audio/wav' });
+      setRef(file);
+      const preview = document.getElementById('recPreview');
+      preview.src = URL.createObjectURL(wavBlob);
+      preview.play().catch(() => {});
+      cleanupRecording();
+    };
+    recorder.start();
+  } catch (e) {
+    showErr('Recording failed: ' + e.message);
+    cleanupRecording();
+  }
+}
+
+function stopRecording() {
+  if (recorder && recorder.state !== 'inactive') recorder.stop();
+}
+
+function cleanupRecording() {
+  if (recStream) recStream.getTracks().forEach(t => t.stop());
+  recStream = null;
+  recorder = null;
+  document.getElementById('recBtn').disabled = false;
+  document.getElementById('stopBtn').disabled = true;
+  document.getElementById('recStatus').textContent = 'Recorded';
+}
+
+async function blobToWav(blob) {
+  const ab = await blob.arrayBuffer();
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const audioBuf = await ctx.decodeAudioData(ab);
+  const wav = audioBufferToWav(audioBuf);
+  await ctx.close();
+  return wav;
+}
+
+function audioBufferToWav(buffer) {
+  const numCh = buffer.numberOfChannels;
+  const length = buffer.length;
+  const sr = buffer.sampleRate;
+  const pcm = new Float32Array(length);
+
+  for (let c = 0; c < numCh; c++) {
+    const data = buffer.getChannelData(c);
+    for (let i = 0; i < length; i++) pcm[i] += data[i] / numCh;
+  }
+
+  const ab = new ArrayBuffer(44 + length * 2);
+  const v = new DataView(ab);
+  const ws = (o, s) => [...s].forEach((ch, i) => v.setUint8(o + i, ch.charCodeAt(0)));
+
+  ws(0, 'RIFF'); v.setUint32(4, 36 + length * 2, true);
+  ws(8, 'WAVE'); ws(12, 'fmt ');
+  v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true);
+  v.setUint16(22, 1, true);
+  v.setUint32(24, sr, true);
+  v.setUint32(28, sr * 2, true);
+  v.setUint16(32, 2, true);
+  v.setUint16(34, 16, true);
+  ws(36, 'data'); v.setUint32(40, length * 2, true);
+
+  let off = 44;
+  for (let i = 0; i < length; i++, off += 2) {
+    let s = Math.max(-1, Math.min(1, pcm[i]));
+    v.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  }
+  return new Blob([ab], { type: 'audio/wav' });
 }
 
 // ─── Web Audio: gapless streaming via ScriptProcessor + raw PCM ───────────────
@@ -957,6 +1233,8 @@ async function switchAndGenerate(targetModel) {
   } finally {
     busy = false;
   }
+  btn.disabled = false;
+  btn.textContent = 'Generate';
   await generate();
 }
 
@@ -968,16 +1246,26 @@ function dismissSwitch() {
 async function generate() {
   if (busy) return;
 
-  if (activeTab === 'design' && loadedModelName && !loadedModelName.includes('VoiceDesign')) {
+  const isVoiceDesign = loadedModelName && loadedModelName.includes('VoiceDesign');
+  const isCustom = loadedModelName && loadedModelName.includes('CustomVoice');
+
+  if (activeTab === 'design' && loadedModelName && !isVoiceDesign) {
     showSwitchPrompt(
       'Voice Design requires the <code>1.7B-VoiceDesign</code> model.',
       'Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign',
     );
     return;
   }
-  if (activeTab === 'clone' && loadedModelName && loadedModelName.includes('VoiceDesign')) {
+  if (activeTab === 'custom' && loadedModelName && !isCustom) {
     showSwitchPrompt(
-      'Voice Clone is not supported by the VoiceDesign model. Switch to a Base model?',
+      'Custom Voice requires a <code>CustomVoice</code> model.',
+      'Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice',
+    );
+    return;
+  }
+  if (activeTab === 'clone' && loadedModelName && (isVoiceDesign || isCustom)) {
+    showSwitchPrompt(
+      'Voice Clone is not supported by VoiceDesign or CustomVoice models. Switch to a Base model?',
       'Qwen/Qwen3-TTS-12Hz-0.6B-Base',
     );
     return;
@@ -986,6 +1274,9 @@ async function generate() {
 
   if (activeTab === 'clone' && !refFile) {
     showErr('Please upload a reference audio file first.'); return;
+  }
+  if (activeTab === 'custom' && !document.getElementById('speakerId').value.trim()) {
+    showErr('Please choose a speaker ID first.'); return;
   }
   hideErr();
   busy = true;
@@ -1007,8 +1298,14 @@ async function generate() {
   if (activeTab === 'clone') {
     fd.append('text', document.getElementById('cloneText').value);
     fd.append('mode', 'voice_clone');
-    fd.append('ref_text', document.getElementById('refText').value);
+    fd.append('ref_text', xvecOnly ? '' : document.getElementById('refText').value);
     if (refFile) fd.append('ref_audio', refFile);
+    fd.append('xvec_only', xvecOnly ? 'true' : 'false');
+  } else if (activeTab === 'custom') {
+    fd.append('text', document.getElementById('customText').value);
+    fd.append('mode', 'custom');
+    fd.append('speaker', document.getElementById('speakerId').value.trim());
+    fd.append('instruct', document.getElementById('customInstruct').value);
   } else {
     fd.append('text', document.getElementById('designText').value);
     fd.append('mode', 'voice_design');

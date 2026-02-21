@@ -43,6 +43,8 @@ except ImportError:
 AVAILABLE_MODELS = [
     "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
     "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+    "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+    "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
     "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
 ]
 
@@ -104,11 +106,21 @@ async def root():
 
 @app.get("/status")
 async def get_status():
+    speakers = []
+    model_type = None
+    if _model is not None:
+        try:
+            model_type = _model.model.model.tts_model_type
+            speakers = _model.model.get_supported_speakers() or []
+        except Exception:
+            speakers = []
     return {
         "loaded": _model is not None,
         "model": _model_name,
         "loading": _loading,
         "available_models": AVAILABLE_MODELS,
+        "model_type": model_type,
+        "speakers": speakers,
     }
 
 
@@ -148,7 +160,9 @@ async def generate_stream(
     language: str = Form("English"),
     mode: str = Form("voice_clone"),
     ref_text: str = Form(""),
+    speaker: str = Form(""),
     instruct: str = Form(""),
+    xvec_only: bool = Form(True),
     chunk_size: int = Form(8),
     temperature: float = Form(0.9),
     top_k: int = Form(50),
@@ -183,6 +197,20 @@ async def generate_stream(
                     language=language,
                     ref_audio=tmp_path,
                     ref_text=ref_text,
+                    xvec_only=xvec_only,
+                    chunk_size=chunk_size,
+                    temperature=temperature,
+                    top_k=top_k,
+                    repetition_penalty=repetition_penalty,
+                )
+            elif mode == "custom":
+                if not speaker:
+                    raise ValueError("Speaker ID is required for custom voice")
+                gen = model.generate_custom_voice_streaming(
+                    text=text,
+                    speaker=speaker,
+                    language=language,
+                    instruct=instruct,
                     chunk_size=chunk_size,
                     temperature=temperature,
                     top_k=top_k,
@@ -305,7 +333,9 @@ async def generate_non_streaming(
     language: str = Form("English"),
     mode: str = Form("voice_clone"),
     ref_text: str = Form(""),
+    speaker: str = Form(""),
     instruct: str = Form(""),
+    xvec_only: bool = Form(True),
     temperature: float = Form(0.9),
     top_k: int = Form(50),
     repetition_penalty: float = Form(1.05),
@@ -331,6 +361,19 @@ async def generate_non_streaming(
                 language=language,
                 ref_audio=tmp_path,
                 ref_text=ref_text,
+                xvec_only=xvec_only,
+                temperature=temperature,
+                top_k=top_k,
+                repetition_penalty=repetition_penalty,
+            )
+        elif mode == "custom":
+            if not speaker:
+                raise ValueError("Speaker ID is required for custom voice")
+            audio_list, sr = model.generate_custom_voice(
+                text=text,
+                speaker=speaker,
+                language=language,
+                instruct=instruct,
                 temperature=temperature,
                 top_k=top_k,
                 repetition_penalty=repetition_penalty,
