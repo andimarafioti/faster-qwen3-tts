@@ -576,11 +576,6 @@
     <div class="mval" id="mNetClient">—</div>
     <div class="mhint">after server</div>
   </div>
-      <div class="mbox">
-        <div class="mlabel">Init</div>
-        <div class="mval" id="mInit">—</div>
-        <div class="mhint">audio init</div>
-      </div>
     </div>
 
     <div class="ptrack"><div class="pfill spin" id="pbar"></div></div>
@@ -625,7 +620,6 @@ let firstChunkAt = null;
 let firstAudioAt = null;
 let lastBufS     = 0;
 let firstServerWall = null;
-let initAudioAt = null;
 
 // Download
 let dlBlob = null;
@@ -744,8 +738,6 @@ async function warmAudio() {
 async function initAudio(sr) {
   rawPcmSr    = sr || 24000;
   if (actx) {
-    // Reuse existing audio graph to avoid init latency.
-    initAudioAt = clientT0; // show ~0ms init on warm runs
     document.getElementById('mAudioPath').innerHTML = 'ScriptProcessor';
     pcmQueue = [];
     rawPcmParts = [];
@@ -759,7 +751,6 @@ async function initAudio(sr) {
     pushClientMetrics();
     return;
   }
-  initAudioAt = performance.now();
   actx        = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: rawPcmSr });
   pcmQueue    = [];
   rawPcmParts = [];
@@ -876,7 +867,6 @@ function resetMetrics() {
   document.getElementById('mDur').innerHTML  = '—';
   document.getElementById('mBuf').innerHTML  = '—';
   document.getElementById('mNetClient').innerHTML = '—';
-  document.getElementById('mInit').innerHTML = '—';
   const pb = document.getElementById('pbar');
   pb.style.width = ''; pb.classList.add('spin');
   document.getElementById('sdot').className  = 'sdot active';
@@ -922,10 +912,6 @@ function pushClientMetrics() {
   if (lastBufS != null) {
     document.getElementById('mBuf').innerHTML =
       lastBufS.toFixed(2) + '<span class="munit">s</span>';
-  }
-  if (initAudioAt != null) {
-    document.getElementById('mInit').innerHTML =
-      Math.round(initAudioAt - clientT0) + '<span class="munit">ms</span>';
   }
 }
 
@@ -1052,7 +1038,6 @@ async function runStreaming(fd) {
   firstAudioAt = null;
   lastBufS = 0;
   firstServerWall = null;
-  initAudioAt = null;
 
   const res = await fetch('/generate/stream', { method: 'POST', body: fd });
   if (!res.ok) {
