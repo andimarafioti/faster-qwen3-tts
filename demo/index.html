@@ -519,7 +519,7 @@
       <div class="mbox">
         <div class="mlabel">Audio Path</div>
         <div class="mval" id="mAudioPath">—</div>
-        <div class="mhint">worklet vs fallback</div>
+        <div class="mhint">ScriptProcessor</div>
       </div>
       <div class="mbox">
         <div class="mlabel">TTFA</div>
@@ -576,16 +576,6 @@
         <div class="mval" id="mInit">—</div>
         <div class="mhint">audio init</div>
       </div>
-      <div class="mbox">
-        <div class="mlabel">Worklet Load</div>
-        <div class="mval" id="mWorklet">—</div>
-        <div class="mhint">module load</div>
-      </div>
-      <div class="mbox">
-        <div class="mlabel">First Msg</div>
-        <div class="mval" id="mFirstMsg">—</div>
-        <div class="mhint">to worklet</div>
-      </div>
     </div>
 
     <div class="ptrack"><div class="pfill spin" id="pbar"></div></div>
@@ -615,21 +605,13 @@
 let activeTab       = 'clone';
 let genMode         = 'stream';
 let refFile         = null;
-let refB64          = null;
-let refId           = null;
 let busy            = false;
 let loadedModelName = null;
-let useWebSocket    = false;
 
 // Web Audio
 let actx        = null;
-let workletNode = null;
-let workletReady = false;
-let pcmQueue    = [];     // legacy fallback (unused)
+let pcmQueue    = [];
 let sproc       = null;
-let sprocActive = false;
-let pendingChunks = [];
-let keepAlive = null;
 let rawPcmParts = [];     // raw int16 bytes from server (for download WAV)
 let rawPcmSr    = 24000;
 let chunkQ      = Promise.resolve();
@@ -639,8 +621,6 @@ let firstAudioAt = null;
 let lastBufS     = 0;
 let firstServerWall = null;
 let initAudioAt = null;
-let workletLoadedAt = null;
-let firstWorkletMsgAt = null;
 
 // Download
 let dlBlob = null;
@@ -732,20 +712,7 @@ function dzDrop(e) {
 function dzPick(e) { const f = e.target.files[0]; if (f) setRef(f); }
 function setRef(f) {
   refFile = f;
-  refB64 = null;
-  refId = null;
   document.getElementById('dzName').textContent = '✓ ' + f.name;
-  const reader = new FileReader();
-  reader.onload = () => {
-    const res = reader.result || '';
-    const parts = res.split(',');
-    refB64 = parts.length > 1 ? parts[1] : null;
-    if (refB64) {
-      // lightweight id for cache key
-      refId = 'ref_' + refB64.length + '_' + (refB64.slice(0, 12));
-    }
-  };
-  reader.readAsDataURL(f);
 }
 
 // ─── Web Audio: gapless streaming via ScriptProcessor + raw PCM ───────────────
@@ -814,7 +781,6 @@ async function initAudio(sr) {
   };
   if (actx.state === 'suspended') await actx.resume();
   sproc.connect(actx.destination);
-  sprocActive = true;
   pushClientMetrics();
 }
 
@@ -901,8 +867,6 @@ function resetMetrics() {
   document.getElementById('mBuf').innerHTML  = '—';
   document.getElementById('mNetClient').innerHTML = '—';
   document.getElementById('mInit').innerHTML = '—';
-  document.getElementById('mWorklet').innerHTML = '—';
-  document.getElementById('mFirstMsg').innerHTML = '—';
   const pb = document.getElementById('pbar');
   pb.style.width = ''; pb.classList.add('spin');
   document.getElementById('sdot').className  = 'sdot active';
@@ -958,14 +922,6 @@ function pushClientMetrics() {
   if (initAudioAt != null) {
     document.getElementById('mInit').innerHTML =
       Math.round(initAudioAt - clientT0) + '<span class="munit">ms</span>';
-  }
-  if (workletLoadedAt != null) {
-    document.getElementById('mWorklet').innerHTML =
-      Math.round(workletLoadedAt - clientT0) + '<span class="munit">ms</span>';
-  }
-  if (firstWorkletMsgAt != null) {
-    document.getElementById('mFirstMsg').innerHTML =
-      Math.round(firstWorkletMsgAt - clientT0) + '<span class="munit">ms</span>';
   }
 }
 
@@ -1093,92 +1049,6 @@ async function runStreaming(fd) {
   lastBufS = 0;
   firstServerWall = null;
   initAudioAt = null;
-  workletLoadedAt = null;
-  firstWorkletMsgAt = null;
-
-  if (useWebSocket) {
-    await initAudio(24000);
-    const ws = new WebSocket(`ws://${location.host}/ws/stream`);
-    let audioInited = false;
-    ws.onopen = () => {
-      const payload = {
-        text: fd.get('text'),
-        language: fd.get('language'),
-        mode: fd.get('mode'),
-        ref_text: fd.get('ref_text'),
-        instruct: fd.get('instruct'),
-        chunk_size: fd.get('chunk_size'),
-        temperature: fd.get('temperature'),
-        top_k: fd.get('top_k'),
-        repetition_penalty: fd.get('repetition_penalty'),
-        ref_audio_b64: null,
-        ref_id: refId,
-      };
-      if (refB64) {
-        payload.ref_audio_b64 = refB64;
-      }
-      ws.send(JSON.stringify(payload));
-    };
-
-    ws.binaryType = 'arraybuffer';
-    let pendingMeta = null;
-    ws.onmessage = async (ev) => {
-      if (typeof ev.data === 'string') {
-        const d = JSON.parse(ev.data);
-        if (d.type === 'chunk_meta') {
-          pendingMeta = d;
-          return;
-        }
-        if (d.type === 'done') {
-          pushMetrics(d.ttfa_ms, d.rtf, d.total_audio_s, d.voice_clone_ms, d.wav_ms, d.b64_ms);
-          await chunkQ;
-          setDone();
-          document.getElementById('waveRow').classList.add('hidden');
-          const blob = buildWav();
-          if (blob) setPlayer(blob);
-          ws.close();
-          return;
-        }
-        if (d.type === 'error') {
-          ws.close();
-          throw new Error(d.message);
-        }
-        return;
-      }
-
-      const buf = ev.data instanceof ArrayBuffer ? ev.data : await ev.data.arrayBuffer();
-      if (!pendingMeta) return;
-      const meta = pendingMeta;
-      pendingMeta = null;
-
-      const audioBytes = new Uint8Array(buf);
-      const i16 = new Int16Array(audioBytes.buffer, audioBytes.byteOffset, audioBytes.byteLength / 2);
-      const f32 = new Float32Array(i16.length);
-      for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768.0;
-
-      if (!audioInited) { await initAudio(meta.sample_rate); audioInited = true; }
-      if (firstChunkAt == null) {
-        firstChunkAt = performance.now();
-        if (meta.elapsed_ms != null) firstServerWall = meta.elapsed_ms;
-        pushClientMetrics();
-      }
-      pushMetrics(meta.ttfa_ms, meta.rtf, meta.total_audio_s, meta.voice_clone_ms, meta.wav_ms, meta.b64_ms);
-      rawPcmParts.push(audioBytes);
-      if (workletReady && workletNode) {
-        workletNode.port.postMessage({ type: 'chunk', data: f32 });
-        if (firstWorkletMsgAt == null) {
-          firstWorkletMsgAt = performance.now();
-          pushClientMetrics();
-        }
-      } else if (workletNode) {
-        pendingChunks.push(f32);
-      } else {
-        pcmQueue.push({ data: f32, pos: 0 });
-      }
-      pushClientMetrics();
-    };
-    return;
-  }
 
   const res = await fetch('/generate/stream', { method: 'POST', body: fd });
   if (!res.ok) {
