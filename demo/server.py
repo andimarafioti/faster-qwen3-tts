@@ -161,7 +161,6 @@ async def generate_stream(
             voice_clone_ms = 0.0
 
             if mode == "voice_clone":
-                vc_t0 = time.perf_counter()
                 gen = model.generate_voice_clone_streaming(
                     text=text,
                     language=language,
@@ -172,7 +171,6 @@ async def generate_stream(
                     top_k=top_k,
                     repetition_penalty=repetition_penalty,
                 )
-                voice_clone_ms = (time.perf_counter() - vc_t0) * 1000
             else:
                 gen = model.generate_voice_design_streaming(
                     text=text,
@@ -188,6 +186,34 @@ async def generate_stream(
             # encoding, so TTFA and RTF reflect pure LLM generation latency).
             ttfa_ms = None
             total_gen_ms = 0.0
+
+            # Prime generator to capture wall-clock time to first chunk
+            first_audio = next(gen, None)
+            if first_audio is not None:
+                audio_chunk, sr, timing = first_audio
+                wall_first_ms = (time.perf_counter() - t0) * 1000
+                model_ms = timing.get("prefill_ms", 0) + timing.get("decode_ms", 0)
+                voice_clone_ms = max(0.0, wall_first_ms - model_ms)
+                total_gen_ms += timing.get('prefill_ms', 0) + timing.get('decode_ms', 0)
+                if ttfa_ms is None:
+                    ttfa_ms = total_gen_ms
+
+                audio_chunk = _concat_audio(audio_chunk)
+                dur = len(audio_chunk) / sr
+                total_audio_s += dur
+                rtf = total_audio_s / (total_gen_ms / 1000) if total_gen_ms > 0 else 0.0
+
+                payload = {
+                    "type": "chunk",
+                    "audio_b64": _to_wav_b64(audio_chunk, sr),
+                    "sample_rate": sr,
+                    "ttfa_ms": round(ttfa_ms),
+                    "voice_clone_ms": round(voice_clone_ms),
+                    "rtf": round(rtf, 3),
+                    "total_audio_s": round(total_audio_s, 3),
+                    "elapsed_ms": round(time.perf_counter() - t0, 3) * 1000,
+                }
+                loop.call_soon_threadsafe(queue.put_nowait, json.dumps(payload))
 
             for audio_chunk, sr, timing in gen:
                 # prefill_ms is non-zero only on the first chunk
