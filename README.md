@@ -28,13 +28,6 @@ Benchmarks include tokenization + inference (apples-to-apples with baseline). RT
 
 **Note:** Baseline TTFA values are **streaming TTFA** from the community `Qwen3-TTS-streaming` fork (which adds streaming). The official `Qwen3-TTS` repo does **not** currently support streaming, so its “TTFA” is effectively **time-to-full-audio**. With RTF near 1.0, that means waiting for the entire sentence/paragraph to finish speaking before you hear anything. CUDA graphs uses `generate_voice_clone_streaming(chunk_size=8)` for TTFA. Both include text tokenization for fair comparison. Speedup shows throughput / TTFA improvement. The streaming fork reports additional speedups that appear tied to `torch.compile`; we couldn’t reproduce those on Jetson-class devices where `torch.compile` isn’t available.
 
-**Model mode parity:** In hot-path (post CUDA-graph capture) runs, the different model modes are effectively the same speed. Use `benchmarks/compare_modes.py` to reproduce. Example on 0.6B, `chunk_size=8`:
-
-| Mode | TTFA (ms) | RTF | ms/step |
-| ---- | --------- | --- | ------- |
-| VoiceClone xvec | 152 ± 11 | 5.470 ± 0.032 | 15.2 ± 0.1 |
-| VoiceClone full ICL | 149 ± 1 | 5.497 ± 0.026 | 15.2 ± 0.1 |
-| CustomVoice | 148 ± 1 | 5.537 ± 0.020 | 15.0 ± 0.1 |
 
 **GPU architecture notes:** RTX 4090 (2.5 GHz clocks) outperforms H100 (1.8 GHz) for single-stream workloads. H100's lower baseline (RTF 0.59 vs 4090's 1.34) reflects design optimization for batch processing rather than single-stream inference.
 
