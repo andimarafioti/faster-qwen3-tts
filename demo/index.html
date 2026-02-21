@@ -592,6 +592,7 @@ let genMode         = 'stream';
 let refFile         = null;
 let busy            = false;
 let loadedModelName = null;
+let useWebSocket    = true;
 
 // Web Audio
 let actx        = null;
@@ -1063,6 +1064,62 @@ async function runStreaming(fd) {
   firstAudioAt = null;
   lastBufS = 0;
   firstServerWall = null;
+
+  if (useWebSocket) {
+    const ws = new WebSocket(`ws://${location.host}/ws/stream`);
+    let audioInited = false;
+    ws.onopen = () => {
+      const payload = {
+        text: fd.get('text'),
+        language: fd.get('language'),
+        mode: fd.get('mode'),
+        ref_text: fd.get('ref_text'),
+        instruct: fd.get('instruct'),
+        chunk_size: fd.get('chunk_size'),
+        temperature: fd.get('temperature'),
+        top_k: fd.get('top_k'),
+        repetition_penalty: fd.get('repetition_penalty'),
+        ref_audio_b64: null,
+      };
+      const ref = fd.get('ref_audio');
+      if (ref) {
+        const reader = new FileReader();
+        reader.onload = () => {
+          payload.ref_audio_b64 = reader.result.split(',')[1];
+          ws.send(JSON.stringify(payload));
+        };
+        reader.readAsDataURL(ref);
+      } else {
+        ws.send(JSON.stringify(payload));
+      }
+    };
+
+    ws.onmessage = async (ev) => {
+      const d = JSON.parse(ev.data);
+      if (d.type === 'chunk') {
+        if (!audioInited) { await initAudio(d.sample_rate); audioInited = true; }
+        if (firstChunkAt == null) {
+          firstChunkAt = performance.now();
+          if (d.elapsed_ms != null) firstServerWall = d.elapsed_ms;
+          pushClientMetrics();
+        }
+        pushMetrics(d.ttfa_ms, d.rtf, d.total_audio_s, d.voice_clone_ms);
+        enqueueChunk(d.audio_b64);
+      } else if (d.type === 'done') {
+        pushMetrics(d.ttfa_ms, d.rtf, d.total_audio_s, d.voice_clone_ms);
+        await chunkQ;
+        setDone();
+        document.getElementById('waveRow').classList.add('hidden');
+        const blob = buildWav();
+        if (blob) setPlayer(blob);
+        ws.close();
+      } else if (d.type === 'error') {
+        ws.close();
+        throw new Error(d.message);
+      }
+    };
+    return;
+  }
 
   const res = await fetch('/generate/stream', { method: 'POST', body: fd });
   if (!res.ok) {
