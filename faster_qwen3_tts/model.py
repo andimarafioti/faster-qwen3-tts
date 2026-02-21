@@ -646,7 +646,7 @@ class FasterQwen3TTS:
         repetition_penalty: float = 1.05,
         chunk_size: int = 12,
         xvec_only: bool = True,
-        crossfade_ms: float = 5.0,
+        crossfade_ms: float = 0.0,
     ) -> Generator[Tuple[np.ndarray, int, dict], None, None]:
         """
         Stream voice-cloned speech generation, yielding audio chunks.
@@ -743,8 +743,10 @@ class FasterQwen3TTS:
                 else:
                     audio = audio.flatten() if hasattr(audio, 'flatten') else audio
 
+                # Recompute samples/frame from this window to avoid drift
+                window_spf = len(audio) / max(window.shape[0], 1)
                 if n_ctx > 0:
-                    ctx_samples = int(round(n_ctx * samples_per_frame))
+                    ctx_samples = int(round(n_ctx * window_spf))
                     new_audio = audio[ctx_samples:]
                 else:
                     new_audio = audio
@@ -841,7 +843,7 @@ class FasterQwen3TTS:
         do_sample: bool = True,
         repetition_penalty: float = 1.05,
         chunk_size: int = 12,
-        crossfade_ms: float = 5.0,
+        crossfade_ms: float = 0.0,
     ) -> Generator[Tuple[np.ndarray, int, dict], None, None]:
         if self.model.model.tts_model_type != "custom_voice":
             raise ValueError("Loaded model does not support custom voice generation")
@@ -916,8 +918,9 @@ class FasterQwen3TTS:
                 else:
                     audio = audio.flatten() if hasattr(audio, "flatten") else audio
 
+                window_spf = len(audio) / max(window.shape[0], 1)
                 if n_ctx > 0:
-                    ctx_samples = int(round(n_ctx * samples_per_frame))
+                    ctx_samples = int(round(n_ctx * window_spf))
                     new_audio = audio[ctx_samples:]
                 else:
                     new_audio = audio
@@ -1008,7 +1011,7 @@ class FasterQwen3TTS:
         do_sample: bool = True,
         repetition_penalty: float = 1.05,
         chunk_size: int = 12,
-        crossfade_ms: float = 5.0,
+        crossfade_ms: float = 0.0,
     ) -> Generator[Tuple[np.ndarray, int, dict], None, None]:
         if self.model.model.tts_model_type != "voice_design":
             raise ValueError("Loaded model does not support voice design generation")
@@ -1079,8 +1082,9 @@ class FasterQwen3TTS:
                 else:
                     audio = audio.flatten() if hasattr(audio, "flatten") else audio
 
+                window_spf = len(audio) / max(window.shape[0], 1)
                 if n_ctx > 0:
-                    ctx_samples = int(round(n_ctx * samples_per_frame))
+                    ctx_samples = int(round(n_ctx * window_spf))
                     new_audio = audio[ctx_samples:]
                 else:
                     new_audio = audio
