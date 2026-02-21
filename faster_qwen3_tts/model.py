@@ -23,7 +23,11 @@ def _stream_decode_chunks(
     context_frames: int,
     lookahead_frames: int,
     smooth_ms: float = 5.0,
+    mode: str = "full",
 ) -> Generator[Tuple[np.ndarray, int, dict], None, None]:
+    if mode not in {"full", "window"}:
+        raise ValueError("mode must be 'full' or 'window'")
+
     spf = int(speech_tokenizer.get_decode_upsample_rate())
     sr_out = int(speech_tokenizer.get_output_sample_rate())
     smooth_samples = int(sr_out * smooth_ms / 1000.0)
@@ -32,37 +36,49 @@ def _stream_decode_chunks(
     last_committed = 0
     prev_tail = None
     prev_last = None
+    prev_audio_len = 0
 
     for codec_chunk, timing in codec_chunk_iter:
         all_codes.append(codec_chunk)
         all_flat = torch.cat(all_codes, dim=0)
         n_total = all_flat.shape[0]
 
-        right_ctx = 0 if timing.get("is_final", False) else max(0, lookahead_frames)
-        if n_total <= right_ctx:
-            continue
+        if mode == "full":
+            audio_list, sr = speech_tokenizer.decode({"audio_codes": all_flat.unsqueeze(0)})
+            audio = audio_list[0]
+            if hasattr(audio, "cpu"):
+                audio = audio.flatten().cpu().numpy()
+            else:
+                audio = audio.flatten() if hasattr(audio, "flatten") else audio
 
-        commit_frames = n_total - right_ctx
-        if commit_frames <= last_committed:
-            continue
-
-        window_start = max(0, commit_frames - max(1, context_frames))
-        window = all_flat[window_start:n_total]
-
-        audio_list, sr = speech_tokenizer.decode({"audio_codes": window.unsqueeze(0)})
-        audio = audio_list[0]
-        if hasattr(audio, "cpu"):
-            audio = audio.flatten().cpu().numpy()
+            new_audio = audio[prev_audio_len:]
+            prev_audio_len = len(audio)
         else:
-            audio = audio.flatten() if hasattr(audio, "flatten") else audio
+            right_ctx = 0 if timing.get("is_final", False) else max(0, lookahead_frames)
+            if n_total <= right_ctx:
+                continue
 
-        start_frame = max(0, last_committed - window_start)
-        end_frame = max(start_frame, commit_frames - window_start)
-        start_s = start_frame * spf
-        end_s = end_frame * spf
+            commit_frames = n_total - right_ctx
+            if commit_frames <= last_committed:
+                continue
 
-        new_audio = audio[start_s:end_s]
-        last_committed = commit_frames
+            window_start = max(0, commit_frames - max(1, context_frames))
+            window = all_flat[window_start:n_total]
+
+            audio_list, sr = speech_tokenizer.decode({"audio_codes": window.unsqueeze(0)})
+            audio = audio_list[0]
+            if hasattr(audio, "cpu"):
+                audio = audio.flatten().cpu().numpy()
+            else:
+                audio = audio.flatten() if hasattr(audio, "flatten") else audio
+
+            start_frame = max(0, last_committed - window_start)
+            end_frame = max(start_frame, commit_frames - window_start)
+            start_s = start_frame * spf
+            end_s = end_frame * spf
+
+            new_audio = audio[start_s:end_s]
+            last_committed = commit_frames
 
         if new_audio.size == 0:
             continue
@@ -736,6 +752,7 @@ class FasterQwen3TTS:
             codec_iter,
             context_frames=context_frames,
             lookahead_frames=lookahead_frames,
+            mode="full",
         ):
             yield audio_chunk, sr, timing
 
@@ -870,6 +887,7 @@ class FasterQwen3TTS:
             codec_iter,
             context_frames=context_frames,
             lookahead_frames=lookahead_frames,
+            mode="full",
         ):
             yield audio_chunk, sr, timing
 
@@ -994,5 +1012,6 @@ class FasterQwen3TTS:
             codec_iter,
             context_frames=context_frames,
             lookahead_frames=lookahead_frames,
+            mode="full",
         ):
             yield audio_chunk, sr, timing
