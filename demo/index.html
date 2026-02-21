@@ -571,6 +571,21 @@
     <div class="mval" id="mNetClient">—</div>
     <div class="mhint">after server</div>
   </div>
+      <div class="mbox">
+        <div class="mlabel">Init</div>
+        <div class="mval" id="mInit">—</div>
+        <div class="mhint">audio init</div>
+      </div>
+      <div class="mbox">
+        <div class="mlabel">Worklet Load</div>
+        <div class="mval" id="mWorklet">—</div>
+        <div class="mhint">module load</div>
+      </div>
+      <div class="mbox">
+        <div class="mlabel">First Msg</div>
+        <div class="mval" id="mFirstMsg">—</div>
+        <div class="mhint">to worklet</div>
+      </div>
     </div>
 
     <div class="ptrack"><div class="pfill spin" id="pbar"></div></div>
@@ -620,6 +635,9 @@ let firstChunkAt = null;
 let firstAudioAt = null;
 let lastBufS     = 0;
 let firstServerWall = null;
+let initAudioAt = null;
+let workletLoadedAt = null;
+let firstWorkletMsgAt = null;
 
 // Download
 let dlBlob = null;
@@ -716,6 +734,7 @@ function setRef(f) {
 // to the device rate rather than each chunk independently.
 async function initAudio(sr) {
   if (actx) { try { actx.close(); } catch {} }
+  initAudioAt = performance.now();
   rawPcmSr    = sr || 12000;
   actx        = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: rawPcmSr });
   pcmQueue    = [];
@@ -802,6 +821,7 @@ async function initAudio(sr) {
   const blob = new Blob([processorSrc], { type: 'application/javascript' });
   const url = URL.createObjectURL(blob);
   await actx.audioWorklet.addModule(url);
+  workletLoadedAt = performance.now();
   URL.revokeObjectURL(url);
 
   workletNode = new AudioWorkletNode(actx, 'pcm-player');
@@ -816,6 +836,7 @@ async function initAudio(sr) {
   if (actx.state === 'suspended') await actx.resume();
   workletReady = true;
   document.getElementById('mAudioPath').innerHTML = 'AudioWorklet';
+  pushClientMetrics();
 
   if (pendingChunks.length) {
     for (const ch of pendingChunks) {
@@ -858,6 +879,10 @@ function _processChunk(b64wav) {
   rawPcmParts.push(parsed.rawPcm);
   if (workletReady && workletNode) {
     workletNode.port.postMessage({ type: 'chunk', data: parsed.pcm });
+    if (firstWorkletMsgAt == null) {
+      firstWorkletMsgAt = performance.now();
+      pushClientMetrics();
+    }
   } else if (workletNode) {
     pendingChunks.push(parsed.pcm);
   } else {
@@ -916,6 +941,9 @@ function resetMetrics() {
   document.getElementById('mDur').innerHTML  = '—';
   document.getElementById('mBuf').innerHTML  = '—';
   document.getElementById('mNetClient').innerHTML = '—';
+  document.getElementById('mInit').innerHTML = '—';
+  document.getElementById('mWorklet').innerHTML = '—';
+  document.getElementById('mFirstMsg').innerHTML = '—';
   const pb = document.getElementById('pbar');
   pb.style.width = ''; pb.classList.add('spin');
   document.getElementById('sdot').className  = 'sdot active';
@@ -967,6 +995,18 @@ function pushClientMetrics() {
   if (lastBufS != null) {
     document.getElementById('mBuf').innerHTML =
       lastBufS.toFixed(2) + '<span class="munit">s</span>';
+  }
+  if (initAudioAt != null) {
+    document.getElementById('mInit').innerHTML =
+      Math.round(initAudioAt - clientT0) + '<span class="munit">ms</span>';
+  }
+  if (workletLoadedAt != null) {
+    document.getElementById('mWorklet').innerHTML =
+      Math.round(workletLoadedAt - clientT0) + '<span class="munit">ms</span>';
+  }
+  if (firstWorkletMsgAt != null) {
+    document.getElementById('mFirstMsg').innerHTML =
+      Math.round(firstWorkletMsgAt - clientT0) + '<span class="munit">ms</span>';
   }
 }
 
@@ -1093,6 +1133,9 @@ async function runStreaming(fd) {
   firstAudioAt = null;
   lastBufS = 0;
   firstServerWall = null;
+  initAudioAt = null;
+  workletLoadedAt = null;
+  firstWorkletMsgAt = null;
 
   if (useWebSocket) {
     await initAudio(12000);
