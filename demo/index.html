@@ -763,9 +763,22 @@ async function warmAudio() {
 }
 
 async function initAudio(sr) {
-  if (actx) { try { actx.close(); } catch {} }
   initAudioAt = performance.now();
   rawPcmSr    = sr || 24000;
+  if (actx) {
+    // Reuse existing audio graph to avoid init latency.
+    pcmQueue = [];
+    rawPcmParts = [];
+    chunkQ = Promise.resolve();
+    dlBlob = null;
+    if (!clientT0) clientT0 = performance.now();
+    firstChunkAt = null;
+    firstAudioAt = null;
+    lastBufS = 0;
+    if (actx.state === 'suspended') await actx.resume();
+    pushClientMetrics();
+    return;
+  }
   actx        = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: rawPcmSr });
   pcmQueue    = [];
   rawPcmParts = [];
