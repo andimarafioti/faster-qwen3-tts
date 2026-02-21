@@ -763,10 +763,11 @@ async function warmAudio() {
 }
 
 async function initAudio(sr) {
-  initAudioAt = performance.now();
   rawPcmSr    = sr || 24000;
   if (actx) {
     // Reuse existing audio graph to avoid init latency.
+    initAudioAt = clientT0; // show ~0ms init on warm runs
+    document.getElementById('mAudioPath').innerHTML = 'ScriptProcessor';
     pcmQueue = [];
     rawPcmParts = [];
     chunkQ = Promise.resolve();
@@ -779,6 +780,7 @@ async function initAudio(sr) {
     pushClientMetrics();
     return;
   }
+  initAudioAt = performance.now();
   actx        = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: rawPcmSr });
   pcmQueue    = [];
   rawPcmParts = [];
