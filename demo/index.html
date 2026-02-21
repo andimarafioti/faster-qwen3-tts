@@ -566,12 +566,15 @@ let loadedModelName = null;
 // Web Audio
 let actx          = null;
 let schedEnd      = 0;
-let collectBufs   = [];
 let chunkQ        = Promise.resolve();
 let targetLatency = 0.08;
 let pendingBufs   = [];
 let pendingDur    = 0;
 let started       = false;
+
+// Raw PCM collection for download (server bytes, no browser resampling)
+let rawPcmParts = [];
+let rawPcmSr    = 12000;
 
 // Download
 let dlBlob = null;
@@ -664,19 +667,39 @@ function setRef(f) {
 // ─── Web Audio: gapless streaming player ─────────────────────────────────────
 function initAudio() {
   if (actx) actx.close();
-  actx       = new (window.AudioContext || window.webkitAudioContext)();
-  schedEnd   = 0;
-  collectBufs = [];
+  actx          = new (window.AudioContext || window.webkitAudioContext)();
+  schedEnd      = 0;
   targetLatency = 0.08;
-  pendingBufs = [];
-  pendingDur = 0;
-  started = false;
-  chunkQ     = Promise.resolve();
-  dlBlob     = null;
+  pendingBufs   = [];
+  pendingDur    = 0;
+  started       = false;
+  chunkQ        = Promise.resolve();
+  rawPcmParts   = [];
+  rawPcmSr      = 12000;
+  dlBlob        = null;
+}
+
+// Extract raw 16-bit PCM bytes and sample rate from a WAV Uint8Array
+function extractPcmFromWav(bytes) {
+  const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const sr = v.getUint32(24, true);
+  let offset = 12;
+  while (offset + 8 <= bytes.length) {
+    const id   = String.fromCharCode(bytes[offset], bytes[offset+1], bytes[offset+2], bytes[offset+3]);
+    const size = v.getUint32(offset + 4, true);
+    if (id === 'data') return { pcm: bytes.slice(offset + 8, offset + 8 + size), sr };
+    offset += 8 + size;
+  }
+  return null;
 }
 
 function enqueueChunk(b64wav) {
-  // Serial queue ensures chunks play in order even if decodeAudioData resolves out of order
+  // Collect raw PCM for download before anything touches it
+  const bytes  = Uint8Array.from(atob(b64wav), c => c.charCodeAt(0));
+  const parsed = extractPcmFromWav(bytes);
+  if (parsed) { rawPcmParts.push(parsed.pcm); rawPcmSr = parsed.sr; }
+
+  // Serial queue preserves playback order
   chunkQ = chunkQ.then(() => _playChunk(b64wav));
 }
 
@@ -687,8 +710,6 @@ async function _playChunk(b64wav) {
   try {
     buf = await actx.decodeAudioData(bytes.buffer);
   } catch (e) { console.warn('decode error', e); return; }
-
-  collectBufs.push(buf);
 
   // Resume context if suspended (browser autoplay policy)
   if (actx.state === 'suspended') await actx.resume();
@@ -723,34 +744,29 @@ async function _playChunk(b64wav) {
   }
 }
 
-// Build a mono 16-bit WAV blob from collected AudioBuffers
-function buildWav() {
-  if (!collectBufs.length) return null;
-  const sr  = collectBufs[0].sampleRate;
-  const len = collectBufs.reduce((s, b) => s + b.length, 0);
-  const pcm = new Float32Array(len);
-  let off = 0;
-  for (const b of collectBufs) { pcm.set(b.getChannelData(0), off); off += b.length; }
-
-  const dataBytes = len * 2;
-  const ab  = new ArrayBuffer(44 + dataBytes);
+// Build a WAV blob from the raw 16-bit PCM bytes collected directly from the server.
+// This preserves the original 12 kHz sample rate with no browser resampling.
+function buildRawWav() {
+  if (!rawPcmParts.length) return null;
+  const totalPcm = rawPcmParts.reduce((s, p) => s + p.length, 0);
+  const ab  = new ArrayBuffer(44 + totalPcm);
   const v   = new DataView(ab);
   const ws  = (o, s) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
 
-  ws(0,  'RIFF'); v.setUint32(4,  36 + dataBytes, true);
+  ws(0,  'RIFF'); v.setUint32(4,  36 + totalPcm, true);
   ws(8,  'WAVE'); ws(12, 'fmt ');
-  v.setUint32(16, 16, true);    // PCM chunk size
-  v.setUint16(20,  1, true);    // PCM format
-  v.setUint16(22,  1, true);    // mono
-  v.setUint32(24, sr, true);    // sample rate
-  v.setUint32(28, sr * 2, true);// byte rate
-  v.setUint16(32,  2, true);    // block align
-  v.setUint16(34, 16, true);    // bits per sample
-  ws(36, 'data'); v.setUint32(40, dataBytes, true);
+  v.setUint32(16, 16, true);           // PCM chunk size
+  v.setUint16(20,  1, true);           // PCM format
+  v.setUint16(22,  1, true);           // mono
+  v.setUint32(24, rawPcmSr, true);     // sample rate (12 kHz from model)
+  v.setUint32(28, rawPcmSr * 2, true); // byte rate
+  v.setUint16(32,  2, true);           // block align
+  v.setUint16(34, 16, true);           // bits per sample
+  ws(36, 'data'); v.setUint32(40, totalPcm, true);
 
-  const i16 = new Int16Array(ab, 44);
-  for (let i = 0; i < pcm.length; i++)
-    i16[i] = Math.max(-32768, Math.min(32767, Math.round(pcm[i] * 32767)));
+  const out = new Uint8Array(ab, 44);
+  let offset = 0;
+  for (const part of rawPcmParts) { out.set(part, offset); offset += part.length; }
 
   return new Blob([ab], { type: 'audio/wav' });
 }
@@ -929,8 +945,8 @@ async function runStreaming(fd) {
         await chunkQ;
         setDone();
         document.getElementById('waveRow').classList.add('hidden');
-        // Build full WAV for replay/download
-        const blob = buildWav();
+        // Build full WAV for replay/download from raw server bytes (original 12 kHz)
+        const blob = buildRawWav();
         if (blob) setPlayer(blob);
 
       } else if (d.type === 'error') {
