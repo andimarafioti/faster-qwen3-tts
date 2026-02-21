@@ -1275,9 +1275,11 @@ async function runStreaming(fd) {
       const metaLen = dv.getUint32(12, true);
       const metaStart = 16;
       const metaEnd = metaStart + metaLen;
+      const pcmBytes = nSamples * 2;
+      if (buf.byteLength < metaEnd + pcmBytes) return;
       const metaJson = new TextDecoder().decode(new Uint8Array(buf, metaStart, metaLen));
       const meta = JSON.parse(metaJson);
-      const audioBytes = new Uint8Array(buf, metaEnd);
+      const audioBytes = new Uint8Array(buf, metaEnd, pcmBytes);
       const i16 = new Int16Array(audioBytes.buffer, audioBytes.byteOffset, audioBytes.byteLength / 2);
       const f32 = new Float32Array(i16.length);
       for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768.0;
