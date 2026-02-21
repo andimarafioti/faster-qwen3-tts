@@ -237,6 +237,15 @@
       font-size: 11px; font-weight: 600; letter-spacing: 0.8px;
       text-transform: uppercase; color: var(--dim);
     }
+    .btn-adv {
+      margin-left: auto;
+      font-size: 10px; padding: 4px 10px;
+      background: transparent; border: 1px solid var(--border2);
+      border-radius: 999px; color: var(--dim); cursor: pointer;
+      font-family: inherit; transition: all 0.15s;
+    }
+    .btn-adv:hover { border-color: var(--accent); color: var(--accent); }
+    .btn-adv.on { border-color: var(--accent); color: var(--accent); }
     .sdot {
       width: 7px; height: 7px; border-radius: 50%;
       background: var(--accent); flex-shrink: 0;
@@ -253,6 +262,8 @@
       gap: 1px; background: var(--border); border-radius: 8px;
       overflow: hidden; margin-bottom: 14px;
     }
+    .mgrid-adv { display: none; }
+    .mgrid-adv.show { display: grid; }
     .mbox { background: var(--surface2); padding: 14px 16px; }
     .mlabel {
       font-size: 10px; text-transform: uppercase; letter-spacing: 0.9px;
@@ -510,27 +521,61 @@
   <!-- Metrics card -->
   <div class="card m-card" id="mCard">
 
-    <div class="m-header">
-      <div class="sdot active" id="sdot"></div>
-      <span id="stext">Generating…</span>
-    </div>
+  <div class="m-header">
+    <div class="sdot active" id="sdot"></div>
+    <span id="stext">Generating…</span>
+    <button class="btn-adv" id="metricsAdvBtn" onclick="toggleMetricsAdv()">Advanced</button>
+  </div>
 
     <div class="mgrid">
       <div class="mbox">
-        <div class="mlabel">TTFA</div>
+        <div class="mlabel">Model TTFA</div>
         <div class="mval" id="mTTFA">—</div>
         <div class="mhint">time to first audio</div>
       </div>
       <div class="mbox">
-        <div class="mlabel">RTF</div>
+        <div class="mlabel">Client TTFA</div>
+    <div class="mval" id="mTTFAClient">—</div>
+    <div class="mhint">first sound heard</div>
+      </div>
+      <div class="mbox">
+        <div class="mlabel">Model RTF</div>
         <div class="mval" id="mRTF">—</div>
         <div class="mhint">&gt;1× = faster than real-time</div>
+      </div>
+    </div>
+
+    <div class="mgrid mgrid-adv" id="mgridAdv">
+      <div class="mbox">
+        <div class="mlabel">Audio Path</div>
+        <div class="mval" id="mAudioPath">—</div>
+        <div class="mhint">ScriptProcessor</div>
+      </div>
+      <div class="mbox">
+        <div class="mlabel">Voice Clone</div>
+        <div class="mval" id="mVC">—</div>
+        <div class="mhint">prompt build</div>
+      </div>
+      <div class="mbox">
+        <div class="mlabel">Server Wall</div>
+        <div class="mval" id="mServerWall">—</div>
+        <div class="mhint">to first chunk</div>
       </div>
       <div class="mbox">
         <div class="mlabel">Generated</div>
         <div class="mval" id="mDur">—</div>
         <div class="mhint">total audio duration</div>
       </div>
+      <div class="mbox">
+        <div class="mlabel">Buffer</div>
+  <div class="mval" id="mBuf">—</div>
+    <div class="mhint">queued audio</div>
+      </div>
+      <div class="mbox">
+        <div class="mlabel">Net+Client</div>
+    <div class="mval" id="mNetClient">—</div>
+    <div class="mhint">after server</div>
+  </div>
     </div>
 
     <div class="ptrack"><div class="pfill spin" id="pbar"></div></div>
@@ -564,10 +609,17 @@ let busy            = false;
 let loadedModelName = null;
 
 // Web Audio
-let actx          = null;
-let schedEnd      = 0;
-let collectBufs   = [];
-let chunkQ        = Promise.resolve();
+let actx        = null;
+let pcmQueue    = [];
+let sproc       = null;
+let rawPcmParts = [];     // raw int16 bytes from server (for download WAV)
+let rawPcmSr    = 24000;
+let chunkQ      = Promise.resolve();
+let clientT0    = 0;
+let firstChunkAt = null;
+let firstAudioAt = null;
+let lastBufS     = 0;
+let firstServerWall = null;
 
 // Download
 let dlBlob = null;
@@ -575,6 +627,11 @@ let dlBlob = null;
 // ─── Init ─────────────────────────────────────────────────────────────────────
 window.addEventListener('load', () => {
   fetchStatus();
+  // Pre-warm audio graph to avoid first-run latency.
+  setTimeout(() => { warmAudio(); }, 0);
+  // Ensure warmup runs after a user gesture (autoplay policies).
+  const _warmOnce = () => { warmAudio(); window.removeEventListener('pointerdown', _warmOnce); };
+  window.addEventListener('pointerdown', _warmOnce, { passive: true });
 });
 
 async function fetchStatus() {
@@ -644,6 +701,13 @@ function toggleAdv() {
   document.getElementById('advArr').textContent = open ? '▾' : '▸';
 }
 
+function toggleMetricsAdv() {
+  const grid = document.getElementById('mgridAdv');
+  const btn = document.getElementById('metricsAdvBtn');
+  const open = grid.classList.toggle('show');
+  btn.classList.toggle('on', open);
+}
+
 // ─── Dropzone ─────────────────────────────────────────────────────────────────
 function dzOver(e) { e.preventDefault(); document.getElementById('dz').classList.add('over'); }
 function dzLeave()  { document.getElementById('dz').classList.remove('over'); }
@@ -657,96 +721,198 @@ function setRef(f) {
   document.getElementById('dzName').textContent = '✓ ' + f.name;
 }
 
-// ─── Web Audio: gapless streaming player ─────────────────────────────────────
-function initAudio() {
-  if (actx) actx.close();
-  actx       = new (window.AudioContext || window.webkitAudioContext)();
-  schedEnd   = 0;
-  collectBufs = [];
-  chunkQ     = Promise.resolve();
-  dlBlob     = null;
+// ─── Web Audio: gapless streaming via ScriptProcessor + raw PCM ───────────────
+// Skips decodeAudioData entirely — parsing int16 PCM directly from the server's
+// WAV bytes avoids per-chunk resampling boundary artifacts. AudioContext runs at
+// the model's native 12 kHz so the browser resamples one continuous stream
+// to the device rate rather than each chunk independently.
+async function warmAudio() {
+  if (actx) return;
+  try {
+    await initAudio(24000);
+  } catch (e) {
+    console.warn('Audio warmup failed (will retry on generate):', e);
+  }
+}
+
+async function initAudio(sr) {
+  rawPcmSr    = sr || 24000;
+  if (actx) {
+    document.getElementById('mAudioPath').innerHTML = 'ScriptProcessor';
+    pcmQueue = [];
+    rawPcmParts = [];
+    chunkQ = Promise.resolve();
+    dlBlob = null;
+    if (!clientT0) clientT0 = performance.now();
+    firstChunkAt = null;
+    firstAudioAt = null;
+    lastBufS = 0;
+    if (actx.state === 'suspended') await actx.resume();
+    pushClientMetrics();
+    return;
+  }
+  actx        = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: rawPcmSr });
+  pcmQueue    = [];
+  rawPcmParts = [];
+  chunkQ      = Promise.resolve();
+  dlBlob      = null;
+  if (!clientT0) clientT0 = performance.now();
+  firstChunkAt = null;
+  firstAudioAt = null;
+  lastBufS     = 0;
+
+  document.getElementById('mAudioPath').innerHTML = 'ScriptProcessor';
+  sproc = actx.createScriptProcessor(256, 0, 1);
+  sproc.onaudioprocess = e => {
+    const out = e.outputBuffer.getChannelData(0);
+    let i = 0;
+    let wrote = false;
+    while (i < out.length) {
+      if (!pcmQueue.length) { out.fill(0, i); break; }
+      const seg  = pcmQueue[0];
+      const take = Math.min(out.length - i, seg.data.length - seg.pos);
+      out.set(seg.data.subarray(seg.pos, seg.pos + take), i);
+      seg.pos += take;
+      i       += take;
+      wrote = true;
+      if (seg.pos >= seg.data.length) pcmQueue.shift();
+    }
+    if (wrote && firstAudioAt == null) {
+      firstAudioAt = performance.now();
+      pushClientMetrics();
+    }
+  };
+  if (actx.state === 'suspended') await actx.resume();
+  sproc.connect(actx.destination);
+  pushClientMetrics();
+}
+
+
+// Parse a WAV Uint8Array → {pcm: Float32Array, rawPcm: Uint8Array, sr: number}
+function parseWav(bytes) {
+  const v  = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const sr = v.getUint32(24, true);
+  let off  = 12;
+  while (off + 8 <= bytes.length) {
+    const id   = String.fromCharCode(bytes[off], bytes[off+1], bytes[off+2], bytes[off+3]);
+    const size = v.getUint32(off + 4, true);
+    if (id === 'data') {
+      const rawPcm = bytes.slice(off + 8, off + 8 + size);
+      const i16    = new Int16Array(rawPcm.buffer, rawPcm.byteOffset, rawPcm.byteLength / 2);
+      const f32    = new Float32Array(i16.length);
+      for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768.0;
+      return { pcm: f32, rawPcm, sr };
+    }
+    off += 8 + size;
+  }
+  return null;
 }
 
 function enqueueChunk(b64wav) {
-  // Serial queue ensures chunks play in order even if decodeAudioData resolves out of order
-  chunkQ = chunkQ.then(() => _playChunk(b64wav));
+  chunkQ = chunkQ.then(() => _processChunk(b64wav));
 }
 
-async function _playChunk(b64wav) {
+function _processChunk(b64wav) {
   if (!actx) return;
-  const bytes = Uint8Array.from(atob(b64wav), c => c.charCodeAt(0));
-  let buf;
-  try {
-    buf = await actx.decodeAudioData(bytes.buffer);
-  } catch (e) { console.warn('decode error', e); return; }
+  const bytes  = Uint8Array.from(atob(b64wav), c => c.charCodeAt(0));
+  const parsed = parseWav(bytes);
+  if (!parsed) return;
 
-  collectBufs.push(buf);
+  rawPcmParts.push(parsed.rawPcm);
+  pcmQueue.push({ data: parsed.pcm, pos: 0 });
+  if (firstChunkAt == null) {
+    firstChunkAt = performance.now();
+    pushClientMetrics();
+  }
+  lastBufS = pcmQueue.reduce((s, seg) => s + (seg.data.length - seg.pos), 0) / rawPcmSr;
+  pushClientMetrics();
 
-  // Resume context if suspended (browser autoplay policy)
-  if (actx.state === 'suspended') await actx.resume();
-
-  const now     = actx.currentTime;
-  const startAt = schedEnd > now + 0.01 ? schedEnd : now + 0.06;
-  const src     = actx.createBufferSource();
-  src.buffer    = buf;
-  src.connect(actx.destination);
-  src.start(startAt);
-  schedEnd = startAt + buf.duration;
+  // ScriptProcessor pulls from pcmQueue.
 }
 
-// Build a mono 16-bit WAV blob from collected AudioBuffers
+// Build download WAV from raw server bytes — exact 12 kHz model output, no resampling
 function buildWav() {
-  if (!collectBufs.length) return null;
-  const sr  = collectBufs[0].sampleRate;
-  const len = collectBufs.reduce((s, b) => s + b.length, 0);
-  const pcm = new Float32Array(len);
-  let off = 0;
-  for (const b of collectBufs) { pcm.set(b.getChannelData(0), off); off += b.length; }
-
-  const dataBytes = len * 2;
-  const ab  = new ArrayBuffer(44 + dataBytes);
+  if (!rawPcmParts.length) return null;
+  const totalPcm = rawPcmParts.reduce((s, p) => s + p.length, 0);
+  const ab  = new ArrayBuffer(44 + totalPcm);
   const v   = new DataView(ab);
   const ws  = (o, s) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
 
-  ws(0,  'RIFF'); v.setUint32(4,  36 + dataBytes, true);
+  ws(0,  'RIFF'); v.setUint32(4,  36 + totalPcm, true);
   ws(8,  'WAVE'); ws(12, 'fmt ');
-  v.setUint32(16, 16, true);    // PCM chunk size
-  v.setUint16(20,  1, true);    // PCM format
-  v.setUint16(22,  1, true);    // mono
-  v.setUint32(24, sr, true);    // sample rate
-  v.setUint32(28, sr * 2, true);// byte rate
-  v.setUint16(32,  2, true);    // block align
-  v.setUint16(34, 16, true);    // bits per sample
-  ws(36, 'data'); v.setUint32(40, dataBytes, true);
+  v.setUint32(16, 16, true);
+  v.setUint16(20,  1, true);           // PCM
+  v.setUint16(22,  1, true);           // mono
+  v.setUint32(24, rawPcmSr, true);
+  v.setUint32(28, rawPcmSr * 2, true);
+  v.setUint16(32,  2, true);
+  v.setUint16(34, 16, true);
+  ws(36, 'data'); v.setUint32(40, totalPcm, true);
 
-  const i16 = new Int16Array(ab, 44);
-  for (let i = 0; i < pcm.length; i++)
-    i16[i] = Math.max(-32768, Math.min(32767, Math.round(pcm[i] * 32767)));
+  const out = new Uint8Array(ab, 44);
+  let offset = 0;
+  for (const part of rawPcmParts) { out.set(part, offset); offset += part.length; }
 
   return new Blob([ab], { type: 'audio/wav' });
 }
 
 // ─── Metrics helpers ─────────────────────────────────────────────────────────
 function resetMetrics() {
+  document.getElementById('mAudioPath').innerHTML = '—';
   document.getElementById('mTTFA').innerHTML = '—';
+  document.getElementById('mTTFAClient').innerHTML = '—';
+  document.getElementById('mVC').innerHTML = '—';
+  document.getElementById('mServerWall').innerHTML = '—';
   document.getElementById('mRTF').innerHTML  = '—';
   document.getElementById('mDur').innerHTML  = '—';
+  document.getElementById('mBuf').innerHTML  = '—';
+  document.getElementById('mNetClient').innerHTML = '—';
   const pb = document.getElementById('pbar');
   pb.style.width = ''; pb.classList.add('spin');
   document.getElementById('sdot').className  = 'sdot active';
   document.getElementById('stext').textContent = 'Generating…';
 }
 
-function pushMetrics(ttfa_ms, rtf, audio_s) {
+function pushMetrics(ttfa_ms, rtf, audio_s, vc_ms) {
   if (ttfa_ms != null)
     document.getElementById('mTTFA').innerHTML =
       Math.round(ttfa_ms) + '<span class="munit">ms</span>';
+  if (vc_ms != null)
+    document.getElementById('mVC').innerHTML =
+      Math.round(vc_ms) + '<span class="munit">ms</span>';
   if (rtf != null)
     document.getElementById('mRTF').innerHTML =
       rtf.toFixed(2) + '<span class="munit">×</span>';
   if (audio_s != null)
     document.getElementById('mDur').innerHTML =
       audio_s.toFixed(1) + '<span class="munit">s</span>';
+}
+
+function pushClientMetrics() {
+  if (clientT0) {
+    if (firstServerWall != null) {
+      document.getElementById('mServerWall').innerHTML =
+        Math.round(firstServerWall) + '<span class="munit">ms</span>';
+    }
+    if (firstAudioAt != null) {
+      const ms = firstAudioAt - clientT0;
+      document.getElementById('mTTFAClient').innerHTML =
+        Math.round(ms) + '<span class="munit">ms</span>';
+    } else if (firstChunkAt != null) {
+      const ms = firstChunkAt - clientT0;
+      document.getElementById('mTTFAClient').innerHTML =
+        Math.round(ms) + '<span class="munit">ms</span>';
+    }
+    if (firstChunkAt != null && firstServerWall != null) {
+      const ms = (firstChunkAt - clientT0) - firstServerWall;
+      document.getElementById('mNetClient').innerHTML =
+        Math.round(ms) + '<span class="munit">ms</span>';
+    }
+  }
+  if (lastBufS != null) {
+    document.getElementById('mBuf').innerHTML =
+      lastBufS.toFixed(2) + '<span class="munit">s</span>';
+  }
 }
 
 function setDone() {
@@ -866,8 +1032,12 @@ async function generate() {
 }
 
 async function runStreaming(fd) {
-  initAudio();
   document.getElementById('waveRow').classList.remove('hidden');
+  clientT0 = performance.now();
+  firstChunkAt = null;
+  firstAudioAt = null;
+  lastBufS = 0;
+  firstServerWall = null;
 
   const res = await fetch('/generate/stream', { method: 'POST', body: fd });
   if (!res.ok) {
@@ -878,6 +1048,7 @@ async function runStreaming(fd) {
   const reader  = res.body.getReader();
   const decoder = new TextDecoder();
   let buf = '';
+  let audioInited = false;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -891,11 +1062,17 @@ async function runStreaming(fd) {
       const d = JSON.parse(line.slice(6));
 
       if (d.type === 'chunk') {
-        pushMetrics(d.ttfa_ms, d.rtf, d.total_audio_s);
+        if (!audioInited) { await initAudio(d.sample_rate); audioInited = true; }
+        if (firstChunkAt == null) {
+          firstChunkAt = performance.now();
+          if (d.elapsed_ms != null) firstServerWall = d.elapsed_ms;
+          pushClientMetrics();
+        }
+        pushMetrics(d.ttfa_ms, d.rtf, d.total_audio_s, d.voice_clone_ms);
         enqueueChunk(d.audio_b64);
 
       } else if (d.type === 'done') {
-        pushMetrics(d.ttfa_ms, d.rtf, d.total_audio_s);
+        pushMetrics(d.ttfa_ms, d.rtf, d.total_audio_s, d.voice_clone_ms);
         // Wait for all chunks to be scheduled before marking done
         await chunkQ;
         setDone();

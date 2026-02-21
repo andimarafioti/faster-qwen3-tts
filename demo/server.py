@@ -11,6 +11,7 @@ Usage:
 import argparse
 import asyncio
 import base64
+import hashlib
 import io
 import json
 import os
@@ -57,6 +58,8 @@ _model: FasterQwen3TTS | None = None
 _model_name: str | None = None
 _model_lock = threading.Lock()
 _loading = False
+_ref_cache: dict[str, str] = {}
+_ref_cache_lock = threading.Lock()
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -68,7 +71,8 @@ def _to_wav_b64(audio: np.ndarray, sr: int) -> str:
         audio = audio.squeeze()
     buf = io.BytesIO()
     sf.write(buf, audio, sr, format="WAV", subtype="PCM_16")
-    return base64.b64encode(buf.getvalue()).decode()
+    b64 = base64.b64encode(buf.getvalue()).decode()
+    return b64
 
 
 def _concat_audio(audio_list) -> np.ndarray:
@@ -76,6 +80,19 @@ def _concat_audio(audio_list) -> np.ndarray:
         return audio_list.astype(np.float32).squeeze()
     parts = [np.array(a, dtype=np.float32).squeeze() for a in audio_list if len(a) > 0]
     return np.concatenate(parts) if parts else np.zeros(0, dtype=np.float32)
+
+def _get_cached_ref_path(content: bytes) -> str:
+    digest = hashlib.sha1(content).hexdigest()
+    with _ref_cache_lock:
+        cached = _ref_cache.get(digest)
+        if cached and os.path.exists(cached):
+            return cached
+        tmp_dir = Path(tempfile.gettempdir())
+        path = tmp_dir / f"faster_qwen3_tts_ref_{digest}.wav"
+        if not path.exists():
+            path.write_bytes(content)
+        _ref_cache[digest] = str(path)
+        return str(path)
 
 
 # ─── Routes ───────────────────────────────────────────────────────────────────
@@ -143,12 +160,12 @@ async def generate_stream(
 
     model = _model
     tmp_path = None
+    tmp_is_cached = False
 
     if ref_audio and ref_audio.filename:
         content = await ref_audio.read()
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-            f.write(content)
-            tmp_path = f.name
+        tmp_path = _get_cached_ref_path(content)
+        tmp_is_cached = True
 
     loop = asyncio.get_event_loop()
     queue: asyncio.Queue[str | None] = asyncio.Queue()
@@ -158,6 +175,7 @@ async def generate_stream(
             t0 = time.perf_counter()
             first_chunk_t = None
             total_audio_s = 0.0
+            voice_clone_ms = 0.0
 
             if mode == "voice_clone":
                 gen = model.generate_voice_clone_streaming(
@@ -186,6 +204,35 @@ async def generate_stream(
             ttfa_ms = None
             total_gen_ms = 0.0
 
+            # Prime generator to capture wall-clock time to first chunk
+            first_audio = next(gen, None)
+            if first_audio is not None:
+                audio_chunk, sr, timing = first_audio
+                wall_first_ms = (time.perf_counter() - t0) * 1000
+                model_ms = timing.get("prefill_ms", 0) + timing.get("decode_ms", 0)
+                voice_clone_ms = max(0.0, wall_first_ms - model_ms)
+                total_gen_ms += timing.get('prefill_ms', 0) + timing.get('decode_ms', 0)
+                if ttfa_ms is None:
+                    ttfa_ms = total_gen_ms
+
+                audio_chunk = _concat_audio(audio_chunk)
+                dur = len(audio_chunk) / sr
+                total_audio_s += dur
+                rtf = total_audio_s / (total_gen_ms / 1000) if total_gen_ms > 0 else 0.0
+
+                audio_b64 = _to_wav_b64(audio_chunk, sr)
+                payload = {
+                    "type": "chunk",
+                    "audio_b64": audio_b64,
+                    "sample_rate": sr,
+                    "ttfa_ms": round(ttfa_ms),
+                    "voice_clone_ms": round(voice_clone_ms),
+                    "rtf": round(rtf, 3),
+                    "total_audio_s": round(total_audio_s, 3),
+                    "elapsed_ms": round(time.perf_counter() - t0, 3) * 1000,
+                }
+                loop.call_soon_threadsafe(queue.put_nowait, json.dumps(payload))
+
             for audio_chunk, sr, timing in gen:
                 # prefill_ms is non-zero only on the first chunk
                 total_gen_ms += timing.get('prefill_ms', 0) + timing.get('decode_ms', 0)
@@ -197,11 +244,13 @@ async def generate_stream(
                 total_audio_s += dur
                 rtf = total_audio_s / (total_gen_ms / 1000) if total_gen_ms > 0 else 0.0
 
+                audio_b64 = _to_wav_b64(audio_chunk, sr)
                 payload = {
                     "type": "chunk",
-                    "audio_b64": _to_wav_b64(audio_chunk, sr),
+                    "audio_b64": audio_b64,
                     "sample_rate": sr,
                     "ttfa_ms": round(ttfa_ms),
+                    "voice_clone_ms": round(voice_clone_ms),
                     "rtf": round(rtf, 3),
                     "total_audio_s": round(total_audio_s, 3),
                     "elapsed_ms": round(time.perf_counter() - t0, 3) * 1000,
@@ -212,6 +261,7 @@ async def generate_stream(
             done_payload = {
                 "type": "done",
                 "ttfa_ms": round(ttfa_ms) if ttfa_ms else 0,
+                "voice_clone_ms": round(voice_clone_ms),
                 "rtf": round(rtf, 3),
                 "total_audio_s": round(total_audio_s, 3),
                 "total_ms": round((time.perf_counter() - t0) * 1000),
@@ -224,7 +274,7 @@ async def generate_stream(
             loop.call_soon_threadsafe(queue.put_nowait, json.dumps(err))
         finally:
             loop.call_soon_threadsafe(queue.put_nowait, None)
-            if tmp_path and os.path.exists(tmp_path):
+            if tmp_path and os.path.exists(tmp_path) and not tmp_is_cached:
                 os.unlink(tmp_path)
 
     thread = threading.Thread(target=run_generation, daemon=True)
@@ -247,6 +297,8 @@ async def generate_stream(
     )
 
 
+
+
 @app.post("/generate")
 async def generate_non_streaming(
     text: str = Form(...),
@@ -264,12 +316,12 @@ async def generate_non_streaming(
 
     model = _model
     tmp_path = None
+    tmp_is_cached = False
 
     if ref_audio and ref_audio.filename:
         content = await ref_audio.read()
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-            f.write(content)
-            tmp_path = f.name
+        tmp_path = _get_cached_ref_path(content)
+        tmp_is_cached = True
 
     def run():
         t0 = time.perf_counter()
@@ -310,7 +362,7 @@ async def generate_non_streaming(
             },
         })
     finally:
-        if tmp_path and os.path.exists(tmp_path):
+        if tmp_path and os.path.exists(tmp_path) and not tmp_is_cached:
             os.unlink(tmp_path)
 
 
