@@ -647,6 +647,9 @@ window.addEventListener('load', () => {
   fetchStatus();
   // Pre-warm audio graph to avoid first-run latency.
   setTimeout(() => { warmAudio(); }, 0);
+  // Ensure warmup runs after a user gesture (autoplay policies).
+  const _warmOnce = () => { warmAudio(); window.removeEventListener('pointerdown', _warmOnce); };
+  window.addEventListener('pointerdown', _warmOnce, { passive: true });
 });
 
 async function fetchStatus() {
@@ -764,6 +767,7 @@ async function initAudio(sr) {
         try { await actx.resume(); } catch {}
       }
       workletReady = true;
+      document.getElementById('mAudioPath').innerHTML = 'AudioWorklet';
       pushClientMetrics();
       return;
     }
@@ -812,6 +816,7 @@ async function initAudio(sr) {
     return;
   }
 
+  document.getElementById('mAudioPath').innerHTML = 'AudioWorklet';
   const processorSrc = `
     class PcmPlayer extends AudioWorkletProcessor {
       constructor() {
