@@ -418,7 +418,7 @@ def main():
         default="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
         help="Model to preload at startup (default: 0.6B-Base)",
     )
-    parser.add_argument("--port", type=int, default=7860)
+    parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", 7860)))
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument(
         "--no-preload",
