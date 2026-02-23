@@ -150,6 +150,24 @@
       display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
       margin-top: 8px;
     }
+    .record-row select {
+      background: var(--surface2); border: 1px solid var(--border);
+      color: var(--text); padding: 5px 8px; border-radius: 6px;
+      font-size: 12px;
+    }
+    .rec-meter {
+      width: 100%; height: 10px; border-radius: 8px;
+      background: var(--surface2); border: 1px solid var(--border);
+      overflow: hidden; margin-top: 8px;
+    }
+    .rec-meter-bar {
+      height: 100%; width: 0%;
+      background: linear-gradient(90deg, #22c55e, #f59e0b, #ef4444);
+      transition: width 0.05s;
+    }
+    .rec-timer {
+      font-size: 12px; color: var(--dim); margin-top: 4px;
+    }
     .rec-status {
       font-size: 12px; color: var(--dim);
     }
@@ -462,9 +480,12 @@
         <div class="record-row">
           <button class="btn-sm" id="recBtn" onclick="startRecording()">Record</button>
           <button class="btn-sm" id="stopBtn" onclick="stopRecording()" disabled>Stop</button>
+          <select id="micSelect"></select>
           <span class="rec-status" id="recStatus">Not recording</span>
         </div>
         <div class="note">Recording requires microphone permission (HTTPS or localhost).</div>
+        <div class="rec-meter"><div class="rec-meter-bar" id="recMeterBar"></div></div>
+        <div class="rec-timer" id="recTimer">00:00</div>
         <audio id="recPreview" class="rec-preview" controls></audio>
       </div>
       <div class="field">
@@ -722,8 +743,23 @@ let firstServerWall = null;
 
 // Recording
 let recStream = null;
-let recorder = null;
+let recCtx = null;
+let recSource = null;
+let recProc = null;
+let recGain = null;
 let recChunks = [];
+let recSampleRate = 48000;
+let recPeak = 0;
+let recDeviceId = null;
+let recActive = false;
+let recAnalyser = null;
+let recMeterRaf = null;
+let recMeterBuf = null;
+let recStartTs = null;
+let recHasSignal = false;
+let recSignalTs = null;
+let recSignalCount = 0;
+const REC_TARGET_SR = 16000;
 
 // Download
 let dlBlob = null;
@@ -733,6 +769,7 @@ window.addEventListener('load', () => {
   initTheme();
   fetchStatus();
   setXvecOnly(true);
+  loadMicDevices();
   // Pre-warm audio graph to avoid first-run latency.
   setTimeout(() => { warmAudio(); }, 0);
   // Ensure warmup runs after a user gesture (autoplay policies).
@@ -893,6 +930,37 @@ async function refreshSpeakers() {
   }
 }
 
+async function loadMicDevices() {
+  const sel = document.getElementById('micSelect');
+  if (!sel || !navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const inputs = devices.filter(d => d.kind === 'audioinput');
+    sel.innerHTML = '';
+    let defaultId = null;
+    inputs.forEach((d, i) => {
+      const opt = document.createElement('option');
+      opt.value = d.deviceId;
+      opt.textContent = d.label || `Microphone ${i + 1}`;
+      sel.appendChild(opt);
+      const label = (d.label || '').toLowerCase();
+      if (!defaultId && (d.deviceId === 'default' || label.includes('default'))) {
+        defaultId = d.deviceId;
+      }
+    });
+    sel.onchange = () => { recDeviceId = sel.value || null; };
+    if (defaultId) {
+      recDeviceId = defaultId;
+      sel.value = defaultId;
+    } else if (inputs.length > 0) {
+      recDeviceId = inputs[0].deviceId;
+      sel.value = inputs[0].deviceId;
+    }
+  } catch (e) {
+    console.warn('[rec] enumerateDevices failed', e);
+  }
+}
+
 // ─── Dropzone ─────────────────────────────────────────────────────────────────
 function dzOver(e) { e.preventDefault(); document.getElementById('dz').classList.add('over'); }
 function dzLeave()  { document.getElementById('dz').classList.remove('over'); }
@@ -907,61 +975,192 @@ function setRef(f) {
 }
 
 async function startRecording() {
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    showErr('Recording is not supported in this browser.');
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || typeof MediaRecorder === 'undefined') {
+    showErr('Recording is not supported in this browser. Use Chrome or Safari over HTTPS or localhost.');
     return;
+  }
+  if (!window.isSecureContext) {
+    const host = window.location.hostname;
+    const port = window.location.port;
+    if (host === '0.0.0.0') {
+      showErr(`Recording requires HTTPS or localhost. Open http://localhost:${port}/`);
+      return;
+    }
+    if (host !== 'localhost' && host !== '127.0.0.1') {
+      showErr('Recording requires HTTPS or localhost.');
+      return;
+    }
   }
   hideErr();
   document.getElementById('recBtn').disabled = true;
   document.getElementById('stopBtn').disabled = false;
-  document.getElementById('recStatus').textContent = 'Recording…';
+  document.getElementById('recStatus').textContent = 'Starting mic…';
+  document.getElementById('recTimer').textContent = '--:--';
+  document.getElementById('recMeterBar').style.width = '0%';
 
   try {
     recChunks = [];
-    recStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-      ? 'audio/webm;codecs=opus'
-      : 'audio/webm';
-    recorder = new MediaRecorder(recStream, { mimeType: mime });
-    recorder.ondataavailable = (e) => { if (e.data.size) recChunks.push(e.data); };
-    recorder.onstop = async () => {
-      const blob = new Blob(recChunks, { type: recorder.mimeType });
-      const wavBlob = await blobToWav(blob);
-      const file = new File([wavBlob], 'recorded.wav', { type: 'audio/wav' });
-      setRef(file);
-      const preview = document.getElementById('recPreview');
-      preview.src = URL.createObjectURL(wavBlob);
-      preview.play().catch(() => {});
-      cleanupRecording();
+    recPeak = 0;
+    recActive = false;
+    const audioConstraints = {
+      channelCount: 1,
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
     };
-    recorder.start();
+    if (recDeviceId) {
+      audioConstraints.deviceId = { exact: recDeviceId };
+    }
+    recStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+    await loadMicDevices();
+    document.getElementById('recStatus').textContent = 'Waiting for mic signal…';
+    const tracks = recStream.getAudioTracks();
+    // Track settings available via tracks[i].getSettings()
+    recCtx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
+    if (recCtx.state === 'suspended') await recCtx.resume();
+    recSampleRate = recCtx.sampleRate;
+    recSource = recCtx.createMediaStreamSource(recStream);
+    recAnalyser = recCtx.createAnalyser();
+    recAnalyser.fftSize = 2048;
+    recGain = recCtx.createGain();
+    recGain.gain.value = 0.0001; // near-silent to keep graph alive
+    recActive = true;
+
+    recProc = recCtx.createScriptProcessor(4096, 1, 1);
+    recProc.onaudioprocess = (e) => {
+      if (!recActive) return;
+      const nCh = e.inputBuffer.numberOfChannels;
+      const len = e.inputBuffer.length;
+      const copy = new Float32Array(len);
+      for (let c = 0; c < nCh; c++) {
+        const ch = e.inputBuffer.getChannelData(c);
+        for (let i = 0; i < len; i++) copy[i] += ch[i] / nCh;
+      }
+      recChunks.push(copy);
+      for (let i = 0; i < copy.length; i++) {
+        const a = Math.abs(copy[i]);
+        if (a > recPeak) recPeak = a;
+      }
+    };
+    recSource.connect(recAnalyser);
+    recAnalyser.connect(recProc);
+    recProc.connect(recGain);
+    recGain.connect(recCtx.destination);
+    recMeterBuf = new Uint8Array(recAnalyser.fftSize);
+    recStartTs = performance.now();
+    recHasSignal = false;
+    recSignalTs = null;
+    recSignalCount = 0;
+    const tick = () => {
+      if (!recActive) return;
+      recAnalyser.getByteTimeDomainData(recMeterBuf);
+      let peak = 0;
+      for (let i = 0; i < recMeterBuf.length; i++) {
+        const v = Math.abs(recMeterBuf[i] - 128);
+        if (v > peak) peak = v;
+      }
+      const norm = Math.min(1, peak / 64);
+      document.getElementById('recMeterBar').style.width = `${Math.round(norm * 100)}%`;
+      if (norm > 0.02) {
+        recSignalCount += 1;
+      } else {
+        recSignalCount = 0;
+      }
+      if (!recHasSignal && recSignalCount >= 4) { // UI meter only
+        recHasSignal = true;
+        recSignalTs = performance.now();
+      }
+      document.getElementById('recStatus').textContent =
+        recHasSignal ? 'Recording…' : 'Waiting for mic signal…';
+      if (recHasSignal) {
+        const elapsed = Math.floor((performance.now() - recSignalTs) / 1000);
+        const mm = String(Math.floor(elapsed / 60)).padStart(2, '0');
+        const ss = String(elapsed % 60).padStart(2, '0');
+        document.getElementById('recTimer').textContent = `${mm}:${ss}`;
+      } else {
+        document.getElementById('recTimer').textContent = '--:--';
+      }
+      recMeterRaf = requestAnimationFrame(tick);
+    };
+    recMeterRaf = requestAnimationFrame(tick);
+    // recorder ready
   } catch (e) {
     showErr('Recording failed: ' + e.message);
     cleanupRecording();
   }
 }
 
-function stopRecording() {
-  if (recorder && recorder.state !== 'inactive') recorder.stop();
+async function stopRecording() {
+  recActive = false;
+  setTimeout(async () => {
+    if (!recChunks.length) {
+      showErr('Recording failed: no audio captured. Try recording longer.');
+      cleanupRecording();
+      return;
+    }
+    if (recPeak === 0) {
+      showErr('Recording captured silence. Check your microphone input and system settings.');
+    }
+    try {
+      const total = recChunks.reduce((s, c) => s + c.length, 0);
+      const abuf = recCtx.createBuffer(1, total, recSampleRate);
+      const ch0 = abuf.getChannelData(0);
+      let off = 0;
+      for (const c of recChunks) { ch0.set(c, off); off += c.length; }
+      let outBuf = abuf;
+      if (abuf.sampleRate !== REC_TARGET_SR) {
+        outBuf = await resampleBuffer(abuf, REC_TARGET_SR);
+      }
+      const wavBlob = audioBufferToWav(outBuf);
+      const file = new File([wavBlob], 'recorded.wav', { type: 'audio/wav' });
+      setRef(file);
+      const preview = document.getElementById('recPreview');
+      preview.pause();
+      preview.src = URL.createObjectURL(wavBlob);
+      preview.currentTime = 0;
+      preview.load();
+    } catch (e) {
+      showErr('Recording failed: ' + e.message);
+    } finally {
+      cleanupRecording();
+    }
+  }, 150);
 }
 
-function cleanupRecording() {
+function cleanupRecording(keepContext = false) {
   if (recStream) recStream.getTracks().forEach(t => t.stop());
   recStream = null;
-  recorder = null;
+  recActive = false;
+  if (recProc) recProc.disconnect();
+  if (recGain) recGain.disconnect();
+  if (recSource) recSource.disconnect();
+  if (recAnalyser) recAnalyser.disconnect();
+  if (recCtx && !keepContext) recCtx.close().catch(() => {});
+  if (recMeterRaf) cancelAnimationFrame(recMeterRaf);
+  recProc = null;
+  recGain = null;
+  recAnalyser = null;
+  recMeterRaf = null;
+  recMeterBuf = null;
+  recStartTs = null;
+  recSource = null;
+  if (!keepContext) recCtx = null;
   document.getElementById('recBtn').disabled = false;
   document.getElementById('stopBtn').disabled = true;
   document.getElementById('recStatus').textContent = 'Recorded';
+  document.getElementById('recMeterBar').style.width = '0%';
 }
 
-async function blobToWav(blob) {
-  const ab = await blob.arrayBuffer();
-  const ctx = new (window.AudioContext || window.webkitAudioContext)();
-  const audioBuf = await ctx.decodeAudioData(ab);
-  const wav = audioBufferToWav(audioBuf);
-  await ctx.close();
-  return wav;
+async function resampleBuffer(buffer, targetSr) {
+  const length = Math.ceil(buffer.duration * targetSr);
+  const ctx = new OfflineAudioContext(1, length, targetSr);
+  const src = ctx.createBufferSource();
+  src.buffer = buffer;
+  src.connect(ctx.destination);
+  src.start(0);
+  return await ctx.startRendering();
 }
+
 
 function audioBufferToWav(buffer) {
   const numCh = buffer.numberOfChannels;
