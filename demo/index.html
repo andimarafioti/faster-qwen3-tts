@@ -1248,6 +1248,14 @@ async function stopRec() {
     let off = 0;
     for (const c of recChunks) { ch.set(c, off); off += c.length; }
 
+    // Show preview immediately from raw buffer — no resampling needed for playback
+    const rawWav = bufToWav(buf);
+    const prev = $('recPreview');
+    if (prev.src) URL.revokeObjectURL(prev.src);
+    prev.src = URL.createObjectURL(rawWav);
+    prev.style.display = 'block';
+
+    // Resample to 16kHz in the background for server use
     let out = buf;
     if (buf.sampleRate !== REC_SR) {
       const len    = Math.ceil(buf.duration * REC_SR);
@@ -1257,12 +1265,9 @@ async function stopRec() {
       out = await offCtx.startRendering();
     }
     const wav = bufToWav(out);
-    setRef(new File([wav], 'recorded.wav', { type: 'audio/wav' }));
-
-    // Show preview so user can verify before generating
-    const prev = $('recPreview');
-    prev.src   = URL.createObjectURL(wav);
-    prev.style.display = 'block';
+    refFile = new File([wav], 'recorded.wav', { type: 'audio/wav' });
+    $('refLabel').textContent = 'recorded.wav';
+    $('refChip').classList.add('has');
   } catch (e) {
     showMsg('err', 'Recording failed: ' + e.message);
   }
