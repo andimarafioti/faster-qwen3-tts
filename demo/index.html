@@ -1,0 +1,1610 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no">
+<title>Faster Qwen3-TTS</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #09090b;
+  --surface: #18181b;
+  --surface2: #27272a;
+  --border: #27272a;
+  --border2: #3f3f46;
+  --text: #fafafa;
+  --text2: #a1a1aa;
+  --dim: #71717a;
+  --dimmer: #52525b;
+  --accent: #8b5cf6;
+  --accent2: #7c3aed;
+  --accent-bg: rgba(139,92,246,0.1);
+  --accent-ring: rgba(139,92,246,0.3);
+  --green: #22c55e;
+  --amber: #eab308;
+  --red: #ef4444;
+  --radius: 10px;
+  --radius-sm: 6px;
+  --shadow: 0 1px 3px rgba(0,0,0,0.4);
+}
+:root[data-theme="light"] {
+  --bg: #fafafa;
+  --surface: #ffffff;
+  --surface2: #f4f4f5;
+  --border: #e4e4e7;
+  --border2: #d4d4d8;
+  --text: #09090b;
+  --text2: #52525b;
+  --dim: #71717a;
+  --dimmer: #a1a1aa;
+  --accent: #7c3aed;
+  --accent2: #6d28d9;
+  --accent-bg: rgba(124,58,237,0.07);
+  --accent-ring: rgba(124,58,237,0.2);
+  --shadow: 0 1px 3px rgba(0,0,0,0.08);
+}
+
+html, body { height: 100%; overflow: hidden; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* ── App shell ── */
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 10px 16px;
+  padding-bottom: max(10px, env(safe-area-inset-bottom));
+  gap: 8px;
+  overflow: hidden;
+}
+
+/* ── Header ── */
+.hdr {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.hdr h1 { font-size: 15px; font-weight: 600; letter-spacing: -0.3px; }
+.badge {
+  font-size: 9px; font-weight: 700; letter-spacing: 0.8px;
+  background: var(--accent-bg); color: var(--accent);
+  border: 1px solid var(--accent-ring);
+  padding: 1px 6px; border-radius: 100px;
+}
+.spacer { flex: 1; }
+.mpill {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 11px; color: var(--dim);
+  padding: 4px 10px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 20px; cursor: pointer;
+  transition: border-color 0.15s;
+}
+.mpill:hover { border-color: var(--border2); }
+.mdot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--dimmer); flex-shrink: 0;
+  transition: background 0.3s;
+}
+.mdot.loaded  { background: var(--green); }
+.mdot.loading { background: var(--amber); animation: blink 0.7s infinite; }
+.mdot.error   { background: var(--red); }
+.ibtn {
+  width: 30px; height: 30px;
+  display: flex; align-items: center; justify-content: center;
+  background: transparent;
+  border: 1px solid var(--border); border-radius: 8px;
+  color: var(--dim); cursor: pointer;
+  transition: all 0.15s;
+}
+.ibtn:hover { border-color: var(--border2); color: var(--text); }
+.ibtn svg { width: 15px; height: 15px; }
+
+/* ── Main area ── */
+.main {
+  flex: 1 1 0; min-height: 0;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.text-wrap textarea {
+  width: 100%; height: 120px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text); font-size: 15px; font-family: inherit;
+  padding: 10px 12px; resize: none; outline: none;
+  transition: border-color 0.15s;
+}
+.text-wrap textarea:focus { border-color: var(--accent-ring); }
+.text-wrap textarea::placeholder { color: var(--dimmer); }
+
+/* ── Mode rows (arcade selector) ── */
+.mode-row {
+  flex-shrink: 0;
+  padding: 7px 9px; border-radius: var(--radius-sm);
+  transition: box-shadow 0.2s, opacity 0.2s;
+}
+.mode-row .label {
+  font-size: 11px; color: var(--dim);
+  margin-bottom: 4px;
+  display: flex; align-items: center; gap: 8px;
+  transition: color 0.2s;
+}
+.mode-row .label::after {
+  content: ''; flex: 1; height: 1px;
+  background: var(--border);
+  transition: background 0.2s;
+}
+.mode-row .row { display: flex; align-items: flex-start; gap: 6px; }
+
+/* Active (loaded) row — neon arcade glow */
+.mode-row.compatible {
+  box-shadow: 0 0 0 1px var(--accent),
+              0 0 12px rgba(139,92,246,0.45),
+              0 0 24px rgba(139,92,246,0.15);
+}
+.mode-row.compatible .label {
+  color: var(--accent); font-weight: 600; letter-spacing: 0.03em;
+}
+.mode-row.compatible .label::before {
+  content: '▶'; color: var(--accent);
+  font-size: 9px;
+  animation: blink-cursor 1s step-end infinite;
+}
+.mode-row.compatible .label::after { background: var(--accent-ring); }
+@keyframes blink-cursor { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+
+/* Loading row — pulsing glow while model is fetched */
+.mode-row.loading {
+  animation: row-pulse 0.7s ease-in-out infinite alternate;
+}
+.mode-row.loading .label {
+  color: var(--accent); font-weight: 600; letter-spacing: 0.03em;
+}
+.mode-row.loading .label::before {
+  content: '◌'; color: var(--accent); font-size: 11px;
+  animation: spin-ring 1s linear infinite;
+}
+.mode-row.loading .label::after { background: var(--accent-ring); }
+@keyframes row-pulse {
+  from { box-shadow: 0 0 0 1px rgba(139,92,246,0.4), 0 0 6px rgba(139,92,246,0.2); }
+  to   { box-shadow: 0 0 0 1px var(--accent),        0 0 20px rgba(139,92,246,0.55), 0 0 36px rgba(139,92,246,0.2); }
+}
+@keyframes spin-ring { to { transform: rotate(360deg); } }
+
+/* Inactive rows — dim + pointer; hover lifts the veil */
+.mode-row.incompatible { opacity: 0.42; cursor: pointer; }
+/* Block inner elements from capturing clicks/focus so the row onclick fires cleanly */
+.mode-row.incompatible > * { pointer-events: none; }
+.mode-row.incompatible:hover {
+  opacity: 0.9;
+  box-shadow: 0 0 0 1px var(--border2), 0 0 10px rgba(139,92,246,0.2);
+}
+.mode-row.incompatible:hover .label { color: var(--text2); }
+.mode-row.incompatible:hover .switch-tag { display: inline-flex; }
+
+/* "LOAD ▶" chip shown on hover of incompatible rows */
+.switch-tag {
+  display: none; align-items: center;
+  font-size: 9px; font-family: monospace; font-weight: 700;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--accent); padding: 1px 5px;
+  border: 1px solid var(--accent-ring); border-radius: 3px;
+  background: var(--accent-bg);
+  animation: flicker-in 0.35s step-end;
+}
+@keyframes flicker-in {
+  0%   { opacity: 0; } 20% { opacity: 1; } 35% { opacity: 0.2; }
+  55%  { opacity: 1; } 70% { opacity: 0.5; } 100% { opacity: 1; }
+}
+
+/* ── Loader overlay (centered modal) ── */
+.lov {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.75);
+  backdrop-filter: blur(2px);
+  z-index: 110;
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+  opacity: 0; pointer-events: none;
+  transition: opacity 0.2s;
+}
+.lov.open { opacity: 1; pointer-events: auto; }
+.lpanel {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-top: 2px solid var(--accent);
+  border-radius: 16px;
+  width: 100%; max-width: 460px;
+  max-height: 85dvh; overflow-y: auto;
+  padding: 20px 20px 24px;
+  transform: scale(0.93) translateY(12px);
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: 0 0 40px rgba(139,92,246,0.2), 0 20px 60px rgba(0,0,0,0.5);
+}
+.lov.open .lpanel { transform: scale(1) translateY(0); }
+.l-header {
+  display: flex; align-items: center; margin-bottom: 14px;
+}
+.l-back {
+  display: flex; align-items: center; gap: 4px;
+  font-size: 11px; font-family: monospace; color: var(--dim);
+  cursor: pointer; border: none; background: none;
+  padding: 0; margin-right: auto;
+  transition: color 0.15s;
+}
+.l-back:hover { color: var(--text2); }
+.l-title {
+  font-family: monospace; font-size: 12px; font-weight: 700;
+  letter-spacing: 0.22em; color: var(--accent);
+  text-align: center; flex: 1;
+  text-shadow: 0 0 8px rgba(139,92,246,0.6);
+}
+.lcard-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px; margin-bottom: 14px;
+}
+.lcard {
+  border: 1px solid var(--border2); border-radius: var(--radius-sm);
+  padding: 10px 12px; cursor: pointer; transition: all 0.15s;
+  background: var(--surface);
+}
+.lcard:hover { border-color: var(--accent-ring); background: var(--accent-bg); }
+.lcard.sel {
+  border-color: var(--accent); background: var(--accent-bg);
+  box-shadow: 0 0 8px rgba(139,92,246,0.35);
+}
+.lcard .lc-name { font-size: 13px; font-weight: 600; color: var(--text); }
+.lcard .lc-sub  { font-size: 11px; color: var(--dim); margin-top: 2px; }
+.lcard.sel .lc-name { color: var(--accent); }
+
+/* Ref audio chip */
+.ref-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 6px 10px;
+  background: var(--surface); border: 1px dashed var(--border2);
+  border-radius: var(--radius-sm);
+  font-size: 12px; color: var(--dim);
+  cursor: pointer; transition: all 0.15s;
+  position: relative; overflow: hidden;
+  max-width: 220px;
+}
+.ref-chip:hover { border-color: var(--accent); color: var(--accent); }
+.ref-chip.has { border-style: solid; color: var(--accent); border-color: var(--accent-ring); }
+.ref-chip input[type="file"] {
+  position: absolute; inset: 0; opacity: 0; cursor: pointer;
+}
+.ref-chip svg { width: 14px; height: 14px; flex-shrink: 0; }
+.ref-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Mic button */
+.mic-btn {
+  width: 32px; height: 32px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--dim); cursor: pointer; transition: all 0.15s;
+  flex-shrink: 0;
+}
+.mic-btn:hover { border-color: var(--accent); color: var(--accent); }
+.mic-btn.rec { border-color: var(--red); color: var(--red); animation: blink 1s infinite; }
+.mic-btn svg { width: 14px; height: 14px; }
+
+.rec-time {
+  font-size: 11px; color: var(--red);
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  min-width: 28px;
+}
+.rec-status { font-size: 11px; color: var(--dim); }
+
+/* Recording level meter */
+.rec-bar-wrap {
+  height: 3px; background: var(--border); border-radius: 2px;
+  margin-top: 4px; display: none;
+}
+.rec-bar {
+  height: 100%; width: 0%;
+  background: linear-gradient(90deg, var(--green), var(--amber), var(--red));
+  border-radius: 2px; transition: width 0.05s;
+}
+
+/* Recording preview */
+.rec-preview {
+  width: 100%; height: 28px; border-radius: 4px;
+  margin-top: 4px; display: none;
+}
+:root:not([data-theme="light"]) .rec-preview {
+  filter: invert(0.88) hue-rotate(180deg);
+}
+
+/* Small select */
+.sm-sel {
+  padding: 6px 28px 6px 10px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text); font-size: 12px; font-family: inherit;
+  outline: none; cursor: pointer; appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath fill='%2371717a' d='M4 5 0 0h8z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 8px center;
+}
+.sm-sel option { background: var(--surface); }
+
+/* Voice instruction textarea (auto-grow) */
+.voice-in {
+  flex: 1; padding: 6px 10px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text); font-size: 12px; font-family: inherit;
+  outline: none; transition: border-color 0.15s;
+  resize: none; overflow: hidden;
+  min-height: 32px; line-height: 1.45;
+}
+.voice-in:focus { border-color: var(--accent-ring); }
+.voice-in::placeholder { color: var(--dimmer); }
+/* Full-width instruction field below a row (Custom mode) */
+.instr-wrap { margin-top: 6px; display: flex; }
+.instr-wrap .voice-in { flex: 1; }
+
+/* ── Clone mode controls ── */
+.clone-toggle-row { margin-bottom: 6px; }
+.clone-hint {
+  font-size: 11px; color: var(--dim);
+  margin-bottom: 5px; line-height: 1.4;
+}
+
+/* ── Play button ── */
+.play-btn {
+  width: 32px; height: 32px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--accent); color: #fff; border: none;
+  border-radius: var(--radius-sm); cursor: pointer; flex-shrink: 0;
+  margin-left: auto;
+  transition: all 0.15s;
+}
+.play-btn:hover:not(:disabled) { background: var(--accent2); }
+.play-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.play-btn svg { width: 14px; height: 14px; margin-left: 1px; }
+
+/* ── Error / Warning ── */
+.msg-bar {
+  display: none; padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 12px; flex-shrink: 0;
+  align-items: center; gap: 8px;
+}
+.msg-bar.show { display: flex; }
+.msg-bar.err {
+  background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.2);
+  color: #fca5a5;
+}
+:root[data-theme="light"] .msg-bar.err { color: #dc2626; }
+.msg-bar.warn {
+  background: rgba(234,179,8,0.08); border: 1px solid rgba(234,179,8,0.2);
+  color: #fcd34d;
+}
+:root[data-theme="light"] .msg-bar.warn { color: #a16207; }
+.msg-bar .sw-btn {
+  margin-left: auto; padding: 3px 10px;
+  background: rgba(234,179,8,0.15); border: none; border-radius: 4px;
+  color: inherit; font-size: 11px; font-weight: 600;
+  cursor: pointer; white-space: nowrap;
+}
+.msg-bar .sw-btn:hover { background: rgba(234,179,8,0.3); }
+
+/* ── Progress ── */
+.pbar-wrap {
+  height: 2px; background: var(--border);
+  border-radius: 1px; overflow: hidden;
+  flex-shrink: 0; display: none;
+}
+.pbar-wrap.show { display: block; }
+.pbar {
+  height: 100%; background: var(--accent);
+  border-radius: 1px; transition: width 0.4s; width: 0%;
+}
+.pbar.spin {
+  width: 25% !important;
+  animation: sweep 1.4s ease-in-out infinite;
+}
+
+/* ── Results ── */
+.results {
+  flex-shrink: 0; display: none;
+  flex-direction: column; gap: 6px;
+}
+.results.show { display: flex; }
+.player-row { display: flex; align-items: center; gap: 6px; }
+.player-row audio { flex: 1; height: 32px; border-radius: 4px; }
+:root:not([data-theme="light"]) .player-row audio { filter: invert(0.88) hue-rotate(180deg); }
+.dl-btn {
+  width: 28px; height: 28px;
+  display: flex; align-items: center; justify-content: center;
+  background: transparent; border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--dim); cursor: pointer; font-size: 13px;
+  transition: all 0.15s; flex-shrink: 0;
+}
+.dl-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+.metrics {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 5px 10px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+}
+.met { display: flex; align-items: baseline; gap: 3px; }
+.met-k {
+  color: var(--dim); text-transform: uppercase;
+  letter-spacing: 0.5px; font-size: 10px;
+}
+.met-v {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-weight: 600; font-size: 12px;
+}
+.wave {
+  display: flex; align-items: center; gap: 2px; height: 12px;
+  margin-left: auto;
+}
+.wave.off { display: none; }
+.wave i {
+  width: 2px; border-radius: 1px; background: var(--accent);
+  animation: wavebar 0.7s ease-in-out infinite;
+  display: block;
+}
+.wave i:nth-child(1) { height: 3px;  animation-delay: 0s; }
+.wave i:nth-child(2) { height: 7px;  animation-delay: 0.1s; }
+.wave i:nth-child(3) { height: 11px; animation-delay: 0.2s; }
+.wave i:nth-child(4) { height: 7px;  animation-delay: 0.3s; }
+.wave i:nth-child(5) { height: 3px;  animation-delay: 0.4s; }
+
+/* ── Settings overlay ── */
+.sov {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.5);
+  z-index: 100;
+  display: flex; align-items: flex-end; justify-content: center;
+  opacity: 0; pointer-events: none;
+  transition: opacity 0.2s;
+}
+.sov.open { opacity: 1; pointer-events: auto; }
+.spanel {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 16px 16px 0 0;
+  width: 100%; max-width: 680px;
+  max-height: 75dvh;
+  overflow-y: auto;
+  padding: 16px 20px 24px;
+  transform: translateY(100%);
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.sov.open .spanel { transform: translateY(0); }
+.s-handle {
+  width: 32px; height: 4px;
+  background: var(--border2); border-radius: 2px;
+  margin: 0 auto 14px;
+}
+.s-head {
+  display: flex; align-items: center;
+  margin-bottom: 16px;
+}
+.s-head span { font-size: 14px; font-weight: 600; }
+.s-head .spacer { flex: 1; }
+.s-section {
+  font-size: 10px; font-weight: 600; letter-spacing: 0.8px;
+  text-transform: uppercase; color: var(--dim);
+  margin: 16px 0 8px; padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.s-section:first-of-type { margin-top: 0; padding-top: 0; border-top: none; }
+.s-row {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 10px;
+}
+.s-row label {
+  font-size: 12px; color: var(--text2);
+  min-width: 90px; flex-shrink: 0;
+}
+.s-row select, .s-row input[type="text"], .s-row textarea {
+  flex: 1; padding: 7px 10px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text); font-size: 13px; font-family: inherit;
+  outline: none;
+}
+.s-row select {
+  appearance: none; padding-right: 28px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath fill='%2371717a' d='M4 5 0 0h8z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 10px center;
+  cursor: pointer;
+}
+.s-row select option { background: var(--surface); }
+.s-row textarea { resize: vertical; min-height: 40px; max-height: 80px; }
+
+/* Settings hint text */
+.s-hint {
+  font-size: 11px; color: var(--dimmer);
+  margin: -6px 0 8px 98px;
+}
+
+/* Toggle */
+.toggle {
+  display: flex; background: var(--surface);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 2px; flex: 1;
+}
+.tog {
+  flex: 1; padding: 4px 8px; font-size: 11px; font-weight: 500;
+  text-align: center; cursor: pointer; border-radius: 4px;
+  color: var(--dim); transition: all 0.15s; user-select: none;
+}
+.tog.on {
+  background: var(--surface2); color: var(--text);
+  box-shadow: var(--shadow);
+}
+
+/* Slider */
+.s-slider {
+  flex: 1; display: flex; align-items: center; gap: 8px;
+}
+.s-slider input[type="range"] {
+  -webkit-appearance: none; flex: 1;
+  height: 3px; background: var(--border2); border-radius: 2px;
+  outline: none; cursor: pointer;
+}
+.s-slider input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 13px; height: 13px;
+  border-radius: 50%; background: var(--accent); cursor: pointer;
+}
+.s-slider .sv {
+  font-size: 11px; color: var(--dim);
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  min-width: 30px; text-align: right;
+}
+.s-btn {
+  padding: 6px 14px; font-size: 12px; font-weight: 600;
+  background: var(--accent); color: #fff; border: none;
+  border-radius: var(--radius-sm); cursor: pointer;
+  font-family: inherit; transition: background 0.15s;
+}
+.s-btn:hover { background: var(--accent2); }
+.s-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ── Responsive ── */
+@media (min-width: 640px) {
+  .sov { align-items: center; }
+  .spanel { border-radius: 16px; max-height: 70vh; }
+  .s-grid3 {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+  }
+  .s-grid3 .s-row { flex-direction: column; align-items: stretch; margin-bottom: 0; }
+  .s-grid3 .s-row label { min-width: unset; margin-bottom: 4px; }
+}
+@media (max-height: 520px) {
+  .app { padding: 6px 12px; gap: 6px; }
+  .hdr h1 { font-size: 13px; }
+  .mode-row .label { font-size: 10px; margin-bottom: 2px; }
+  .play-btn { width: 28px; height: 28px; }
+  .play-btn svg { width: 12px; height: 12px; }
+  .player-row audio { height: 28px; }
+}
+
+/* ── Animations ── */
+@keyframes blink   { 0%,100%{opacity:1} 50%{opacity:0.2} }
+@keyframes sweep   { 0%{transform:translateX(-200%)} 100%{transform:translateX(500%)} }
+@keyframes wavebar { 0%,100%{transform:scaleY(0.3)} 50%{transform:scaleY(1)} }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- Header -->
+  <header class="hdr">
+    <h1>faster-qwen3-tts</h1>
+    <span class="badge">CUDA GRAPHS</span>
+    <span class="spacer"></span>
+    <button class="mpill" onclick="openSettings()" title="Settings">
+      <span class="mdot" id="mdot"></span>
+      <span id="mtext">not loaded</span>
+    </button>
+    <button class="ibtn" onclick="openSettings()" title="Settings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+    </button>
+    <button class="ibtn" id="themeBtn" onclick="toggleTheme()" title="Toggle theme">
+      <svg id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+    </button>
+  </header>
+
+  <!-- Main content -->
+  <div class="main">
+    <div class="text-wrap">
+      <textarea id="textIn" placeholder="Enter text to synthesize...">Hello! This is faster Qwen3-TTS running with CUDA graph capture. Notice how the audio starts playing almost immediately.</textarea>
+    </div>
+
+    <!-- Custom (built-in speakers) -->
+    <div class="mode-row" id="rowChar" onclick="onModeRowClick('custom')">
+      <div class="label">Custom — use a built-in speaker<span class="switch-tag">LOAD ▶</span></div>
+      <div class="row">
+        <select class="sm-sel" id="speakerId" style="flex:1">
+          <option value="">Select speaker...</option>
+        </select>
+        <button class="play-btn" onclick="generate('custom')" title="Generate">
+          <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6,3 20,12 6,21"/></svg>
+        </button>
+      </div>
+      <div class="instr-wrap">
+        <textarea id="customInstr" class="voice-in" rows="1"
+          placeholder="Voice style instructions (optional)…"
+          oninput="autoGrow(this)"></textarea>
+      </div>
+    </div>
+
+    <!-- Clone -->
+    <div class="mode-row" id="rowClone" onclick="onModeRowClick('voice_clone')">
+      <div class="label">Clone — match a voice from a reference clip<span class="switch-tag">LOAD ▶</span></div>
+      <!-- Simple / Advanced toggle -->
+      <div class="clone-toggle-row">
+        <div class="toggle">
+          <div class="tog on" data-x="1" onclick="setXvec(true)">Simple</div>
+          <div class="tog" data-x="0" onclick="setXvec(false)">Advanced</div>
+        </div>
+      </div>
+      <!-- Reference audio + action buttons -->
+      <div class="row">
+        <label class="ref-chip" id="refChip">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
+          <span id="refLabel">Reference audio</span>
+          <input type="file" id="refInput" accept=".wav,.mp3,.flac,.ogg" onchange="pickRef(this)">
+        </label>
+        <button class="mic-btn" id="micBtn" onclick="toggleRec()" title="Record from microphone">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+        </button>
+        <span class="rec-time" id="recTime"></span>
+        <span class="rec-status" id="recStatus"></span>
+        <button class="play-btn" onclick="generate('voice_clone')" title="Generate">
+          <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6,3 20,12 6,21"/></svg>
+        </button>
+      </div>
+      <!-- Advanced: transcript (hidden by default) -->
+      <div id="advTranscript" style="display:none">
+        <div class="clone-hint">Advanced cloning requires the full transcript of the reference audio clip.</div>
+        <div class="instr-wrap">
+          <textarea id="refTextIn" class="voice-in" rows="2"
+            placeholder="Type the full transcript here…"
+            oninput="autoGrow(this)"></textarea>
+        </div>
+      </div>
+      <!-- Level meter (shown during recording) -->
+      <div class="rec-bar-wrap" id="recBarWrap"><div class="rec-bar" id="recBar"></div></div>
+      <!-- Preview of last recording -->
+      <audio id="recPreview" class="rec-preview" controls></audio>
+    </div>
+
+    <!-- Voice Design -->
+    <div class="mode-row" id="rowCustom" onclick="onModeRowClick('voice_design')">
+      <div class="label">Voice Design — describe any voice<span class="switch-tag">LOAD ▶</span></div>
+      <div class="row">
+        <textarea class="voice-in" id="voiceInstr" rows="1"
+          placeholder="e.g. warm, calm female narrator…"
+          oninput="autoGrow(this)">A warm, calm narrator with a clear and engaging delivery.</textarea>
+        <button class="play-btn" onclick="generate('voice_design')" title="Generate">
+          <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6,3 20,12 6,21"/></svg>
+        </button>
+      </div>
+    </div>
+    <!-- Messages -->
+    <div class="msg-bar" id="msgBar"></div>
+
+    <!-- Progress -->
+    <div class="pbar-wrap" id="pbarWrap"><div class="pbar" id="pbar"></div></div>
+
+    <!-- Results -->
+    <div class="results" id="results">
+      <div class="player-row">
+        <audio id="player" controls></audio>
+        <button class="dl-btn" onclick="dlAudio()" title="Download WAV">&darr;</button>
+      </div>
+      <div class="metrics">
+        <div class="met"><span class="met-k">TTFA</span><span class="met-v" id="mTTFA">&mdash;</span></div>
+        <div class="met"><span class="met-k">Client</span><span class="met-v" id="mClient">&mdash;</span></div>
+        <div class="met" id="mCloneWrap" style="display:none"><span class="met-k">Clone</span><span class="met-v" id="mClone">&mdash;</span></div>
+        <div class="met"><span class="met-k">RTF</span><span class="met-v" id="mRTF">&mdash;</span></div>
+        <div class="met"><span class="met-k">Dur</span><span class="met-v" id="mDur">&mdash;</span></div>
+        <div class="met"><span class="met-k">Buf</span><span class="met-v" id="mBuf">&mdash;</span></div>
+        <div class="wave" id="waveInd"><i></i><i></i><i></i><i></i><i></i></div>
+      </div>
+    </div>
+
+  </div>
+
+</div><!-- /.app -->
+
+<!-- Settings bottom sheet -->
+<div class="sov" id="settingsOv" onclick="closeSettings(event)">
+  <div class="spanel" onclick="event.stopPropagation()">
+    <div class="s-handle"></div>
+    <div class="s-head">
+      <span>Settings</span>
+      <span class="spacer"></span>
+      <button class="ibtn" onclick="closeSettings()" title="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+
+    <div class="s-section">Model</div>
+    <div class="s-row">
+      <label>Model</label>
+      <select id="modelSel">
+        <option value="Qwen/Qwen3-TTS-12Hz-0.6B-Base">0.6B Base</option>
+        <option value="Qwen/Qwen3-TTS-12Hz-1.7B-Base">1.7B Base</option>
+        <option value="Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice">0.6B CustomVoice</option>
+        <option value="Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice" selected>1.7B CustomVoice</option>
+        <option value="Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign">1.7B VoiceDesign</option>
+      </select>
+      <button class="s-btn" id="loadBtn" onclick="loadModel()">Load</button>
+    </div>
+
+    <div class="s-section">Generation</div>
+    <div class="s-row">
+      <label>Language</label>
+      <select id="langSel">
+        <option>English</option><option>Chinese</option><option>French</option>
+        <option>German</option><option>Spanish</option><option>Auto</option>
+      </select>
+    </div>
+    <div class="s-row">
+      <label>Mode</label>
+      <div class="toggle">
+        <div class="tog on" data-m="stream" onclick="setMode('stream')">Streaming</div>
+        <div class="tog" data-m="non" onclick="setMode('non')">Non-streaming</div>
+      </div>
+    </div>
+    <div class="s-row" id="chunkRow">
+      <label>Chunk size</label>
+      <div class="s-slider">
+        <input type="range" id="chunkSl" min="1" max="24" value="8"
+          oninput="$('chunkV').textContent=this.value">
+        <span class="sv" id="chunkV">8</span>
+      </div>
+    </div>
+
+    <div class="s-section">Sampling</div>
+    <div class="s-grid3">
+      <div class="s-row">
+        <label>Temperature</label>
+        <div class="s-slider">
+          <input type="range" id="tempSl" min="0.1" max="2.0" step="0.05" value="0.9"
+            oninput="$('tempV').textContent=this.value">
+          <span class="sv" id="tempV">0.9</span>
+        </div>
+      </div>
+      <div class="s-row">
+        <label>Top-K</label>
+        <div class="s-slider">
+          <input type="range" id="topkSl" min="1" max="100" value="50"
+            oninput="$('topkV').textContent=this.value">
+          <span class="sv" id="topkV">50</span>
+        </div>
+      </div>
+      <div class="s-row">
+        <label>Rep. penalty</label>
+        <div class="s-slider">
+          <input type="range" id="repSl" min="1.0" max="1.5" step="0.01" value="1.05"
+            oninput="$('repV').textContent=this.value">
+          <span class="sv" id="repV">1.05</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="s-section">Recording</div>
+    <div class="s-row">
+      <label>Microphone</label>
+      <select id="micSel"></select>
+    </div>
+  </div>
+</div>
+
+<!-- ── Model Loader Overlay ── -->
+<div class="lov" id="loaderOv" onclick="closeLoader(event)">
+  <div class="lpanel" onclick="event.stopPropagation()">
+    <div class="l-header">
+      <button class="l-back" onclick="$('loaderOv').classList.remove('open')">◀ BACK</button>
+      <div class="l-title">⬡ <span id="loaderModeLabel"></span> ⬡</div>
+    </div>
+    <div class="lcard-grid" id="loaderGrid"></div>
+    <button class="btn-primary" style="width:100%" onclick="loadFromSheet()">LOAD ▶</button>
+  </div>
+</div>
+
+<script>
+// ── Shorthand ─────────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+function autoGrow(el) {
+  el.style.height = 'auto';
+  el.style.height = el.scrollHeight + 'px';
+}
+
+function setPlayBtns(disabled) {
+  document.querySelectorAll('.play-btn').forEach(b => b.disabled = disabled);
+}
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let genMode  = 'stream';
+let xvecOnly = true;
+let busy     = false;
+let refFile  = null;
+let loadedModel  = null;
+let loadingModel = null;
+let dlBlob   = null;
+
+const defaultSpeakers = [
+  { id: 'Vivian',   desc: 'Chinese — Bright young female' },
+  { id: 'Serena',   desc: 'Chinese — Warm gentle female' },
+  { id: 'Uncle_Fu', desc: 'Chinese — Seasoned low male' },
+  { id: 'Dylan',    desc: 'Chinese — Youthful Beijing male' },
+  { id: 'Eric',     desc: 'Chinese (Sichuan) — Lively male' },
+  { id: 'Ryan',     desc: 'English — Dynamic male' },
+  { id: 'Aiden',    desc: 'English — Sunny American male' },
+  { id: 'Ono_Anna', desc: 'Japanese — Playful female' },
+  { id: 'Sohee',    desc: 'Korean — Warm female' },
+];
+
+// Web Audio
+let actx = null, sproc = null, pcmQueue = [], rawPcmParts = [], rawPcmSr = 24000;
+let chunkQ = Promise.resolve();
+let clientT0 = 0, firstChunkAt = null, firstAudioAt = null, lastBufS = 0, firstServerWall = null;
+
+// Recording
+let recStream = null, recCtx = null, recSource = null, recProc = null;
+let recGain = null, recAnalyser = null, recMeterRaf = null, recMeterBuf = null;
+let recChunks = [], recActive = false, recDeviceId = null;
+let recPeak = 0, recHasSignal = false, recSignalTs = null, recSignalCount = 0;
+const REC_SR = 16000;
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+window.addEventListener('load', async () => {
+  initTheme();
+  autoGrow($('voiceInstr'));
+  await fetchStatus();
+  if (!loadedModel) {
+    $('modelSel').value = 'Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice';
+    loadModel();
+  }
+  loadMics();
+  populateSpeakers([]);
+  const warm = () => { warmAudio(); window.removeEventListener('pointerdown', warm); };
+  window.addEventListener('pointerdown', warm, { passive: true });
+});
+
+// ── Theme ─────────────────────────────────────────────────────────────────────
+function initTheme() {
+  const t = localStorage.getItem('theme') ||
+    (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+  applyTheme(t);
+}
+function toggleTheme() {
+  applyTheme((document.documentElement.dataset.theme || 'dark') === 'dark' ? 'light' : 'dark');
+}
+function applyTheme(t) {
+  document.documentElement.dataset.theme = t;
+  localStorage.setItem('theme', t);
+  $('themeIcon').innerHTML = t === 'dark'
+    ? '<circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>'
+    : '<path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>';
+}
+
+// ── Settings ──────────────────────────────────────────────────────────────────
+function openSettings() { $('settingsOv').classList.add('open'); }
+function closeSettings(e) {
+  // Close only when clicking the backdrop or via button (no event)
+  if (e && e.target !== $('settingsOv')) return;
+  $('settingsOv').classList.remove('open');
+}
+function setMode(m) {
+  genMode = m;
+  document.querySelectorAll('.tog[data-m]').forEach(el =>
+    el.classList.toggle('on', el.dataset.m === m));
+  $('chunkRow').style.display = m === 'stream' ? '' : 'none';
+}
+function setXvec(v) {
+  xvecOnly = v;
+  document.querySelectorAll('.tog[data-x]').forEach(el =>
+    el.classList.toggle('on', el.dataset.x === (v ? '1' : '0')));
+  $('advTranscript').style.display = v ? 'none' : '';
+}
+
+// ── Model ─────────────────────────────────────────────────────────────────────
+async function fetchStatus() {
+  try {
+    const d = await fetch('/status').then(r => r.json());
+    if (d.loaded && d.model) {
+      // Only trust loadedModel when the server confirms it's actually loaded
+      loadedModel = d.model;
+      const sel = $('modelSel');
+      for (const o of sel.options) if (o.value === d.model) { o.selected = true; break; }
+    }
+    populateSpeakers(d.speakers || []);
+    setPill(d.loaded ? 'loaded' : 'off', d.loaded ? 'ready' : 'not loaded');
+  } catch { setPill('off', 'offline'); }
+}
+
+async function loadModel() {
+  const btn = $('loadBtn');
+  btn.disabled = true; btn.textContent = 'Loading...';
+  loadingModel = $('modelSel').value;
+  loadedModel  = null;
+  setPlayBtns(true);
+  setPill('loading', 'loading...');
+  try {
+    const fd = new FormData();
+    fd.append('model_id', loadingModel);
+    const d = await fetch('/load', { method: 'POST', body: fd }).then(r => r.json());
+    if (d.status === 'loaded' || d.status === 'already_loaded') {
+      loadedModel  = loadingModel;
+      loadingModel = null;
+      setPill('loaded', 'ready');
+      fetchStatus();
+    } else {
+      loadingModel = null;
+      setPill('error', 'failed');
+    }
+  } catch {
+    loadingModel = null;
+    setPill('error', 'error');
+  }
+  btn.disabled = false; btn.textContent = 'Load';
+  setPlayBtns(false);
+}
+
+function setPill(state, label) {
+  $('mdot').className = 'mdot ' + state;
+  $('mtext').textContent = label;
+  updateModeRows();
+}
+
+function updateModeRows() {
+  function modelToRow(m) {
+    if (!m) return null;
+    if (m.includes('VoiceDesign')) return 'rowCustom';
+    if (m.includes('CustomVoice')) return 'rowChar';
+    return 'rowClone';
+  }
+  const activeRow = modelToRow(loadingModel ?? loadedModel);
+  const isLoading = !!loadingModel;
+  for (const id of ['rowClone', 'rowChar', 'rowCustom']) {
+    const el = $(id);
+    el.classList.toggle('compatible',   id === activeRow && !isLoading);
+    el.classList.toggle('loading',      id === activeRow &&  isLoading);
+    el.classList.toggle('incompatible', activeRow !== null && id !== activeRow);
+  }
+}
+
+// ── Arcade mode loader ─────────────────────────────────────────────────────────
+const MODE_MODELS = {
+  voice_clone: [
+    { id: 'Qwen/Qwen3-TTS-12Hz-0.6B-Base',         name: '0.6B Base',         sub: 'Fastest · RTF ~4×' },
+    { id: 'Qwen/Qwen3-TTS-12Hz-1.7B-Base',         name: '1.7B Base',         sub: 'Higher quality · RTF ~3.5×' },
+  ],
+  custom: [
+    { id: 'Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice',  name: '0.6B CustomVoice',  sub: 'Fastest' },
+    { id: 'Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice',  name: '1.7B CustomVoice',  sub: 'Higher quality' },
+  ],
+  voice_design: [
+    { id: 'Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign',  name: '1.7B VoiceDesign',  sub: 'Describe any voice' },
+  ],
+};
+const MODE_LABELS = { voice_clone: 'Clone', custom: 'Custom', voice_design: 'Voice Design' };
+let loaderMode = null;
+let loaderSelectedModel = null;
+
+function onModeRowClick(mode) {
+  const rowMap = { voice_clone: 'rowClone', custom: 'rowChar', voice_design: 'rowCustom' };
+  if (!$(rowMap[mode]).classList.contains('incompatible')) return;
+  openModelLoader(mode);
+}
+
+function openModelLoader(mode) {
+  loaderMode = mode;
+  const models = MODE_MODELS[mode];
+  loaderSelectedModel = models[0].id;
+
+  const grid = $('loaderGrid');
+  grid.innerHTML = '';
+  models.forEach(m => {
+    const card = document.createElement('div');
+    card.className = 'lcard' + (m.id === loaderSelectedModel ? ' sel' : '');
+    card.dataset.id = m.id;
+    card.innerHTML = `<div class="lc-name">${m.name}</div><div class="lc-sub">${m.sub}</div>`;
+    card.onclick = () => {
+      loaderSelectedModel = m.id;
+      grid.querySelectorAll('.lcard').forEach(c => c.classList.toggle('sel', c.dataset.id === m.id));
+    };
+    grid.appendChild(card);
+  });
+
+  $('loaderModeLabel').textContent = MODE_LABELS[mode] || mode;
+  $('loaderOv').classList.add('open');
+}
+
+function closeLoader(e) {
+  if (e && e.target !== $('loaderOv')) return;
+  $('loaderOv').classList.remove('open');
+}
+
+async function loadFromSheet() {
+  if (!loaderSelectedModel) return;
+  $('loaderOv').classList.remove('open');
+  $('modelSel').value = loaderSelectedModel;
+  await loadModel();
+}
+
+// ── Speakers ──────────────────────────────────────────────────────────────────
+function populateSpeakers(list) {
+  const sel  = $('speakerId');
+  const prev = sel.value;
+  sel.innerHTML = '<option value="" disabled hidden>Select speaker...</option>';
+  let ids = Array.isArray(list) ? list : Object.keys(list || {});
+  const defaultMap = new Map(defaultSpeakers.map(s => [s.id.toLowerCase(), s]));
+  if (!ids.length) ids = defaultSpeakers.map(s => s.id);
+
+  // Normalize to canonical capitalization from defaultSpeakers where known
+  ids = ids.map(id => defaultMap.get(String(id).toLowerCase())?.id ?? id);
+
+  // Keep previous selection even if backend list doesn't include it (case-insensitive)
+  if (prev && !ids.some(id => id.toLowerCase() === prev.toLowerCase())) ids = [prev, ...ids];
+
+  // Order: English first (based on known descriptions), then the rest
+  ids.sort((a, b) => {
+    const aInfo = defaultMap.get(String(a).toLowerCase());
+    const bInfo = defaultMap.get(String(b).toLowerCase());
+    const aEn = aInfo && aInfo.desc.includes('English') ? 0 : 1;
+    const bEn = bInfo && bInfo.desc.includes('English') ? 0 : 1;
+    if (aEn !== bEn) return aEn - bEn;
+    return String(a).localeCompare(String(b));
+  });
+
+  ids.forEach(id => {
+    const o    = document.createElement('option');
+    o.value    = id;  // keep backend ID for requests
+    const info = defaultMap.get(String(id).toLowerCase());
+    const label = info ? `${info.id} — ${info.desc}` : id;
+    o.textContent = label;
+    sel.appendChild(o);
+  });
+
+  if (prev) {
+    sel.value = prev;
+  } else {
+    const defaultId = 'Aiden';
+    sel.value = ids.find(id => id.toLowerCase() === defaultId.toLowerCase()) ?? ids[0] ?? '';
+  }
+}
+
+// ── Mic devices ───────────────────────────────────────────────────────────────
+async function loadMics() {
+  if (!navigator.mediaDevices?.enumerateDevices) return;
+  try {
+    const devs   = await navigator.mediaDevices.enumerateDevices();
+    const inputs = devs.filter(d => d.kind === 'audioinput');
+    const sel    = $('micSel');
+    sel.innerHTML = '';
+    let defaultId = null;
+    inputs.forEach((d, i) => {
+      const o = document.createElement('option');
+      o.value = d.deviceId;
+      o.textContent = d.label || `Microphone ${i + 1}`;
+      sel.appendChild(o);
+      const lbl = (d.label || '').toLowerCase();
+      if (!defaultId && (d.deviceId === 'default' || lbl.includes('default'))) {
+        defaultId = d.deviceId;
+      }
+    });
+    sel.onchange = () => { recDeviceId = sel.value; };
+    if (defaultId) {
+      recDeviceId = defaultId; sel.value = defaultId;
+    } else if (inputs.length) {
+      recDeviceId = inputs[0].deviceId;
+    }
+  } catch {}
+}
+
+// ── Reference audio ───────────────────────────────────────────────────────────
+function pickRef(input) { const f = input.files[0]; if (f) setRef(f); }
+function setRef(f) {
+  refFile = f;
+  $('refLabel').textContent = f.name;
+  $('refChip').classList.add('has');
+  const prev = $('recPreview');
+  if (prev.src) URL.revokeObjectURL(prev.src);
+  prev.src = URL.createObjectURL(f);
+  prev.style.display = 'block';
+}
+
+// ── Recording ─────────────────────────────────────────────────────────────────
+function toggleRec() { if (recActive) stopRec(); else startRec(); }
+
+async function startRec() {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    showMsg('err', 'Recording not supported. Use HTTPS or localhost.');
+    return;
+  }
+  // Secure-context guard — 0.0.0.0 will silently fail without this
+  if (!window.isSecureContext) {
+    const { hostname, port } = window.location;
+    if (hostname !== 'localhost' && hostname !== '127.0.0.1') {
+      showMsg('err', `Recording requires HTTPS or localhost. Try http://localhost:${port}/`);
+      return;
+    }
+  }
+  hideMsg();
+  recChunks = []; recPeak = 0;
+  recHasSignal = false; recSignalTs = null; recSignalCount = 0;
+  recActive = true;
+  $('micBtn').classList.add('rec');
+  $('recStatus').textContent = 'Starting mic…';
+  $('recBarWrap').style.display = 'block';
+  $('recPreview').style.display = 'none';
+
+  try {
+    const constraints = {
+      audio: { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+    };
+    if (recDeviceId) constraints.audio.deviceId = { exact: recDeviceId };
+    recStream = await navigator.mediaDevices.getUserMedia(constraints);
+    await loadMics(); // refresh labels now that permission is granted
+
+    recCtx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
+    if (recCtx.state === 'suspended') await recCtx.resume();
+
+    recSource   = recCtx.createMediaStreamSource(recStream);
+    recAnalyser = recCtx.createAnalyser();
+    recAnalyser.fftSize = 2048;
+    recGain = recCtx.createGain();
+    recGain.gain.value = 0.0001; // near-silent, keeps graph alive
+
+    recProc = recCtx.createScriptProcessor(4096, 1, 1);
+    recProc.onaudioprocess = e => {
+      if (!recActive) return;
+      const inp  = e.inputBuffer.getChannelData(0);
+      const copy = new Float32Array(inp.length);
+      for (let i = 0; i < inp.length; i++) {
+        copy[i] = inp[i];
+        const a = Math.abs(inp[i]);
+        if (a > recPeak) recPeak = a;
+      }
+      recChunks.push(copy);
+    };
+
+    recSource.connect(recAnalyser);
+    recAnalyser.connect(recProc);
+    recProc.connect(recGain);
+    recGain.connect(recCtx.destination);
+
+    recMeterBuf = new Uint8Array(recAnalyser.fftSize);
+
+    const tick = () => {
+      if (!recActive) return;
+      recAnalyser.getByteTimeDomainData(recMeterBuf);
+      let peak = 0;
+      for (let i = 0; i < recMeterBuf.length; i++) {
+        const v = Math.abs(recMeterBuf[i] - 128);
+        if (v > peak) peak = v;
+      }
+      const norm = Math.min(1, peak / 64);
+      $('recBar').style.width = Math.round(norm * 100) + '%';
+
+      if (norm > 0.02) recSignalCount++;
+      else recSignalCount = 0;
+      if (!recHasSignal && recSignalCount >= 4) {
+        recHasSignal = true;
+        recSignalTs  = performance.now();
+      }
+
+      $('recStatus').textContent = recHasSignal ? 'Recording…' : 'Waiting for signal…';
+      if (recHasSignal) {
+        const s  = Math.floor((performance.now() - recSignalTs) / 1000);
+        $('recTime').textContent = Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+      }
+      recMeterRaf = requestAnimationFrame(tick);
+    };
+    recMeterRaf = requestAnimationFrame(tick);
+
+  } catch (e) {
+    showMsg('err', 'Mic failed: ' + e.message);
+    cleanupRec();
+  }
+}
+
+async function stopRec() {
+  recActive = false;
+  if (recMeterRaf) { cancelAnimationFrame(recMeterRaf); recMeterRaf = null; }
+  $('micBtn').classList.remove('rec');
+  $('recStatus').textContent = '';
+  $('recTime').textContent   = '';
+  $('recBar').style.width    = '0%';
+  $('recBarWrap').style.display = 'none';
+
+  if (!recChunks.length) {
+    showMsg('err', 'No audio captured.');
+    cleanupRec(); return;
+  }
+
+  try {
+    const total = recChunks.reduce((s, c) => s + c.length, 0);
+    const buf   = recCtx.createBuffer(1, total, recCtx.sampleRate);
+    const ch    = buf.getChannelData(0);
+    let off = 0;
+    for (const c of recChunks) { ch.set(c, off); off += c.length; }
+
+    // Show preview immediately from raw buffer — no resampling needed for playback
+    const rawWav = bufToWav(buf);
+    const prev = $('recPreview');
+    if (prev.src) URL.revokeObjectURL(prev.src);
+    prev.src = URL.createObjectURL(rawWav);
+    prev.style.display = 'block';
+
+    // Resample to 16kHz in the background for server use
+    let out = buf;
+    if (buf.sampleRate !== REC_SR) {
+      const len    = Math.ceil(buf.duration * REC_SR);
+      const offCtx = new OfflineAudioContext(1, len, REC_SR);
+      const src    = offCtx.createBufferSource();
+      src.buffer   = buf; src.connect(offCtx.destination); src.start(0);
+      out = await offCtx.startRendering();
+    }
+    const wav = bufToWav(out);
+    refFile = new File([wav], 'recorded.wav', { type: 'audio/wav' });
+    $('refLabel').textContent = 'recorded.wav';
+    $('refChip').classList.add('has');
+  } catch (e) {
+    showMsg('err', 'Recording failed: ' + e.message);
+  }
+  cleanupRec();
+}
+
+function cleanupRec() {
+  if (recStream) recStream.getTracks().forEach(t => t.stop());
+  recStream = null; recActive = false;
+  if (recMeterRaf) { cancelAnimationFrame(recMeterRaf); recMeterRaf = null; }
+  recMeterBuf = null;
+  if (recAnalyser) recAnalyser.disconnect();
+  if (recProc)     recProc.disconnect();
+  if (recGain)     recGain.disconnect();
+  if (recSource)   recSource.disconnect();
+  if (recCtx)      recCtx.close().catch(() => {});
+  recAnalyser = null; recProc = null; recGain = null; recSource = null; recCtx = null;
+  $('micBtn').classList.remove('rec');
+}
+
+function bufToWav(buffer) {
+  const pcm = buffer.getChannelData(0);
+  const len = pcm.length, sr = buffer.sampleRate;
+  const ab  = new ArrayBuffer(44 + len * 2);
+  const v   = new DataView(ab);
+  const ws  = (o, s) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+  ws(0, 'RIFF'); v.setUint32(4, 36 + len * 2, true);
+  ws(8, 'WAVE'); ws(12, 'fmt ');
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, sr, true); v.setUint32(28, sr * 2, true);
+  v.setUint16(32, 2, true);  v.setUint16(34, 16, true);
+  ws(36, 'data'); v.setUint32(40, len * 2, true);
+  let off = 44;
+  for (let i = 0; i < len; i++, off += 2) {
+    const s = Math.max(-1, Math.min(1, pcm[i]));
+    v.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  }
+  return new Blob([ab], { type: 'audio/wav' });
+}
+
+// ── Web Audio: gapless streaming via ScriptProcessor ─────────────────────────
+async function warmAudio() {
+  if (actx) return;
+  try { await initAudio(24000); } catch {}
+}
+
+async function initAudio(sr) {
+  rawPcmSr = sr || 24000;
+  pcmQueue = []; rawPcmParts = [];
+  chunkQ = Promise.resolve(); dlBlob = null;
+  firstChunkAt = null; firstAudioAt = null; lastBufS = 0;
+
+  if (actx) {
+    if (actx.state === 'suspended') await actx.resume();
+    return;
+  }
+  actx  = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: rawPcmSr });
+  sproc = actx.createScriptProcessor(256, 0, 1);
+  sproc.onaudioprocess = e => {
+    const out = e.outputBuffer.getChannelData(0);
+    let i = 0, wrote = false;
+    while (i < out.length) {
+      if (!pcmQueue.length) { out.fill(0, i); break; }
+      const seg  = pcmQueue[0];
+      const take = Math.min(out.length - i, seg.data.length - seg.pos);
+      out.set(seg.data.subarray(seg.pos, seg.pos + take), i);
+      seg.pos += take; i += take; wrote = true;
+      if (seg.pos >= seg.data.length) pcmQueue.shift();
+    }
+    if (wrote && firstAudioAt == null) {
+      firstAudioAt = performance.now();
+      pushClientMetrics();
+    }
+  };
+  if (actx.state === 'suspended') await actx.resume();
+  sproc.connect(actx.destination);
+}
+
+function parseWav(bytes) {
+  const v  = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const sr = v.getUint32(24, true);
+  let off  = 12;
+  while (off + 8 <= bytes.length) {
+    const id   = String.fromCharCode(bytes[off], bytes[off+1], bytes[off+2], bytes[off+3]);
+    const size = v.getUint32(off + 4, true);
+    if (id === 'data') {
+      const raw = bytes.slice(off + 8, off + 8 + size);
+      const i16 = new Int16Array(raw.buffer, raw.byteOffset, raw.byteLength / 2);
+      const f32 = new Float32Array(i16.length);
+      for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768.0;
+      return { pcm: f32, rawPcm: raw, sr };
+    }
+    off += 8 + size;
+  }
+  return null;
+}
+
+function enqueueChunk(b64) {
+  chunkQ = chunkQ.then(() => {
+    if (!actx) return;
+    const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+    const p     = parseWav(bytes);
+    if (!p) return;
+    rawPcmParts.push(p.rawPcm);
+    pcmQueue.push({ data: p.pcm, pos: 0 });
+    if (firstChunkAt == null) firstChunkAt = performance.now();
+    lastBufS = pcmQueue.reduce((s, seg) => s + (seg.data.length - seg.pos), 0) / rawPcmSr;
+    pushClientMetrics();
+  });
+}
+
+function buildFinalWav() {
+  if (!rawPcmParts.length) return null;
+  const totalPcm = rawPcmParts.reduce((s, p) => s + p.length, 0);
+  const ab  = new ArrayBuffer(44 + totalPcm);
+  const v   = new DataView(ab);
+  const ws  = (o, s) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+  ws(0, 'RIFF'); v.setUint32(4, 36 + totalPcm, true);
+  ws(8, 'WAVE'); ws(12, 'fmt ');
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, rawPcmSr, true); v.setUint32(28, rawPcmSr * 2, true);
+  v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  ws(36, 'data'); v.setUint32(40, totalPcm, true);
+  const out = new Uint8Array(ab, 44);
+  let offset = 0;
+  for (const part of rawPcmParts) { out.set(part, offset); offset += part.length; }
+  return new Blob([ab], { type: 'audio/wav' });
+}
+
+// ── Generate ──────────────────────────────────────────────────────────────────
+async function generate(mode) {
+  if (busy) return;
+
+  const isVD = loadedModel?.includes('VoiceDesign');
+  const isCV = loadedModel?.includes('CustomVoice');
+  if (mode === 'voice_design' && loadedModel && !isVD) {
+    showMsg('warn', 'Voice design requires the 1.7B-VoiceDesign model.',
+      'Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign', mode); return;
+  }
+  if (mode === 'custom' && loadedModel && !isCV) {
+    showMsg('warn', 'Custom speaker requires a CustomVoice model.',
+      'Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice', mode); return;
+  }
+  if (mode === 'voice_clone' && loadedModel && (isVD || isCV)) {
+    showMsg('warn', 'Voice clone needs a Base model.',
+      'Qwen/Qwen3-TTS-12Hz-0.6B-Base', mode); return;
+  }
+  if (mode === 'voice_clone' && !refFile) { showMsg('err', 'Add reference audio first.'); return; }
+  if (mode === 'custom' && !$('speakerId').value) { showMsg('err', 'Select a speaker first.'); return; }
+  hideMsg();
+
+  busy = true;
+  setPlayBtns(true);
+
+  $('results').classList.add('show');
+  $('player').parentElement.style.display = 'none';
+  $('waveInd').classList.remove('off');
+  $('pbarWrap').classList.add('show');
+  const pb = $('pbar');
+  pb.style.width = ''; pb.classList.add('spin');
+  resetMetrics();
+
+  const fd = new FormData();
+  fd.append('text',               $('textIn').value);
+  fd.append('mode',               mode);
+  fd.append('language',           $('langSel').value);
+  fd.append('temperature',        $('tempSl').value);
+  fd.append('top_k',              $('topkSl').value);
+  fd.append('repetition_penalty', $('repSl').value);
+
+  if (mode === 'voice_clone') {
+    fd.append('ref_audio',  refFile);
+    fd.append('xvec_only',  xvecOnly ? 'true' : 'false');
+    if (!xvecOnly) fd.append('ref_text', $('refTextIn').value);
+  } else if (mode === 'custom') {
+    fd.append('speaker',  $('speakerId').value); // value is already the bare ID
+    fd.append('instruct', $('customInstr').value);
+  } else {
+    fd.append('instruct', $('voiceInstr').value);
+  }
+
+  try {
+    if (genMode === 'stream') {
+      fd.append('chunk_size', $('chunkSl').value);
+      await runStream(fd);
+    } else {
+      await runNonStream(fd);
+    }
+  } catch (e) {
+    showMsg('err', 'Generation failed: ' + e.message);
+    pb.classList.remove('spin'); pb.style.width = '0%';
+  }
+
+  busy = false;
+  setPlayBtns(false);
+}
+
+async function runStream(fd) {
+  clientT0 = performance.now();
+  firstChunkAt = null; firstAudioAt = null; lastBufS = 0; firstServerWall = null;
+
+  const res = await fetch('/generate/stream', { method: 'POST', body: fd });
+  if (!res.ok) { const e = await res.json(); throw new Error(e.detail || 'Request failed'); }
+
+  const reader = res.body.getReader();
+  const dec    = new TextDecoder();
+  let buf = '', audioInited = false;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    const lines = buf.split('\n');
+    buf = lines.pop();
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      const d = JSON.parse(line.slice(6));
+
+      if (d.type === 'chunk') {
+        if (!audioInited) { await initAudio(d.sample_rate); audioInited = true; }
+        // Capture server wall time on first chunk
+        if (firstChunkAt == null && d.elapsed_ms != null) firstServerWall = d.elapsed_ms;
+        pushMetrics(d.ttfa_ms, d.rtf, d.total_audio_s, d.voice_clone_ms);
+        enqueueChunk(d.audio_b64);
+
+      } else if (d.type === 'done') {
+        pushMetrics(d.ttfa_ms, d.rtf, d.total_audio_s, d.voice_clone_ms);
+        await chunkQ;
+        setDone();
+        const blob = buildFinalWav();
+        if (blob) setPlayer(blob);
+
+      } else if (d.type === 'error') {
+        throw new Error(d.message);
+      }
+    }
+  }
+}
+
+async function runNonStream(fd) {
+  $('waveInd').classList.add('off');
+  const res = await fetch('/generate', { method: 'POST', body: fd });
+  if (!res.ok) { const e = await res.json(); throw new Error(e.detail || 'Request failed'); }
+  const d = await res.json();
+  const m = d.metrics;
+  pushMetrics(m.total_ms, m.rtf, m.audio_duration_s, m.voice_clone_ms);
+  setDone();
+  const bytes = Uint8Array.from(atob(d.audio_b64), c => c.charCodeAt(0));
+  const blob  = new Blob([bytes], { type: 'audio/wav' });
+  setPlayer(blob);
+  $('player').play().catch(() => {}); // gracefully handle autoplay block
+}
+
+// ── Metrics ───────────────────────────────────────────────────────────────────
+function resetMetrics() {
+  ['mTTFA', 'mClient', 'mRTF', 'mDur', 'mBuf', 'mClone'].forEach(id => $(id).innerHTML = '&mdash;');
+  $('mCloneWrap').style.display = 'none';
+}
+function pushMetrics(ttfa, rtf, dur, cloneMs) {
+  if (ttfa    != null) $('mTTFA').textContent  = Math.round(ttfa) + 'ms';
+  if (rtf     != null) $('mRTF').textContent   = rtf.toFixed(2) + 'x';
+  if (dur     != null) $('mDur').textContent   = dur.toFixed(1) + 's';
+  if (cloneMs != null) {
+    $('mClone').textContent = Math.round(cloneMs) + 'ms';
+    $('mCloneWrap').style.display = '';
+  }
+}
+function pushClientMetrics() {
+  // Client TTFA: time from request to first audio heard
+  if (firstAudioAt != null)
+    $('mClient').textContent = Math.round(firstAudioAt - clientT0) + 'ms';
+  else if (firstChunkAt != null)
+    $('mClient').textContent = Math.round(firstChunkAt - clientT0) + 'ms';
+  // Buffer: audio queued ahead of playback
+  if (lastBufS != null)
+    $('mBuf').textContent = lastBufS.toFixed(2) + 's';
+}
+function setDone() {
+  $('waveInd').classList.add('off');
+  const pb = $('pbar');
+  pb.classList.remove('spin'); pb.style.width = '100%';
+}
+function setPlayer(blob) {
+  dlBlob = blob;
+  $('player').src = URL.createObjectURL(blob);
+  $('player').parentElement.style.display = '';
+}
+
+// ── Messages ──────────────────────────────────────────────────────────────────
+let pendingMode = null;
+function showMsg(type, text, switchModel, mode) {
+  const el = $('msgBar');
+  el.className = 'msg-bar show ' + type;
+  if (switchModel) {
+    pendingMode = mode;
+    el.innerHTML = '<span>' + text + '</span>' +
+      '<button class="sw-btn" onclick="switchAndGen(\'' + switchModel + '\')">Load &amp; generate</button>';
+  } else {
+    el.textContent = text;
+  }
+}
+function hideMsg() { $('msgBar').className = 'msg-bar'; }
+
+async function switchAndGen(target) {
+  if (busy) return;
+  const mode = pendingMode;
+  busy = true; hideMsg(); setPlayBtns(true);
+  $('modelSel').value = target;
+  try { await loadModel(); } finally { busy = false; }
+  setPlayBtns(false);
+  generate(mode);
+}
+
+// ── Download ──────────────────────────────────────────────────────────────────
+function dlAudio() {
+  if (!dlBlob) return;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(dlBlob);
+  a.download = 'generated_speech.wav';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+// ── Keyboard shortcuts ────────────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+    e.preventDefault();
+    // Pick best mode based on what's filled in
+    const mode = refFile ? 'voice_clone' : $('speakerId').value ? 'custom' : 'voice_design';
+    generate(mode);
+  }
+  if (e.key === 'Escape') {
+    if ($('loaderOv').classList.contains('open'))  $('loaderOv').classList.remove('open');
+    else if ($('settingsOv').classList.contains('open')) closeSettings();
+  }
+});
+</script>
+</body>
+</html>
