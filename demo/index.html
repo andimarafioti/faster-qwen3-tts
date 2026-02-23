@@ -128,20 +128,146 @@ body {
 .text-wrap textarea:focus { border-color: var(--accent-ring); }
 .text-wrap textarea::placeholder { color: var(--dimmer); }
 
-/* ── Mode rows ── */
-.mode-row { flex-shrink: 0; }
+/* ── Mode rows (arcade selector) ── */
+.mode-row {
+  flex-shrink: 0;
+  padding: 7px 9px; border-radius: var(--radius-sm);
+  transition: box-shadow 0.2s, opacity 0.2s;
+}
 .mode-row .label {
   font-size: 11px; color: var(--dim);
   margin-bottom: 4px;
   display: flex; align-items: center; gap: 8px;
+  transition: color 0.2s;
 }
 .mode-row .label::after {
   content: ''; flex: 1; height: 1px;
   background: var(--border);
+  transition: background 0.2s;
 }
-.mode-row .row {
-  display: flex; align-items: center; gap: 6px;
+.mode-row .row { display: flex; align-items: flex-start; gap: 6px; }
+
+/* Active (loaded) row — neon arcade glow */
+.mode-row.compatible {
+  box-shadow: 0 0 0 1px var(--accent),
+              0 0 12px rgba(139,92,246,0.45),
+              0 0 24px rgba(139,92,246,0.15);
 }
+.mode-row.compatible .label {
+  color: var(--accent); font-weight: 600; letter-spacing: 0.03em;
+}
+.mode-row.compatible .label::before {
+  content: '▶'; color: var(--accent);
+  font-size: 9px;
+  animation: blink-cursor 1s step-end infinite;
+}
+.mode-row.compatible .label::after { background: var(--accent-ring); }
+@keyframes blink-cursor { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+
+/* Loading row — pulsing glow while model is fetched */
+.mode-row.loading {
+  animation: row-pulse 0.7s ease-in-out infinite alternate;
+}
+.mode-row.loading .label {
+  color: var(--accent); font-weight: 600; letter-spacing: 0.03em;
+}
+.mode-row.loading .label::before {
+  content: '◌'; color: var(--accent); font-size: 11px;
+  animation: spin-ring 1s linear infinite;
+}
+.mode-row.loading .label::after { background: var(--accent-ring); }
+@keyframes row-pulse {
+  from { box-shadow: 0 0 0 1px rgba(139,92,246,0.4), 0 0 6px rgba(139,92,246,0.2); }
+  to   { box-shadow: 0 0 0 1px var(--accent),        0 0 20px rgba(139,92,246,0.55), 0 0 36px rgba(139,92,246,0.2); }
+}
+@keyframes spin-ring { to { transform: rotate(360deg); } }
+
+/* Inactive rows — dim + pointer; hover lifts the veil */
+.mode-row.incompatible { opacity: 0.42; cursor: pointer; }
+/* Block inner elements from capturing clicks/focus so the row onclick fires cleanly */
+.mode-row.incompatible > * { pointer-events: none; }
+.mode-row.incompatible:hover {
+  opacity: 0.9;
+  box-shadow: 0 0 0 1px var(--border2), 0 0 10px rgba(139,92,246,0.2);
+}
+.mode-row.incompatible:hover .label { color: var(--text2); }
+.mode-row.incompatible:hover .switch-tag { display: inline-flex; }
+
+/* "LOAD ▶" chip shown on hover of incompatible rows */
+.switch-tag {
+  display: none; align-items: center;
+  font-size: 9px; font-family: monospace; font-weight: 700;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--accent); padding: 1px 5px;
+  border: 1px solid var(--accent-ring); border-radius: 3px;
+  background: var(--accent-bg);
+  animation: flicker-in 0.35s step-end;
+}
+@keyframes flicker-in {
+  0%   { opacity: 0; } 20% { opacity: 1; } 35% { opacity: 0.2; }
+  55%  { opacity: 1; } 70% { opacity: 0.5; } 100% { opacity: 1; }
+}
+
+/* ── Loader overlay (centered modal) ── */
+.lov {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.75);
+  backdrop-filter: blur(2px);
+  z-index: 110;
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+  opacity: 0; pointer-events: none;
+  transition: opacity 0.2s;
+}
+.lov.open { opacity: 1; pointer-events: auto; }
+.lpanel {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-top: 2px solid var(--accent);
+  border-radius: 16px;
+  width: 100%; max-width: 460px;
+  max-height: 85dvh; overflow-y: auto;
+  padding: 20px 20px 24px;
+  transform: scale(0.93) translateY(12px);
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: 0 0 40px rgba(139,92,246,0.2), 0 20px 60px rgba(0,0,0,0.5);
+}
+.lov.open .lpanel { transform: scale(1) translateY(0); }
+.l-header {
+  display: flex; align-items: center; margin-bottom: 14px;
+}
+.l-back {
+  display: flex; align-items: center; gap: 4px;
+  font-size: 11px; font-family: monospace; color: var(--dim);
+  cursor: pointer; border: none; background: none;
+  padding: 0; margin-right: auto;
+  transition: color 0.15s;
+}
+.l-back:hover { color: var(--text2); }
+.l-title {
+  font-family: monospace; font-size: 12px; font-weight: 700;
+  letter-spacing: 0.22em; color: var(--accent);
+  text-align: center; flex: 1;
+  text-shadow: 0 0 8px rgba(139,92,246,0.6);
+}
+.lcard-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px; margin-bottom: 14px;
+}
+.lcard {
+  border: 1px solid var(--border2); border-radius: var(--radius-sm);
+  padding: 10px 12px; cursor: pointer; transition: all 0.15s;
+  background: var(--surface);
+}
+.lcard:hover { border-color: var(--accent-ring); background: var(--accent-bg); }
+.lcard.sel {
+  border-color: var(--accent); background: var(--accent-bg);
+  box-shadow: 0 0 8px rgba(139,92,246,0.35);
+}
+.lcard .lc-name { font-size: 13px; font-weight: 600; color: var(--text); }
+.lcard .lc-sub  { font-size: 11px; color: var(--dim); margin-top: 2px; }
+.lcard.sel .lc-name { color: var(--accent); }
 
 /* Ref audio chip */
 .ref-chip {
@@ -214,16 +340,21 @@ body {
 }
 .sm-sel option { background: var(--surface); }
 
-/* Voice instruction input */
+/* Voice instruction textarea (auto-grow) */
 .voice-in {
   flex: 1; padding: 6px 10px;
   background: var(--surface); border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   color: var(--text); font-size: 12px; font-family: inherit;
   outline: none; transition: border-color 0.15s;
+  resize: none; overflow: hidden;
+  min-height: 32px; line-height: 1.45;
 }
 .voice-in:focus { border-color: var(--accent-ring); }
 .voice-in::placeholder { color: var(--dimmer); }
+/* Full-width instruction field below a row (Custom mode) */
+.instr-wrap { margin-top: 6px; display: flex; }
+.instr-wrap .voice-in { flex: 1; }
 
 /* ── Play button ── */
 .play-btn {
@@ -495,9 +626,27 @@ body {
       <textarea id="textIn" placeholder="Enter text to synthesize...">Hello! This is faster Qwen3-TTS running with CUDA graph capture. Notice how the audio starts playing almost immediately.</textarea>
     </div>
 
+    <!-- Custom (built-in speakers) -->
+    <div class="mode-row" id="rowChar" onclick="onModeRowClick('custom')">
+      <div class="label">Custom — use a built-in speaker<span class="switch-tag">LOAD ▶</span></div>
+      <div class="row">
+        <select class="sm-sel" id="speakerId" style="flex:1">
+          <option value="">Select speaker...</option>
+        </select>
+        <button class="play-btn" onclick="generate('custom')" title="Generate">
+          <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6,3 20,12 6,21"/></svg>
+        </button>
+      </div>
+      <div class="instr-wrap">
+        <textarea id="customInstr" class="voice-in" rows="1"
+          placeholder="Voice style instructions (optional)…"
+          oninput="autoGrow(this)"></textarea>
+      </div>
+    </div>
+
     <!-- Clone -->
-    <div class="mode-row">
-      <div class="label">Clone — match a voice from a reference clip</div>
+    <div class="mode-row" id="rowClone" onclick="onModeRowClick('voice_clone')">
+      <div class="label">Clone — match a voice from a reference clip<span class="switch-tag">LOAD ▶</span></div>
       <div class="row">
         <label class="ref-chip" id="refChip">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
@@ -519,53 +668,40 @@ body {
       <audio id="recPreview" class="rec-preview" controls></audio>
     </div>
 
-    <!-- Character -->
-    <div class="mode-row">
-      <div class="label">Character — use a built-in speaker</div>
+    <!-- Voice Design -->
+    <div class="mode-row" id="rowCustom" onclick="onModeRowClick('voice_design')">
+      <div class="label">Voice Design — describe any voice<span class="switch-tag">LOAD ▶</span></div>
       <div class="row">
-        <select class="sm-sel" id="speakerId" style="flex:1">
-          <option value="">Select speaker...</option>
-        </select>
-        <button class="play-btn" onclick="generate('custom')" title="Generate">
-          <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6,3 20,12 6,21"/></svg>
-        </button>
-      </div>
-    </div>
-
-    <!-- Custom -->
-    <div class="mode-row">
-      <div class="label">Custom — describe any voice</div>
-      <div class="row">
-        <input type="text" class="voice-in" id="voiceInstr"
-          placeholder="e.g. warm, calm female narrator..."
-          value="A warm, calm narrator with a clear and engaging delivery.">
+        <textarea class="voice-in" id="voiceInstr" rows="1"
+          placeholder="e.g. warm, calm female narrator…"
+          oninput="autoGrow(this)">A warm, calm narrator with a clear and engaging delivery.</textarea>
         <button class="play-btn" onclick="generate('voice_design')" title="Generate">
           <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6,3 20,12 6,21"/></svg>
         </button>
       </div>
     </div>
-  </div>
+    <!-- Messages -->
+    <div class="msg-bar" id="msgBar"></div>
 
-  <!-- Messages -->
-  <div class="msg-bar" id="msgBar"></div>
+    <!-- Progress -->
+    <div class="pbar-wrap" id="pbarWrap"><div class="pbar" id="pbar"></div></div>
 
-  <!-- Progress -->
-  <div class="pbar-wrap" id="pbarWrap"><div class="pbar" id="pbar"></div></div>
-
-  <!-- Results -->
-  <div class="results" id="results">
-    <div class="player-row">
-      <audio id="player" controls></audio>
-      <button class="dl-btn" onclick="dlAudio()" title="Download WAV">&darr;</button>
+    <!-- Results -->
+    <div class="results" id="results">
+      <div class="player-row">
+        <audio id="player" controls></audio>
+        <button class="dl-btn" onclick="dlAudio()" title="Download WAV">&darr;</button>
+      </div>
+      <div class="metrics">
+        <div class="met"><span class="met-k">TTFA</span><span class="met-v" id="mTTFA">&mdash;</span></div>
+        <div class="met"><span class="met-k">Client</span><span class="met-v" id="mClient">&mdash;</span></div>
+        <div class="met"><span class="met-k">RTF</span><span class="met-v" id="mRTF">&mdash;</span></div>
+        <div class="met"><span class="met-k">Dur</span><span class="met-v" id="mDur">&mdash;</span></div>
+        <div class="met"><span class="met-k">Buf</span><span class="met-v" id="mBuf">&mdash;</span></div>
+        <div class="wave" id="waveInd"><i></i><i></i><i></i><i></i><i></i></div>
+      </div>
     </div>
-    <div class="metrics">
-      <div class="met"><span class="met-k">TTFA</span><span class="met-v" id="mTTFA">&mdash;</span></div>
-      <div class="met"><span class="met-k">Client</span><span class="met-v" id="mClient">&mdash;</span></div>
-      <div class="met"><span class="met-k">RTF</span><span class="met-v" id="mRTF">&mdash;</span></div>
-      <div class="met"><span class="met-k">Dur</span><span class="met-v" id="mDur">&mdash;</span></div>
-      <div class="met"><span class="met-k">Buf</span><span class="met-v" id="mBuf">&mdash;</span></div>
-      <div class="wave" id="waveInd"><i></i><i></i><i></i><i></i><i></i></div>
-    </div>
+
   </div>
 
 </div><!-- /.app -->
@@ -589,7 +725,7 @@ body {
         <option value="Qwen/Qwen3-TTS-12Hz-0.6B-Base">0.6B Base</option>
         <option value="Qwen/Qwen3-TTS-12Hz-1.7B-Base">1.7B Base</option>
         <option value="Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice">0.6B CustomVoice</option>
-        <option value="Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice">1.7B CustomVoice</option>
+        <option value="Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice" selected>1.7B CustomVoice</option>
         <option value="Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign">1.7B VoiceDesign</option>
       </select>
       <button class="s-btn" id="loadBtn" onclick="loadModel()">Load</button>
@@ -663,12 +799,6 @@ body {
       <textarea id="refTextIn" rows="2" placeholder="Transcript of the reference audio clip..."></textarea>
     </div>
 
-    <div class="s-section">Custom Voice</div>
-    <div class="s-row">
-      <label>Instruction</label>
-      <input type="text" id="customInstr" placeholder="Optional voice instruction...">
-    </div>
-
     <div class="s-section">Recording</div>
     <div class="s-row">
       <label>Microphone</label>
@@ -677,9 +807,26 @@ body {
   </div>
 </div>
 
+<!-- ── Model Loader Overlay ── -->
+<div class="lov" id="loaderOv" onclick="closeLoader(event)">
+  <div class="lpanel" onclick="event.stopPropagation()">
+    <div class="l-header">
+      <button class="l-back" onclick="$('loaderOv').classList.remove('open')">◀ BACK</button>
+      <div class="l-title">⬡ <span id="loaderModeLabel"></span> ⬡</div>
+    </div>
+    <div class="lcard-grid" id="loaderGrid"></div>
+    <button class="btn-primary" style="width:100%" onclick="loadFromSheet()">LOAD ▶</button>
+  </div>
+</div>
+
 <script>
 // ── Shorthand ─────────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
+function autoGrow(el) {
+  el.style.height = 'auto';
+  el.style.height = el.scrollHeight + 'px';
+}
+
 function setPlayBtns(disabled) {
   document.querySelectorAll('.play-btn').forEach(b => b.disabled = disabled);
 }
@@ -689,7 +836,8 @@ let genMode  = 'stream';
 let xvecOnly = true;
 let busy     = false;
 let refFile  = null;
-let loadedModel = null;
+let loadedModel  = null;
+let loadingModel = null;
 let dlBlob   = null;
 
 const defaultSpeakers = [
@@ -717,9 +865,14 @@ let recPeak = 0, recHasSignal = false, recSignalTs = null, recSignalCount = 0;
 const REC_SR = 16000;
 
 // ── Init ──────────────────────────────────────────────────────────────────────
-window.addEventListener('load', () => {
+window.addEventListener('load', async () => {
   initTheme();
-  fetchStatus();
+  autoGrow($('voiceInstr'));
+  await fetchStatus();
+  if (!loadedModel) {
+    $('modelSel').value = 'Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice';
+    loadModel();
+  }
   loadMics();
   populateSpeakers([]);
   const warm = () => { warmAudio(); window.removeEventListener('pointerdown', warm); };
@@ -768,36 +921,125 @@ function setXvec(v) {
 async function fetchStatus() {
   try {
     const d = await fetch('/status').then(r => r.json());
-    if (d.model) {
+    if (d.loaded && d.model) {
+      // Only trust loadedModel when the server confirms it's actually loaded
       loadedModel = d.model;
       const sel = $('modelSel');
       for (const o of sel.options) if (o.value === d.model) { o.selected = true; break; }
     }
     populateSpeakers(d.speakers || []);
-    setPill(d.loaded ? 'loaded' : 'off', d.model ? 'ready' : 'not loaded');
+    setPill(d.loaded ? 'loaded' : 'off', d.loaded ? 'ready' : 'not loaded');
   } catch { setPill('off', 'offline'); }
 }
 
 async function loadModel() {
   const btn = $('loadBtn');
   btn.disabled = true; btn.textContent = 'Loading...';
+  loadingModel = $('modelSel').value;
+  loadedModel  = null;
+  setPlayBtns(true);
   setPill('loading', 'loading...');
   try {
     const fd = new FormData();
-    fd.append('model_id', $('modelSel').value);
+    fd.append('model_id', loadingModel);
     const d = await fetch('/load', { method: 'POST', body: fd }).then(r => r.json());
     if (d.status === 'loaded' || d.status === 'already_loaded') {
-      loadedModel = $('modelSel').value;
+      loadedModel  = loadingModel;
+      loadingModel = null;
       setPill('loaded', 'ready');
       fetchStatus();
-    } else setPill('error', 'failed');
-  } catch { setPill('error', 'error'); }
+    } else {
+      loadingModel = null;
+      setPill('error', 'failed');
+    }
+  } catch {
+    loadingModel = null;
+    setPill('error', 'error');
+  }
   btn.disabled = false; btn.textContent = 'Load';
+  setPlayBtns(false);
 }
 
 function setPill(state, label) {
   $('mdot').className = 'mdot ' + state;
   $('mtext').textContent = label;
+  updateModeRows();
+}
+
+function updateModeRows() {
+  function modelToRow(m) {
+    if (!m) return null;
+    if (m.includes('VoiceDesign')) return 'rowCustom';
+    if (m.includes('CustomVoice')) return 'rowChar';
+    return 'rowClone';
+  }
+  const activeRow = modelToRow(loadingModel ?? loadedModel);
+  const isLoading = !!loadingModel;
+  for (const id of ['rowClone', 'rowChar', 'rowCustom']) {
+    const el = $(id);
+    el.classList.toggle('compatible',   id === activeRow && !isLoading);
+    el.classList.toggle('loading',      id === activeRow &&  isLoading);
+    el.classList.toggle('incompatible', activeRow !== null && id !== activeRow);
+  }
+}
+
+// ── Arcade mode loader ─────────────────────────────────────────────────────────
+const MODE_MODELS = {
+  voice_clone: [
+    { id: 'Qwen/Qwen3-TTS-12Hz-0.6B-Base',         name: '0.6B Base',         sub: 'Fastest · RTF ~4×' },
+    { id: 'Qwen/Qwen3-TTS-12Hz-1.7B-Base',         name: '1.7B Base',         sub: 'Higher quality · RTF ~3.5×' },
+  ],
+  custom: [
+    { id: 'Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice',  name: '0.6B CustomVoice',  sub: 'Fastest' },
+    { id: 'Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice',  name: '1.7B CustomVoice',  sub: 'Higher quality' },
+  ],
+  voice_design: [
+    { id: 'Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign',  name: '1.7B VoiceDesign',  sub: 'Describe any voice' },
+  ],
+};
+const MODE_LABELS = { voice_clone: 'Clone', custom: 'Custom', voice_design: 'Voice Design' };
+let loaderMode = null;
+let loaderSelectedModel = null;
+
+function onModeRowClick(mode) {
+  const rowMap = { voice_clone: 'rowClone', custom: 'rowChar', voice_design: 'rowCustom' };
+  if (!$(rowMap[mode]).classList.contains('incompatible')) return;
+  openModelLoader(mode);
+}
+
+function openModelLoader(mode) {
+  loaderMode = mode;
+  const models = MODE_MODELS[mode];
+  loaderSelectedModel = models[0].id;
+
+  const grid = $('loaderGrid');
+  grid.innerHTML = '';
+  models.forEach(m => {
+    const card = document.createElement('div');
+    card.className = 'lcard' + (m.id === loaderSelectedModel ? ' sel' : '');
+    card.dataset.id = m.id;
+    card.innerHTML = `<div class="lc-name">${m.name}</div><div class="lc-sub">${m.sub}</div>`;
+    card.onclick = () => {
+      loaderSelectedModel = m.id;
+      grid.querySelectorAll('.lcard').forEach(c => c.classList.toggle('sel', c.dataset.id === m.id));
+    };
+    grid.appendChild(card);
+  });
+
+  $('loaderModeLabel').textContent = MODE_LABELS[mode] || mode;
+  $('loaderOv').classList.add('open');
+}
+
+function closeLoader(e) {
+  if (e && e.target !== $('loaderOv')) return;
+  $('loaderOv').classList.remove('open');
+}
+
+async function loadFromSheet() {
+  if (!loaderSelectedModel) return;
+  $('loaderOv').classList.remove('open');
+  $('modelSel').value = loaderSelectedModel;
+  await loadModel();
 }
 
 // ── Speakers ──────────────────────────────────────────────────────────────────
@@ -1333,8 +1575,9 @@ document.addEventListener('keydown', e => {
     const mode = refFile ? 'voice_clone' : $('speakerId').value ? 'custom' : 'voice_design';
     generate(mode);
   }
-  if (e.key === 'Escape' && $('settingsOv').classList.contains('open')) {
-    closeSettings();
+  if (e.key === 'Escape') {
+    if ($('loaderOv').classList.contains('open'))  $('loaderOv').classList.remove('open');
+    else if ($('settingsOv').classList.contains('open')) closeSettings();
   }
 });
 </script>

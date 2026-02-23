@@ -415,8 +415,8 @@ def main():
     parser = argparse.ArgumentParser(description="Faster Qwen3-TTS Demo Server")
     parser.add_argument(
         "--model",
-        default="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
-        help="Model to preload at startup (default: 0.6B-Base)",
+        default="Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+        help="Model to preload at startup (default: 1.7B-CustomVoice)",
     )
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", 7860)))
     parser.add_argument("--host", default="0.0.0.0")
