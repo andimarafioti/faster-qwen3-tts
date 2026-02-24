@@ -232,6 +232,7 @@ async def generate_stream(
                     temperature=temperature,
                     top_k=top_k,
                     repetition_penalty=repetition_penalty,
+                    max_new_tokens=360,  # cap at 30s (12 Hz codec)
                 )
             elif mode == "custom":
                 if not speaker:
@@ -245,6 +246,7 @@ async def generate_stream(
                     temperature=temperature,
                     top_k=top_k,
                     repetition_penalty=repetition_penalty,
+                    max_new_tokens=360,
                 )
             else:
                 gen = model.generate_voice_design_streaming(
@@ -255,6 +257,7 @@ async def generate_stream(
                     temperature=temperature,
                     top_k=top_k,
                     repetition_penalty=repetition_penalty,
+                    max_new_tokens=360,
                 )
 
             # Use timing data from the generator itself (measured after voice-clone
@@ -395,6 +398,7 @@ async def generate_non_streaming(
                 temperature=temperature,
                 top_k=top_k,
                 repetition_penalty=repetition_penalty,
+                max_new_tokens=360,  # cap at 30s (12 Hz codec)
             )
         elif mode == "custom":
             if not speaker:
@@ -407,6 +411,7 @@ async def generate_non_streaming(
                 temperature=temperature,
                 top_k=top_k,
                 repetition_penalty=repetition_penalty,
+                max_new_tokens=360,
             )
         else:
             audio_list, sr = model.generate_voice_design(
@@ -416,6 +421,7 @@ async def generate_non_streaming(
                 temperature=temperature,
                 top_k=top_k,
                 repetition_penalty=repetition_penalty,
+                max_new_tokens=360,
             )
         elapsed = time.perf_counter() - t0
         audio = _concat_audio(audio_list)
