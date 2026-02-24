@@ -47,7 +47,8 @@ def fast_generate_streaming(
     device = talker_input_embeds.device
 
     suppress_mask = torch.zeros(vocab_size, dtype=torch.bool, device=device)
-    for i in range(vocab_size - 1024, vocab_size):
+    suppress_start = max(0, vocab_size - 1024)
+    for i in range(suppress_start, vocab_size):
         if i != eos_id:
             suppress_mask[i] = True
 
