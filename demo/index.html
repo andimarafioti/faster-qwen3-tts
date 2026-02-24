@@ -657,8 +657,8 @@ body {
       <!-- Simple / Advanced toggle -->
       <div class="clone-toggle-row">
         <div class="toggle">
-          <div class="tog on" data-x="1" onclick="setXvec(true)">Simple</div>
-          <div class="tog" data-x="0" onclick="setXvec(false)">Advanced</div>
+          <div class="tog" data-x="1" onclick="setXvec(true)">Simple</div>
+          <div class="tog on" data-x="0" onclick="setXvec(false)">Advanced</div>
         </div>
       </div>
       <!-- Reference audio + action buttons -->
@@ -677,12 +677,12 @@ body {
           <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6,3 20,12 6,21"/></svg>
         </button>
       </div>
-      <!-- Advanced: transcript (hidden by default) -->
-      <div id="advTranscript" style="display:none">
-        <div class="clone-hint">Advanced cloning requires the full transcript of the reference audio clip.</div>
+      <!-- Advanced: transcript -->
+      <div id="advTranscript">
+        <div class="clone-hint">Advanced cloning uses the transcript of the reference clip for higher accuracy. Upload or record to auto-transcribe.</div>
         <div class="instr-wrap">
           <textarea id="refTextIn" class="voice-in" rows="2"
-            placeholder="Type the full transcript here…"
+            placeholder="Upload or record audio to auto-transcribe…"
             oninput="autoGrow(this)"></textarea>
         </div>
       </div>
@@ -842,7 +842,7 @@ function setPlayBtns(disabled) {
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let genMode  = 'stream';
-let xvecOnly = true;
+let xvecOnly = false;
 let busy     = false;
 let refFile  = null;
 let loadedModel  = null;
@@ -923,6 +923,30 @@ function setXvec(v) {
   document.querySelectorAll('.tog[data-x]').forEach(el =>
     el.classList.toggle('on', el.dataset.x === (v ? '1' : '0')));
   $('advTranscript').style.display = v ? 'none' : '';
+}
+
+// ── Auto-transcription ─────────────────────────────────────────────────────────
+async function transcribeRef() {
+  if (!refFile) return;
+  const ta = $('refTextIn');
+  ta.disabled = true;
+  ta.value = '';
+  ta.placeholder = 'Transcribing…';
+  autoGrow(ta);
+  try {
+    const fd = new FormData();
+    fd.append('audio', refFile);
+    const res = await fetch('/transcribe', { method: 'POST', body: fd });
+    if (!res.ok) return; // transcription unavailable — leave field empty
+    const d = await res.json();
+    ta.value = d.text || '';
+    autoGrow(ta);
+  } catch {
+    // network error — leave field empty, user can type manually
+  } finally {
+    ta.disabled = false;
+    if (!ta.value) ta.placeholder = 'Type the full transcript here…';
+  }
 }
 
 // ── Model ─────────────────────────────────────────────────────────────────────
@@ -1130,6 +1154,7 @@ function setRef(f) {
   if (prev.src) URL.revokeObjectURL(prev.src);
   prev.src = URL.createObjectURL(f);
   prev.style.display = 'block';
+  transcribeRef();
 }
 
 // ── Recording ─────────────────────────────────────────────────────────────────
@@ -1268,6 +1293,7 @@ async function stopRec() {
     refFile = new File([wav], 'recorded.wav', { type: 'audio/wav' });
     $('refLabel').textContent = 'recorded.wav';
     $('refChip').classList.add('has');
+    transcribeRef();
   } catch (e) {
     showMsg('err', 'Recording failed: ' + e.message);
   }
