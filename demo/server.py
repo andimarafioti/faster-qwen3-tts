@@ -40,11 +40,7 @@ except ImportError:
     print("Install with:  pip install -e .  (from the repo root)")
     sys.exit(1)
 
-try:
-    from nano_parakeet import from_pretrained as _parakeet_from_pretrained
-    _PARAKEET_AVAILABLE = True
-except ImportError:
-    _PARAKEET_AVAILABLE = False
+from nano_parakeet import from_pretrained as _parakeet_from_pretrained
 
 
 AVAILABLE_MODELS = [
@@ -476,15 +472,9 @@ def main():
         _model._warmup(prefill_len=100)
         print("TTS model ready.")
 
-        if _PARAKEET_AVAILABLE:
-            print("Loading transcription model (nano-parakeet)…")
-            try:
-                _parakeet = _parakeet_from_pretrained(device="cuda")
-                print("Transcription model ready.")
-            except Exception as e:
-                print(f"Warning: could not load transcription model: {e}")
-        else:
-            print("nano-parakeet not installed — transcription disabled.")
+        print("Loading transcription model (nano-parakeet)…")
+        _parakeet = _parakeet_from_pretrained(device="cuda")
+        print("Transcription model ready.")
 
         print(f"Ready. Open http://localhost:{args.port}")
 
