@@ -29,7 +29,8 @@ class PredictorGraph:
         codebook_tokens = mpg.run(pred_input)  # pred_input: [1, 2, H]
     """
 
-    def __init__(self, code_predictor, pred_config, talker_hidden_size, device='cuda:0', dtype=torch.bfloat16):
+    def __init__(self, code_predictor, pred_config, talker_hidden_size, device='cuda:0', dtype=torch.bfloat16,
+                 do_sample=True, top_k=50, temperature=0.9):
         self.device = device
         self.dtype = dtype
         self.num_layers = pred_config.num_hidden_layers
@@ -37,6 +38,9 @@ class PredictorGraph:
         self.num_code_groups = pred_config.num_code_groups
         self.num_codebooks = self.num_code_groups - 1  # 15
         self.max_seq = 2 + self.num_codebooks  # 17
+        self.do_sample = do_sample
+        self.top_k = top_k
+        self.temperature = temperature
 
         # Extract model components (references, not copies)
         cp = code_predictor
@@ -101,6 +105,18 @@ class PredictorGraph:
         for pos in self.decode_cache_positions:
             self.decode_attn.append(self._make_attn_mask(dummy_decode, pos))
 
+    def _sample(self, logits):
+        """Sample one token from logits [1, 1, vocab]. Returns [1] long tensor."""
+        l = logits[:, 0, :]  # [1, vocab]
+        if not self.do_sample:
+            return torch.argmax(l, dim=-1)
+        l = l / self.temperature
+        if self.top_k > 0:
+            topk_vals, _ = torch.topk(l, min(self.top_k, l.shape[-1]))
+            l = torch.where(l < topk_vals[:, -1:], torch.full_like(l, float('-inf')), l)
+        probs = torch.softmax(l, dim=-1)
+        return torch.multinomial(probs, 1)[:, 0]
+
     def _full_loop(self):
         """The full 15-step predictor loop on static buffers."""
         # Project input from talker hidden size to predictor hidden size
@@ -118,7 +134,7 @@ class PredictorGraph:
 
         # First codebook: logits from last position
         logits = self.lm_heads[0](h[:, -1:, :])  # [1, 1, vocab]
-        tok = torch.argmax(logits[:, 0, :], dim=-1)  # [1]
+        tok = self._sample(logits)  # [1]
         self.output_tokens[0] = tok[0]
 
         # Remaining 14 codebooks
@@ -138,7 +154,7 @@ class PredictorGraph:
             h = out.last_hidden_state
 
             logits = self.lm_heads[cb_idx](h[:, -1:, :])
-            tok = torch.argmax(logits[:, 0, :], dim=-1)
+            tok = self._sample(logits)
             self.output_tokens[cb_idx] = tok[0]
 
         return self.output_tokens

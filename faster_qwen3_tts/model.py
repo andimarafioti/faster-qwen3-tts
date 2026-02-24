@@ -105,6 +105,9 @@ class FasterQwen3TTS:
             talker_hidden,
             device=device,
             dtype=dtype,
+            do_sample=True,
+            top_k=50,
+            temperature=0.9,
         )
         
         talker_graph = TalkerGraph(
