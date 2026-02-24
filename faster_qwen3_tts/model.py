@@ -179,6 +179,7 @@ class FasterQwen3TTS:
         ref_text: str,
         language: str,
         xvec_only: bool = True,
+        non_streaming_mode: bool = False,
     ):
         """Prepare inputs for generation (shared by streaming and non-streaming).
 
@@ -236,7 +237,7 @@ class FasterQwen3TTS:
             voice_clone_prompt=vcp,
             languages=[language] if language is not None else ["Auto"],
             speakers=None,
-            non_streaming_mode=False,
+            non_streaming_mode=non_streaming_mode,
         )
 
         if not self._warmed_up:
@@ -551,7 +552,8 @@ class FasterQwen3TTS:
         from .generate import fast_generate
 
         m, talker, config, tie, tam, tth, tpe, ref_codes = self._prepare_generation(
-            text, ref_audio, ref_text, language=language, xvec_only=xvec_only
+            text, ref_audio, ref_text, language=language, xvec_only=xvec_only,
+            non_streaming_mode=True,
         )
 
         codec_ids, timing = fast_generate(
