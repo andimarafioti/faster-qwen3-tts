@@ -657,8 +657,8 @@ body {
       <!-- Simple / Advanced toggle -->
       <div class="clone-toggle-row">
         <div class="toggle">
-          <div class="tog" data-x="1" onclick="setXvec(true)">Simple</div>
-          <div class="tog on" data-x="0" onclick="setXvec(false)">Advanced</div>
+          <div class="tog on" data-x="1" onclick="setXvec(true)">Simple</div>
+          <div class="tog" data-x="0" onclick="setXvec(false)">Advanced</div>
         </div>
       </div>
       <!-- Reference audio + action buttons -->
@@ -678,7 +678,7 @@ body {
         </button>
       </div>
       <!-- Advanced: transcript -->
-      <div id="advTranscript">
+      <div id="advTranscript" style="display:none">
         <div class="clone-hint">Advanced cloning uses the transcript of the reference clip for higher accuracy. Upload or record to auto-transcribe.</div>
         <div class="instr-wrap">
           <textarea id="refTextIn" class="voice-in" rows="2"
@@ -842,7 +842,7 @@ function setPlayBtns(disabled) {
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let genMode  = 'stream';
-let xvecOnly = false;
+let xvecOnly = true;
 let busy     = false;
 let refFile  = null;
 let loadedModel  = null;
