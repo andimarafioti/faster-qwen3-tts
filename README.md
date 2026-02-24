@@ -233,9 +233,9 @@ The 12 Hz codec uses a causal `chunked_decode`: each frame is reconstructed usin
 
 ### Non-streaming vs streaming quality
 
-`generate_voice_clone` (non-streaming) uses `non_streaming_mode=True`, which puts the **full target text** into the prefill before any audio is generated. The model sees the complete sentence before it starts speaking, producing noticeably better prosody and voice consistency than feeding text step-by-step.
+`generate_voice_clone` defaults to `non_streaming_mode=False` to match the official Qwen3-TTS behavior. You can set `non_streaming_mode=True` to put the **full target text** into the prefill before any audio is generated. This can improve prosody/consistency for non-streaming use cases, but it is not how the official demo behaves.
 
-`generate_voice_clone_streaming` uses `non_streaming_mode=False` — text is fed token-by-token during decode, which is the correct tradeoff for streaming since the full sentence isn't known in advance. The speed difference between the two modes is negligible (~2.3 s vs ~2.4 s per generation on RTX 4090).
+`generate_voice_clone_streaming` always uses `non_streaming_mode=False` — text is fed token-by-token during decode, which is the correct tradeoff for streaming since the full sentence isn't known in advance. The speed difference between the two modes is negligible (~2.3 s vs ~2.4 s per generation on RTX 4090).
 
 ### ICL Phoneme Artifact
 

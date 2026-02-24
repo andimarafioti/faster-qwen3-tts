@@ -526,11 +526,14 @@ class FasterQwen3TTS:
         ref_audio: Union[str, Path],
         ref_text: str,
         max_new_tokens: int = 2048,
+        min_new_tokens: int = 2,
         temperature: float = 0.9,
         top_k: int = 50,
+        top_p: float = 1.0,
         do_sample: bool = True,
         repetition_penalty: float = 1.05,
         xvec_only: bool = True,
+        non_streaming_mode: bool = False,
     ) -> Tuple[list, int]:
         """
         Generate speech with voice cloning using reference audio.
@@ -541,13 +544,16 @@ class FasterQwen3TTS:
             ref_audio: Path to reference audio file
             ref_text: Transcription of reference audio
             max_new_tokens: Maximum tokens to generate
+            min_new_tokens: Minimum tokens before EOS is allowed
             temperature: Sampling temperature
             top_k: Top-k sampling
+            top_p: Top-p (nucleus) sampling
             do_sample: Whether to sample
             repetition_penalty: Repetition penalty
             xvec_only: When True (default), use only the speaker embedding for voice cloning.
                 This prevents phoneme bleed-through from the reference and allows clean
                 language switching. Set to False for full ICL mode (reference audio in context).
+            non_streaming_mode: Match upstream non-streaming prompt layout. Default False (official behavior).
 
         Returns:
             Tuple of ([audio_waveform], sample_rate)
@@ -555,8 +561,12 @@ class FasterQwen3TTS:
         from .generate import fast_generate
 
         m, talker, config, tie, tam, tth, tpe, ref_codes = self._prepare_generation(
-            text, ref_audio, ref_text, language=language, xvec_only=xvec_only,
-            non_streaming_mode=True,
+            text,
+            ref_audio,
+            ref_text,
+            language=language,
+            xvec_only=xvec_only,
+            non_streaming_mode=non_streaming_mode,
         )
 
         codec_ids, timing = fast_generate(
@@ -569,8 +579,10 @@ class FasterQwen3TTS:
             predictor_graph=self.predictor_graph,
             talker_graph=self.talker_graph,
             max_new_tokens=max_new_tokens,
+            min_new_tokens=min_new_tokens,
             temperature=temperature,
             top_k=top_k,
+            top_p=top_p,
             do_sample=do_sample,
             repetition_penalty=repetition_penalty,
         )
@@ -623,8 +635,10 @@ class FasterQwen3TTS:
         ref_audio: Union[str, Path],
         ref_text: str,
         max_new_tokens: int = 2048,
+        min_new_tokens: int = 2,
         temperature: float = 0.9,
         top_k: int = 50,
+        top_p: float = 1.0,
         do_sample: bool = True,
         repetition_penalty: float = 1.05,
         chunk_size: int = 12,
@@ -642,8 +656,10 @@ class FasterQwen3TTS:
             ref_audio: Path to reference audio file
             ref_text: Transcription of reference audio
             max_new_tokens: Maximum tokens to generate
+            min_new_tokens: Minimum tokens before EOS is allowed
             temperature: Sampling temperature
             top_k: Top-k sampling
+            top_p: Top-p (nucleus) sampling
             do_sample: Whether to sample
             repetition_penalty: Repetition penalty
             chunk_size: Codec steps per chunk (12 = ~1 second)
@@ -682,8 +698,10 @@ class FasterQwen3TTS:
             predictor_graph=self.predictor_graph,
             talker_graph=self.talker_graph,
             max_new_tokens=max_new_tokens,
+            min_new_tokens=min_new_tokens,
             temperature=temperature,
             top_k=top_k,
+            top_p=top_p,
             do_sample=do_sample,
             repetition_penalty=repetition_penalty,
             chunk_size=chunk_size,
@@ -755,8 +773,10 @@ class FasterQwen3TTS:
         language: str,
         instruct: Optional[str] = None,
         max_new_tokens: int = 2048,
+        min_new_tokens: int = 2,
         temperature: float = 0.9,
         top_k: int = 50,
+        top_p: float = 1.0,
         do_sample: bool = True,
         repetition_penalty: float = 1.05,
     ) -> Tuple[list, int]:
@@ -788,8 +808,10 @@ class FasterQwen3TTS:
             predictor_graph=self.predictor_graph,
             talker_graph=self.talker_graph,
             max_new_tokens=max_new_tokens,
+            min_new_tokens=min_new_tokens,
             temperature=temperature,
             top_k=top_k,
+            top_p=top_p,
             do_sample=do_sample,
             repetition_penalty=repetition_penalty,
         )
@@ -828,8 +850,10 @@ class FasterQwen3TTS:
         language: str,
         instruct: Optional[str] = None,
         max_new_tokens: int = 2048,
+        min_new_tokens: int = 2,
         temperature: float = 0.9,
         top_k: int = 50,
+        top_p: float = 1.0,
         do_sample: bool = True,
         repetition_penalty: float = 1.05,
         chunk_size: int = 12,
@@ -870,8 +894,10 @@ class FasterQwen3TTS:
             predictor_graph=self.predictor_graph,
             talker_graph=self.talker_graph,
             max_new_tokens=max_new_tokens,
+            min_new_tokens=min_new_tokens,
             temperature=temperature,
             top_k=top_k,
+            top_p=top_p,
             do_sample=do_sample,
             repetition_penalty=repetition_penalty,
             chunk_size=chunk_size,
@@ -921,8 +947,10 @@ class FasterQwen3TTS:
         instruct: str,
         language: str,
         max_new_tokens: int = 2048,
+        min_new_tokens: int = 2,
         temperature: float = 0.9,
         top_k: int = 50,
+        top_p: float = 1.0,
         do_sample: bool = True,
         repetition_penalty: float = 1.05,
     ) -> Tuple[list, int]:
@@ -950,8 +978,10 @@ class FasterQwen3TTS:
             predictor_graph=self.predictor_graph,
             talker_graph=self.talker_graph,
             max_new_tokens=max_new_tokens,
+            min_new_tokens=min_new_tokens,
             temperature=temperature,
             top_k=top_k,
+            top_p=top_p,
             do_sample=do_sample,
             repetition_penalty=repetition_penalty,
         )
@@ -989,8 +1019,10 @@ class FasterQwen3TTS:
         instruct: str,
         language: str,
         max_new_tokens: int = 2048,
+        min_new_tokens: int = 2,
         temperature: float = 0.9,
         top_k: int = 50,
+        top_p: float = 1.0,
         do_sample: bool = True,
         repetition_penalty: float = 1.05,
         chunk_size: int = 12,
@@ -1027,8 +1059,10 @@ class FasterQwen3TTS:
             predictor_graph=self.predictor_graph,
             talker_graph=self.talker_graph,
             max_new_tokens=max_new_tokens,
+            min_new_tokens=min_new_tokens,
             temperature=temperature,
             top_k=top_k,
+            top_p=top_p,
             do_sample=do_sample,
             repetition_penalty=repetition_penalty,
             chunk_size=chunk_size,

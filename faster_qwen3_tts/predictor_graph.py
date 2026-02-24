@@ -30,7 +30,7 @@ class PredictorGraph:
     """
 
     def __init__(self, code_predictor, pred_config, talker_hidden_size, device='cuda:0', dtype=torch.bfloat16,
-                 do_sample=True, top_k=50, temperature=0.9):
+                 do_sample=True, top_k=50, top_p=1.0, temperature=0.9):
         self.device = device
         self.dtype = dtype
         self.num_layers = pred_config.num_hidden_layers
@@ -40,6 +40,7 @@ class PredictorGraph:
         self.max_seq = 2 + self.num_codebooks  # 17
         self.do_sample = do_sample
         self.top_k = top_k
+        self.top_p = top_p
         self.temperature = temperature
 
         # Extract model components (references, not copies)
@@ -114,6 +115,15 @@ class PredictorGraph:
         if self.top_k > 0:
             topk_vals, _ = torch.topk(l, min(self.top_k, l.shape[-1]))
             l = torch.where(l < topk_vals[:, -1:], torch.full_like(l, float('-inf')), l)
+        if self.top_p < 1.0:
+            sorted_logits, sorted_indices = torch.sort(l, descending=True)
+            probs = torch.softmax(sorted_logits, dim=-1)
+            cumulative_probs = torch.cumsum(probs, dim=-1)
+            sorted_indices_to_remove = cumulative_probs > self.top_p
+            sorted_indices_to_remove[:, 0] = False
+            sorted_logits[sorted_indices_to_remove] = float('-inf')
+            l = torch.full_like(l, float('-inf'))
+            l.scatter_(-1, sorted_indices, sorted_logits)
         probs = torch.softmax(l, dim=-1)
         return torch.multinomial(probs, 1)[:, 0]
 

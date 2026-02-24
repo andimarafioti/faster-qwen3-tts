@@ -5,11 +5,13 @@ Streaming generation with CUDA graphs for both predictor and talker.
 Yields codec ID chunks during generation instead of collecting all at once.
 CUDA graph usage is identical to non-streaming — same per-step performance.
 """
-import torch
-import torch.nn.functional as F
 import time
 from typing import Generator, Tuple
+
+import torch
+
 from .predictor_graph import PredictorGraph
+from .sampling import apply_repetition_penalty, sample_logits
 from .talker_graph import TalkerGraph
 
 
@@ -24,8 +26,10 @@ def fast_generate_streaming(
     predictor_graph: PredictorGraph,
     talker_graph: TalkerGraph,
     max_new_tokens: int = 2048,
+    min_new_tokens: int = 2,
     temperature: float = 0.9,
     top_k: int = 50,
+    top_p: float = 1.0,
     do_sample: bool = True,
     repetition_penalty: float = 1.05,
     chunk_size: int = 12,
@@ -73,7 +77,16 @@ def fast_generate_streaming(
     gen_step = out.generation_step
 
     logits = out.logits[:, -1, :]
-    token = _sample(logits, temperature, top_k, do_sample, suppress_mask)
+    suppress_eos = min_new_tokens > 0
+    token = sample_logits(
+        logits,
+        temperature=temperature,
+        top_k=top_k,
+        top_p=top_p,
+        do_sample=do_sample,
+        suppress_mask=suppress_mask,
+        suppress_tokens=[eos_id] if suppress_eos else None,
+    )
 
     prefill_len = talker_graph.prefill_kv(talker_past_kv)
 
@@ -121,15 +134,19 @@ def fast_generate_streaming(
         logits = talker_codec_head(hidden_states[:, -1, :]).unsqueeze(0)
 
         if repetition_penalty != 1.0 and all_first_tokens:
-            n_recent = min(50, len(all_first_tokens))
-            recent = torch.stack(all_first_tokens[-n_recent:])
-            unique_toks = recent.unique()
-            tok_logits = logits[0, 0, unique_toks]
-            logits[0, 0, unique_toks] = torch.where(
-                tok_logits > 0, tok_logits / repetition_penalty, tok_logits * repetition_penalty
-            )
+            history = torch.stack(all_first_tokens)
+            logits = apply_repetition_penalty(logits, history, repetition_penalty)
 
-        token = _sample(logits.squeeze(0), temperature, top_k, do_sample, suppress_mask)
+        suppress_eos = len(all_first_tokens) < min_new_tokens
+        token = sample_logits(
+            logits.squeeze(0),
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+            do_sample=do_sample,
+            suppress_mask=suppress_mask,
+            suppress_tokens=[eos_id] if suppress_eos else None,
+        )
         past_hidden = hidden_states[:, -1:, :].clone()
         gen_step += 1
 
@@ -166,15 +183,3 @@ def fast_generate_streaming(
             'total_steps_so_far': total_steps,
             'is_final': True,
         }
-
-
-def _sample(logits, temperature, top_k, do_sample, suppress_mask):
-    logits = logits.clone()
-    logits[..., suppress_mask] = float('-inf')
-    if not do_sample:
-        return torch.argmax(logits, dim=-1)
-    logits = logits / temperature
-    if top_k > 0:
-        topk_vals, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-        logits[logits < topk_vals[..., -1:]] = float('-inf')
-    return torch.multinomial(F.softmax(logits, dim=-1), 1).squeeze(-1)

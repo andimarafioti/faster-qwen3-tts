@@ -2,11 +2,13 @@
 """
 Non-streaming generation loop using CUDA graphs for both predictor and talker.
 """
-import torch
-import torch.nn.functional as F
 import time
 from typing import Optional, Tuple
+
+import torch
+
 from .predictor_graph import PredictorGraph
+from .sampling import apply_repetition_penalty, sample_logits
 from .talker_graph import TalkerGraph
 
 
@@ -21,8 +23,10 @@ def fast_generate(
     predictor_graph: PredictorGraph,
     talker_graph: TalkerGraph,
     max_new_tokens: int = 2048,
+    min_new_tokens: int = 2,
     temperature: float = 0.9,
     top_k: int = 50,
+    top_p: float = 1.0,
     do_sample: bool = True,
     repetition_penalty: float = 1.05,
 ) -> Tuple[Optional[torch.Tensor], dict]:
@@ -65,7 +69,16 @@ def fast_generate(
     gen_step = out.generation_step
     
     logits = out.logits[:, -1, :]
-    token = _sample(logits, temperature, top_k, do_sample, suppress_mask)
+    suppress_eos = min_new_tokens > 0
+    token = sample_logits(
+        logits,
+        temperature=temperature,
+        top_k=top_k,
+        top_p=top_p,
+        do_sample=do_sample,
+        suppress_mask=suppress_mask,
+        suppress_tokens=[eos_id] if suppress_eos else None,
+    )
     
     # Copy prefill KV cache into talker graph's static cache
     prefill_len = talker_graph.prefill_kv(talker_past_kv)
@@ -113,15 +126,19 @@ def fast_generate(
         logits = talker_codec_head(hidden_states[:, -1, :]).unsqueeze(0)
         
         if repetition_penalty != 1.0 and len(all_codec_ids) > 0:
-            n_recent = min(50, len(all_codec_ids))
-            recent = torch.stack([c[0] for c in all_codec_ids[-n_recent:]])
-            unique_toks = recent.unique()
-            tok_logits = logits[0, 0, unique_toks]
-            logits[0, 0, unique_toks] = torch.where(
-                tok_logits > 0, tok_logits / repetition_penalty, tok_logits * repetition_penalty
-            )
-        
-        token = _sample(logits.squeeze(0), temperature, top_k, do_sample, suppress_mask)
+            history = torch.stack([c[0] for c in all_codec_ids])
+            logits = apply_repetition_penalty(logits, history, repetition_penalty)
+
+        suppress_eos = len(all_codec_ids) < min_new_tokens
+        token = sample_logits(
+            logits.squeeze(0),
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+            do_sample=do_sample,
+            suppress_mask=suppress_mask,
+            suppress_tokens=[eos_id] if suppress_eos else None,
+        )
         past_hidden = hidden_states[:, -1:, :].clone()  # clone since it's the static buffer
         gen_step += 1
     
@@ -140,15 +157,3 @@ def fast_generate(
     if all_codec_ids:
         return torch.stack(all_codec_ids), timing
     return None, timing
-
-
-def _sample(logits, temperature, top_k, do_sample, suppress_mask):
-    logits = logits.clone()
-    logits[..., suppress_mask] = float('-inf')
-    if not do_sample:
-        return torch.argmax(logits, dim=-1)
-    logits = logits / temperature
-    if top_k > 0:
-        topk_vals, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-        logits[logits < topk_vals[..., -1:]] = float('-inf')
-    return torch.multinomial(F.softmax(logits, dim=-1), 1).squeeze(-1)
