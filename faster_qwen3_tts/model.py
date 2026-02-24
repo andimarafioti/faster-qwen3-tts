@@ -246,7 +246,12 @@ class FasterQwen3TTS:
         config = m.config.talker_config
         talker.rope_deltas = None
 
-        return m, talker, config, tie, tam, tth, tpe
+        # For ICL mode: return ref_codes so the decoder can use them as acoustic context
+        ref_codes = None
+        if not xvec_only and vcp.get("ref_code") and vcp["ref_code"][0] is not None:
+            ref_codes = vcp["ref_code"][0]
+
+        return m, talker, config, tie, tam, tth, tpe, ref_codes
 
     def _prepare_generation_custom(
         self,
@@ -545,7 +550,7 @@ class FasterQwen3TTS:
         """
         from .generate import fast_generate
 
-        m, talker, config, tie, tam, tth, tpe = self._prepare_generation(
+        m, talker, config, tie, tam, tth, tpe, ref_codes = self._prepare_generation(
             text, ref_audio, ref_text, language=language, xvec_only=xvec_only
         )
 
@@ -564,22 +569,34 @@ class FasterQwen3TTS:
             do_sample=do_sample,
             repetition_penalty=repetition_penalty,
         )
-        
+
         if codec_ids is None:
             logger.warning("Generation returned no tokens")
             return [np.zeros(1, dtype=np.float32)], self.sample_rate
-        
-        # Decode codec IDs to audio
+
+        # In ICL mode: prepend reference codes before decoding so the codec decoder
+        # has acoustic context from the reference audio (matches official implementation).
         speech_tokenizer = m.speech_tokenizer
-        audio_list, sr = speech_tokenizer.decode({"audio_codes": codec_ids.unsqueeze(0)})
-        
-        # Convert to numpy arrays (handle both torch tensors and numpy arrays)
+        if ref_codes is not None:
+            ref_codes_dev = ref_codes.to(codec_ids.device)
+            codes_for_decode = torch.cat([ref_codes_dev, codec_ids], dim=0)
+        else:
+            codes_for_decode = codec_ids
+        audio_list, sr = speech_tokenizer.decode({"audio_codes": codes_for_decode.unsqueeze(0)})
+
+        # Convert to numpy and trim off the reference audio portion
+        ref_len = ref_codes.shape[0] if ref_codes is not None else 0
+        total_len = codes_for_decode.shape[0]
         audio_arrays = []
         for a in audio_list:
             if hasattr(a, 'cpu'):  # torch tensor
-                audio_arrays.append(a.flatten().cpu().numpy())
+                a = a.flatten().cpu().numpy()
             else:  # already numpy
-                audio_arrays.append(a.flatten() if hasattr(a, 'flatten') else a)
+                a = a.flatten() if hasattr(a, 'flatten') else a
+            if ref_len > 0:
+                cut = int(ref_len / max(total_len, 1) * len(a))
+                a = a[cut:]
+            audio_arrays.append(a)
         
         n_steps = timing['steps']
         audio_duration = n_steps / 12.0  # 12 Hz codec
@@ -634,7 +651,7 @@ class FasterQwen3TTS:
         """
         from .streaming import fast_generate_streaming
 
-        m, talker, config, tie, tam, tth, tpe = self._prepare_generation(
+        m, talker, config, tie, tam, tth, tpe, ref_codes = self._prepare_generation(
             text, ref_audio, ref_text, language=language, xvec_only=xvec_only
         )
 
@@ -647,7 +664,7 @@ class FasterQwen3TTS:
         context_frames = 25
         min_calibration_frames = max(context_frames, chunk_size)
         all_codes = []
-        prev_audio_len = 0
+        prev_gen_audio_len = 0  # tracks position within the generated (non-ref) audio
         samples_per_frame = None
 
         for codec_chunk, timing in fast_generate_streaming(
@@ -672,9 +689,15 @@ class FasterQwen3TTS:
             n_total = all_flat.shape[0]
 
             if samples_per_frame is None:
-                # Phase 1: accumulated decode until we can calibrate
+                # Phase 1: accumulated decode until we can calibrate.
+                # In ICL mode prepend reference codes so the codec decoder has acoustic
+                # context from the reference audio (matches official implementation).
+                if ref_codes is not None:
+                    codes_input = torch.cat([ref_codes.to(all_flat.device), all_flat], dim=0)
+                else:
+                    codes_input = all_flat
                 audio_list, sr = speech_tokenizer.decode(
-                    {"audio_codes": all_flat.unsqueeze(0)}
+                    {"audio_codes": codes_input.unsqueeze(0)}
                 )
                 audio = audio_list[0]
                 if hasattr(audio, 'cpu'):
@@ -682,11 +705,20 @@ class FasterQwen3TTS:
                 else:
                     audio = audio.flatten() if hasattr(audio, 'flatten') else audio
 
-                new_audio = audio[prev_audio_len:]
-                prev_audio_len = len(audio)
+                # Separate out reference audio portion; track position in generated audio only
+                if ref_codes is not None:
+                    ref_len = ref_codes.shape[0]
+                    total_len = codes_input.shape[0]
+                    ref_audio_cut = int(ref_len / max(total_len, 1) * len(audio))
+                    gen_audio = audio[ref_audio_cut:]
+                else:
+                    gen_audio = audio
+
+                new_audio = gen_audio[prev_gen_audio_len:]
+                prev_gen_audio_len = len(gen_audio)
 
                 if n_total >= min_calibration_frames:
-                    samples_per_frame = len(audio) / n_total
+                    samples_per_frame = len(gen_audio) / n_total
             else:
                 # Phase 2: sliding window with left context
                 ctx_start = max(0, n_total - n_new - context_frames)
