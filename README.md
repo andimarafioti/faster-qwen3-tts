@@ -214,11 +214,34 @@ faster-qwen3-tts serve \
 
 The CUDA graphs are unchanged — both predictor and talker graphs are replayed per step. The streaming generator yields codec ID chunks every `chunk_size` steps, and the model wrapper decodes each chunk to audio using a sliding window with 25-frame left context (matching the upstream codec's `chunked_decode` pattern) to avoid boundary artifacts.
 
-## Voice Cloning: ICL Phoneme Artifact
+## Voice Cloning Quality
 
-In ICL (In-Context Learning) mode — the default voice cloning path — the model's prefill sequence ends with the last codec token of the reference audio. The model conditions its **first generated token** on whatever phoneme the reference audio happens to end on. If the reference ends mid-word or on a consonant cluster, that phoneme bleeds into the very start of the generated speech.
+### Cloning modes
 
-**The fix is applied automatically.** The wrapper appends 0.5 seconds of silence to the reference audio before encoding it. This ensures the last codec tokens in the prefill represent silence, giving the model a clean starting point regardless of how the reference recording ends — no changes to your calling code required.
+`generate_voice_clone` exposes two modes via `xvec_only`:
+
+| Mode | `xvec_only` | Quality | Notes |
+|---|---|---|---|
+| Simple (x-vector) | `True` (default) | Good | Speaker embedding only — shorter prefill, clean language switching |
+| Advanced (ICL) | `False` | Better | Full reference audio in context — closer voice match, requires accurate `ref_text` |
+
+Advanced mode is recommended when you have a clean reference recording and an accurate transcript.
+
+### Decoder context (ICL mode)
+
+The 12 Hz codec uses a causal `chunked_decode`: each frame is reconstructed using prior frames as acoustic context. In ICL mode the reference audio codec tokens are prepended to the generated tokens before decoding, then the reference portion is trimmed from the output. Without this, the codec decoder starts cold with no voice context — the model generates the right tokens but they get reconstructed in the wrong voice. This is handled automatically.
+
+### Non-streaming vs streaming quality
+
+`generate_voice_clone` (non-streaming) uses `non_streaming_mode=True`, which puts the **full target text** into the prefill before any audio is generated. The model sees the complete sentence before it starts speaking, producing noticeably better prosody and voice consistency than feeding text step-by-step.
+
+`generate_voice_clone_streaming` uses `non_streaming_mode=False` — text is fed token-by-token during decode, which is the correct tradeoff for streaming since the full sentence isn't known in advance. The speed difference between the two modes is negligible (~2.3 s vs ~2.4 s per generation on RTX 4090).
+
+### ICL Phoneme Artifact
+
+In ICL mode the model's prefill ends with the last codec token of the reference audio, so the first generated token is conditioned on whatever phoneme the reference ends on. If the reference ends mid-word, that phoneme bleeds into the generated speech.
+
+**The fix is applied automatically.** The wrapper appends 0.5 s of silence to the reference audio before encoding it, giving the model a clean starting point regardless of how the recording ends.
 
 ## Voice Cloning with Precomputed Speaker Embeddings
 
