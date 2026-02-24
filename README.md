@@ -220,12 +220,12 @@ The CUDA graphs are unchanged — both predictor and talker graphs are replayed 
 
 `generate_voice_clone` exposes two modes via `xvec_only`:
 
-| Mode | `xvec_only` | Quality | Notes |
-|---|---|---|---|
-| Simple (x-vector) | `True` (default) | Good | Speaker embedding only — shorter prefill, clean language switching |
-| Advanced (ICL) | `False` | Better | Full reference audio in context — closer voice match, requires accurate `ref_text` |
+| Mode | `xvec_only` | Notes |
+|---|---|---|
+| Simple (x-vector) | `True` (default) | Speaker embedding only — shorter prefill, clean language switching, no `ref_text` needed |
+| Advanced (ICL) | `False` | Full reference audio in context — requires accurate `ref_text`, may produce a brief artifact at the start |
 
-Advanced mode is recommended when you have a clean reference recording and an accurate transcript.
+Simple mode is the default and generally produces clean results. Advanced (ICL) mode can more closely match the reference timbre but requires an accurate transcript and sometimes has a rough start on the first word.
 
 ### Decoder context (ICL mode)
 
