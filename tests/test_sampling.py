@@ -57,6 +57,7 @@ def test_min_new_tokens_suppresses_early_eos():
             )
             self._embed = torch.nn.Embedding(self.config.vocab_size, hidden).to(device)
             self.codec_head = FixedCodecHead(self.config.vocab_size, self.config.codec_eos_token_id).to(device)
+            self.rope_deltas = torch.zeros(1, 1, device=device)
 
         def get_input_embeddings(self):
             return self._embed
@@ -84,6 +85,9 @@ def test_min_new_tokens_suppresses_early_eos():
 
         def prefill_kv(self, past_key_values):
             return 1
+
+        def set_generation_state(self, attention_mask, rope_deltas):
+            return None
 
         def run(self, input_embeds, position):
             return input_embeds

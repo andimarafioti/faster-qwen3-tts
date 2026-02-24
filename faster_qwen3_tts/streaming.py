@@ -90,6 +90,8 @@ def fast_generate_streaming(
     )
 
     prefill_len = talker_graph.prefill_kv(talker_past_kv)
+    rope_deltas = getattr(talker, "rope_deltas", None)
+    talker_graph.set_generation_state(attention_mask, rope_deltas)
 
     torch.cuda.synchronize()
     t_prefill = time.time() - t_start

@@ -241,7 +241,7 @@ The 12 Hz codec uses a causal `chunked_decode`: each frame is reconstructed usin
 
 In ICL mode the model's prefill ends with the last codec token of the reference audio, so the first generated token is conditioned on whatever phoneme the reference ends on. If the reference ends mid-word, that phoneme bleeds into the generated speech.
 
-**The fix is applied automatically.** The wrapper appends 0.5 s of silence to the reference audio before encoding it, giving the model a clean starting point regardless of how the recording ends.
+**The fix is applied by default.** The wrapper appends 0.5 s of silence to the reference audio before encoding it, giving the model a clean starting point regardless of how the recording ends. Set `append_silence=False` to match the upstream behavior exactly.
 
 ## Voice Cloning with Precomputed Speaker Embeddings
 

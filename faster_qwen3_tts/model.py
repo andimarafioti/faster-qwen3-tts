@@ -161,19 +161,21 @@ class FasterQwen3TTS:
         )
     
     def _load_ref_audio_with_silence(self, ref_audio: Union[str, Path], silence_secs: float = 0.5) -> Tuple[np.ndarray, int]:
-        """Load reference audio and append trailing silence.
+        """Load reference audio and optionally append trailing silence.
 
         The ICL voice-cloning prompt ends with the last codec token of the reference
         audio, so the model's first generated token is conditioned on whatever phoneme
-        the reference ends with.  Appending a short silence makes the last tokens
+        the reference ends with. Appending a short silence makes the last tokens
         encode silence instead, preventing that phoneme from bleeding into the start
-        of the generated speech.
+        of the generated speech. Set silence_secs=0 to disable this behavior.
         """
         audio, sr = sf.read(str(ref_audio), dtype="float32", always_2d=False)
         if audio.ndim > 1:
             audio = audio.mean(axis=1)  # convert to mono
-        silence = np.zeros(int(silence_secs * sr), dtype=np.float32)
-        return np.concatenate([audio, silence]), sr
+        if silence_secs > 0:
+            silence = np.zeros(int(silence_secs * sr), dtype=np.float32)
+            audio = np.concatenate([audio, silence])
+        return audio, sr
 
     def _prepare_generation(
         self,
@@ -183,6 +185,7 @@ class FasterQwen3TTS:
         language: str,
         xvec_only: bool = True,
         non_streaming_mode: bool = False,
+        append_silence: bool = True,
     ):
         """Prepare inputs for generation (shared by streaming and non-streaming).
 
@@ -195,7 +198,7 @@ class FasterQwen3TTS:
         input_texts = [self.model._build_assistant_text(text)]
         input_ids = self.model._tokenize_texts(input_texts)
 
-        cache_key = (str(ref_audio), ref_text, xvec_only)
+        cache_key = (str(ref_audio), ref_text, xvec_only, append_silence)
         if cache_key in self._voice_prompt_cache:
             vcp, ref_ids = self._voice_prompt_cache[cache_key]
         elif xvec_only:
@@ -214,7 +217,8 @@ class FasterQwen3TTS:
             ref_ids = [None] * len(input_ids)
             self._voice_prompt_cache[cache_key] = (vcp, ref_ids)
         else:
-            ref_audio_input = self._load_ref_audio_with_silence(ref_audio)
+            silence_secs = 0.5 if append_silence else 0.0
+            ref_audio_input = self._load_ref_audio_with_silence(ref_audio, silence_secs=silence_secs)
             prompt_items = self.model.create_voice_clone_prompt(
                 ref_audio=ref_audio_input,
                 ref_text=ref_text
@@ -534,6 +538,7 @@ class FasterQwen3TTS:
         repetition_penalty: float = 1.05,
         xvec_only: bool = True,
         non_streaming_mode: bool = False,
+        append_silence: bool = True,
     ) -> Tuple[list, int]:
         """
         Generate speech with voice cloning using reference audio.
@@ -567,6 +572,7 @@ class FasterQwen3TTS:
             language=language,
             xvec_only=xvec_only,
             non_streaming_mode=non_streaming_mode,
+            append_silence=append_silence,
         )
 
         codec_ids, timing = fast_generate(
@@ -643,6 +649,7 @@ class FasterQwen3TTS:
         repetition_penalty: float = 1.05,
         chunk_size: int = 12,
         xvec_only: bool = True,
+        append_silence: bool = True,
     ) -> Generator[Tuple[np.ndarray, int, dict], None, None]:
         """
         Stream voice-cloned speech generation, yielding audio chunks.
@@ -673,7 +680,12 @@ class FasterQwen3TTS:
         from .streaming import fast_generate_streaming
 
         m, talker, config, tie, tam, tth, tpe, ref_codes = self._prepare_generation(
-            text, ref_audio, ref_text, language=language, xvec_only=xvec_only
+            text,
+            ref_audio,
+            ref_text,
+            language=language,
+            xvec_only=xvec_only,
+            append_silence=append_silence,
         )
 
         speech_tokenizer = m.speech_tokenizer
