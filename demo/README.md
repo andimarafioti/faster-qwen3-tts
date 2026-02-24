@@ -8,6 +8,7 @@ colorTo: blue
 sdk: docker
 app_port: 7860
 preload_from_hub:
+  - nvidia/parakeet-tdt-0.6b-v3
   - Qwen/Qwen3-TTS-12Hz-0.6B-Base
   - Qwen/Qwen3-TTS-12Hz-1.7B-Base
   - Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice

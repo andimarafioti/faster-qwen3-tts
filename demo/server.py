@@ -24,6 +24,7 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 import torch
+import torchaudio
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -38,6 +39,8 @@ except ImportError:
     print("Error: faster_qwen3_tts not found.")
     print("Install with:  pip install -e .  (from the repo root)")
     sys.exit(1)
+
+from nano_parakeet import from_pretrained as _parakeet_from_pretrained
 
 
 AVAILABLE_MODELS = [
@@ -62,6 +65,7 @@ _model_lock = threading.Lock()
 _loading = False
 _ref_cache: dict[str, str] = {}
 _ref_cache_lock = threading.Lock()
+_parakeet = None
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -104,6 +108,27 @@ async def root():
     return FileResponse(Path(__file__).parent / "index.html")
 
 
+@app.post("/transcribe")
+async def transcribe_audio(audio: UploadFile = File(...)):
+    """Transcribe reference audio using nano-parakeet."""
+    if _parakeet is None:
+        raise HTTPException(status_code=503, detail="Transcription model not loaded")
+
+    content = await audio.read()
+
+    def run():
+        wav, sr = sf.read(io.BytesIO(content), dtype="float32", always_2d=False)
+        if wav.ndim > 1:
+            wav = wav.mean(axis=1)
+        wav_t = torch.from_numpy(wav)
+        if sr != 16000:
+            wav_t = torchaudio.functional.resample(wav_t.unsqueeze(0), sr, 16000).squeeze(0)
+        return _parakeet.transcribe(wav_t.cuda())
+
+    text = await asyncio.to_thread(run)
+    return {"text": text}
+
+
 @app.get("/status")
 async def get_status():
     speakers = []
@@ -121,6 +146,7 @@ async def get_status():
         "available_models": AVAILABLE_MODELS,
         "model_type": model_type,
         "speakers": speakers,
+        "transcription_available": _parakeet is not None,
     }
 
 
@@ -202,6 +228,7 @@ async def generate_stream(
                     temperature=temperature,
                     top_k=top_k,
                     repetition_penalty=repetition_penalty,
+                    max_new_tokens=360,  # cap at 30s (12 Hz codec)
                 )
             elif mode == "custom":
                 if not speaker:
@@ -215,6 +242,7 @@ async def generate_stream(
                     temperature=temperature,
                     top_k=top_k,
                     repetition_penalty=repetition_penalty,
+                    max_new_tokens=360,
                 )
             else:
                 gen = model.generate_voice_design_streaming(
@@ -225,6 +253,7 @@ async def generate_stream(
                     temperature=temperature,
                     top_k=top_k,
                     repetition_penalty=repetition_penalty,
+                    max_new_tokens=360,
                 )
 
             # Use timing data from the generator itself (measured after voice-clone
@@ -365,6 +394,7 @@ async def generate_non_streaming(
                 temperature=temperature,
                 top_k=top_k,
                 repetition_penalty=repetition_penalty,
+                max_new_tokens=360,  # cap at 30s (12 Hz codec)
             )
         elif mode == "custom":
             if not speaker:
@@ -377,6 +407,7 @@ async def generate_non_streaming(
                 temperature=temperature,
                 top_k=top_k,
                 repetition_penalty=repetition_penalty,
+                max_new_tokens=360,
             )
         else:
             audio_list, sr = model.generate_voice_design(
@@ -386,6 +417,7 @@ async def generate_non_streaming(
                 temperature=temperature,
                 top_k=top_k,
                 repetition_penalty=repetition_penalty,
+                max_new_tokens=360,
             )
         elapsed = time.perf_counter() - t0
         audio = _concat_audio(audio_list)
@@ -428,7 +460,7 @@ def main():
     args = parser.parse_args()
 
     if not args.no_preload:
-        global _model, _model_name
+        global _model, _model_name, _parakeet
         print(f"Loading model: {args.model}")
         _model = FasterQwen3TTS.from_pretrained(
             args.model,
@@ -438,7 +470,13 @@ def main():
         _model_name = args.model
         print("Capturing CUDA graphs…")
         _model._warmup(prefill_len=100)
-        print(f"Model ready. Open http://localhost:{args.port}")
+        print("TTS model ready.")
+
+        print("Loading transcription model (nano-parakeet)…")
+        _parakeet = _parakeet_from_pretrained(device="cuda")
+        print("Transcription model ready.")
+
+        print(f"Ready. Open http://localhost:{args.port}")
 
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 
