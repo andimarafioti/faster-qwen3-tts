@@ -12,7 +12,7 @@ import numpy as np
 import soundfile as sf
 import torch
 
-from .utils import suppress_flash_attn_warning
+from .utils import patch_sdpa_enable_gqa, suppress_flash_attn_warning
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +68,7 @@ class FasterQwen3TTS:
         Returns:
             FasterQwen3TTS instance
         """
+        patch_sdpa_enable_gqa()
         if isinstance(dtype, str):
             dtype = getattr(torch, dtype)
             
