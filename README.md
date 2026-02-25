@@ -13,7 +13,7 @@ Benchmarks include tokenization + inference (apples-to-apples with baseline). RT
 | Jetson AGX Orin 64GB | 0.175 | 2,572ms | 1.57 | 556ms | 9.0x / 4.6x |
 | Jetson Thor | 0.803 | 862ms | 1.50 | 505ms | 1.9x / 1.7x |
 | DGX Spark (GB10) | 1.78 | 14,431ms | 2.61 | 294ms | 1.5x / 49.1x |
-| RTX 4090 | 1.36 | 7,043ms | **5.28** | **158ms** | 3.9x / 44.6x |
+| RTX 4090 | 1.36 | 773ms | **5.28** | **158ms** | 3.9x / 4.9x |
 | H100 80GB HBM3 | 0.59 | 1,049ms | **4.19** | **224ms** | 7.1x / 4.7x |
 
 ### 1.7B Model
@@ -23,10 +23,10 @@ Benchmarks include tokenization + inference (apples-to-apples with baseline). RT
 | Jetson AGX Orin 64GB | 0.130 | 2,594ms | 1.27 | 650ms | 9.8x / 4.0x |
 | Jetson Thor | 0.772 | 912ms | 1.26 | 595ms | 1.6x / 1.5x |
 | DGX Spark (GB10) | 1.43 | 28,539ms | 1.91 | 373ms | 1.3x / 76.5x |
-| RTX 4090 | 1.34 | 30,576ms | **4.62** | **175ms** | 3.4x / 174.7x |
+| RTX 4090 | 1.34 | 778ms | **4.62** | **175ms** | 3.4x / 4.4x |
 | H100 80GB HBM3 | 0.59 | 1,045ms | **3.98** | **236ms** | 6.7x / 4.4x |
 
-**Note:** Baseline TTFA values are **streaming TTFA** from the community `Qwen3-TTS-streaming` fork (which adds streaming). The official `Qwen3-TTS` repo does **not** currently support streaming, so its “TTFA” is effectively **time-to-full-audio**. With RTF near 1.0, that means waiting for the entire sentence/paragraph to finish speaking before you hear anything. CUDA graphs uses `generate_voice_clone_streaming(chunk_size=8)` for TTFA. Both include text tokenization for fair comparison. Speedup shows throughput / TTFA improvement. The streaming fork reports additional speedups that appear tied to `torch.compile`; we couldn’t reproduce those on Jetson-class devices where `torch.compile` isn’t available. **DGX Spark and RTX 4090 baseline values were re-measured with `benchmarks/baseline.py` (no streaming), so TTFA there is time-to-full-audio.**
+**Note:** Baseline TTFA values are **streaming TTFA** from the community `Qwen3-TTS-streaming` fork (which adds streaming) or from our **dynamic-cache parity streaming** path (no CUDA graphs) where available. The official `Qwen3-TTS` repo does **not** currently support streaming, so without a streaming baseline TTFA would be **time-to-full-audio**. CUDA graphs uses `generate_voice_clone_streaming(chunk_size=8)` for TTFA. Both include text tokenization for fair comparison. Speedup shows throughput / TTFA improvement. The streaming fork reports additional speedups that appear tied to `torch.compile`; we couldn’t reproduce those on Jetson-class devices where `torch.compile` isn’t available. **DGX Spark baseline values were re-measured with `benchmarks/baseline.py` (no streaming), so TTFA there is time-to-full-audio until a streaming baseline is recorded.**
 
 
 **GPU architecture notes:** RTX 4090 (2.5 GHz clocks) outperforms H100 (1.8 GHz) for single-stream workloads. H100's lower baseline (RTF 0.59 vs 4090's 1.34) reflects design optimization for batch processing rather than single-stream inference.
