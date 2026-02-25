@@ -70,6 +70,68 @@ for chunk_size in CHUNK_SIZES:
 ttfa_mean = ttfa_by_chunk[PRIMARY_CHUNK_SIZE]['mean']
 ttfa_std = ttfa_by_chunk[PRIMARY_CHUNK_SIZE]['std']
 
+
+def measure_streaming_ttfa(parity_mode: bool, chunk_size: int, runs: int = 5):
+    results = []
+    for _ in range(runs):
+        torch.cuda.synchronize()
+        t0 = time.perf_counter()
+        gen = model.generate_voice_clone_streaming(
+            text=text,
+            language="English",
+            ref_audio=ref_audio,
+            ref_text=ref_text,
+            chunk_size=chunk_size,
+            parity_mode=parity_mode,
+        )
+        _first_chunk, _sr, _timing = next(gen)
+        torch.cuda.synchronize()
+        results.append((time.perf_counter() - t0) * 1000)
+        gen.close()
+    return float(np.mean(results)), float(np.std(results))
+
+
+def measure_streaming_rtf(parity_mode: bool, chunk_size: int, runs: int = 3):
+    rtfs = []
+    for _ in range(runs):
+        torch.cuda.synchronize()
+        t0 = time.perf_counter()
+        chunks = []
+        sr = None
+        for audio_chunk, sr, _timing in model.generate_voice_clone_streaming(
+            text=text,
+            language="English",
+            ref_audio=ref_audio,
+            ref_text=ref_text,
+            chunk_size=chunk_size,
+            parity_mode=parity_mode,
+        ):
+            chunks.append(audio_chunk)
+        torch.cuda.synchronize()
+        total_time = time.perf_counter() - t0
+        if chunks and sr is not None:
+            audio = np.concatenate(chunks)
+            audio_duration = len(audio) / sr
+            rtfs.append(audio_duration / total_time if total_time > 0 else 0.0)
+    return float(np.mean(rtfs)) if rtfs else 0.0, float(np.std(rtfs)) if rtfs else 0.0
+
+
+# Streaming baseline (dynamic cache) vs fast path (CUDA graphs)
+print("\nStreaming baseline vs fast path (chunk_size=8)...")
+baseline_ttfa_mean, baseline_ttfa_std = measure_streaming_ttfa(parity_mode=True, chunk_size=PRIMARY_CHUNK_SIZE)
+fast_ttfa_mean, fast_ttfa_std = measure_streaming_ttfa(parity_mode=False, chunk_size=PRIMARY_CHUNK_SIZE)
+baseline_rtf_mean, baseline_rtf_std = measure_streaming_rtf(parity_mode=True, chunk_size=PRIMARY_CHUNK_SIZE)
+fast_rtf_mean, fast_rtf_std = measure_streaming_rtf(parity_mode=False, chunk_size=PRIMARY_CHUNK_SIZE)
+
+print(
+    f"  baseline: TTFA={baseline_ttfa_mean:.0f}ms ± {baseline_ttfa_std:.0f}ms, "
+    f"RTF={baseline_rtf_mean:.3f} ± {baseline_rtf_std:.3f}"
+)
+print(
+    f"  fast:     TTFA={fast_ttfa_mean:.0f}ms ± {fast_ttfa_std:.0f}ms, "
+    f"RTF={fast_rtf_mean:.3f} ± {fast_rtf_std:.3f}"
+)
+
 # Full benchmark runs
 print("\nBenchmark runs...")
 results = []
@@ -138,6 +200,14 @@ if results:
         'avg_rtf': avg_rtf,
         'ttfa_ms': ttfa_mean,
         'ttfa_std_ms': ttfa_std,
+        'streaming_baseline_ttfa_ms': baseline_ttfa_mean,
+        'streaming_baseline_ttfa_std_ms': baseline_ttfa_std,
+        'streaming_baseline_rtf': baseline_rtf_mean,
+        'streaming_baseline_rtf_std': baseline_rtf_std,
+        'streaming_fast_ttfa_ms': fast_ttfa_mean,
+        'streaming_fast_ttfa_std_ms': fast_ttfa_std,
+        'streaming_fast_rtf': fast_rtf_mean,
+        'streaming_fast_rtf_std': fast_rtf_std,
         'ttfa_by_chunk_size': {str(k): v for k, v in ttfa_by_chunk.items()},
         'runs': results,
     }
