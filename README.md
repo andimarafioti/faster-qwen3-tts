@@ -31,6 +31,28 @@ Benchmarks include tokenization + inference (apples-to-apples with baseline). RT
 
 **GPU architecture notes:** RTX 4090 (2.5 GHz clocks) outperforms H100 (1.8 GHz) for single-stream workloads. H100's lower baseline (RTF 0.59 vs 4090's 1.34) reflects design optimization for batch processing rather than single-stream inference.
 
+## Parity
+
+We maintain parity with upstream Qwen3‑TTS in two layers:
+
+- **Fast path parity (CUDA graphs):** Streaming and non‑streaming use the same decode core and match upstream for the initial window where artifacts are most audible. Tests enforce this prefix parity deterministically.
+- **Full parity mode (tests only):** A dynamic‑cache decode path (no CUDA graphs) that calls `talker.generate(...)` is used in tests to prove exact token‑level equality against upstream for all model types.
+
+Tests live in `tests/test_e2e_parity.py` and cover:
+
+- Voice clone (x‑vector) prefix parity vs upstream
+- Streaming vs non‑streaming parity (fast path)
+- CustomVoice full equality (parity mode)
+- VoiceDesign full equality (parity mode)
+
+You can control the model IDs used by tests via environment variables:
+
+```
+QWEN_TTS_MODEL=Qwen/Qwen3-TTS-12Hz-0.6B-Base
+QWEN_TTS_CUSTOM_MODEL=Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice
+QWEN_TTS_VOICE_DESIGN_MODEL=Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign
+```
+
 ## Demo UI
 
 A minimal web UI that streams audio in real time and shows TTFA and RTF live:
