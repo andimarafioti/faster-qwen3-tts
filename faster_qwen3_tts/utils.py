@@ -37,12 +37,11 @@ def patch_sdpa_enable_gqa():
         import torch
     except Exception:
         return
-    sig = None
     try:
         sig = inspect.signature(torch.nn.functional.scaled_dot_product_attention)
     except (TypeError, ValueError):
-        sig = None
-    if sig is not None and "enable_gqa" in sig.parameters:
+        return
+    if "enable_gqa" in sig.parameters:
         return
     orig = torch.nn.functional.scaled_dot_product_attention
 
