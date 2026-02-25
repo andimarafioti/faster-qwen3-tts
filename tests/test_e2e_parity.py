@@ -422,3 +422,92 @@ def test_voice_design_full_parity_dynamic_cache(voice_design_fixture):
     upstream_codes = talker_codes_list[0].detach().cpu()
     fast_codes_cpu = fast_codes.detach().cpu()
     assert torch.equal(upstream_codes, fast_codes_cpu)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for ICL parity test.")
+def test_voice_clone_icl_full_parity_dynamic_cache(parity_fixture):
+    from faster_qwen3_tts.generate import fast_generate
+
+    _seed_all(0)
+
+    ref_audio = "ref_audio.wav"
+    ref_text = "A short reference transcript."
+    text = "Short parity test."
+
+    base = parity_fixture["base"]
+    fast = parity_fixture["fast"]
+
+    with torch.inference_mode():
+        prompt_items = base.create_voice_clone_prompt(
+            ref_audio=ref_audio,
+            ref_text=ref_text,
+            x_vector_only_mode=False,
+        )
+        vcp = base._prompt_items_to_voice_clone_prompt(prompt_items)
+
+        input_ids_base = base._tokenize_texts([base._build_assistant_text(text)])
+        input_ids_fast = fast.model._tokenize_texts([fast.model._build_assistant_text(text)])
+        ref_ids = [base._tokenize_texts([base._build_ref_text(ref_text)])[0]]
+
+        tie, tam, tth, tpe = fast._build_talker_inputs_local(
+            m=fast.model.model,
+            input_ids=input_ids_fast,
+            ref_ids=ref_ids,
+            voice_clone_prompt=vcp,
+            languages=["English"],
+            speakers=None,
+            non_streaming_mode=False,
+        )
+
+    if not fast._warmed_up:
+        fast.predictor_graph.do_sample = False
+        fast.predictor_graph.top_k = 0
+        fast.predictor_graph.top_p = 1.0
+        fast.predictor_graph.temperature = 1.0
+        fast._warmup(tie.shape[1])
+
+    fast_codes, _ = fast_generate(
+        talker=fast.model.model.talker,
+        talker_input_embeds=tie,
+        attention_mask=tam,
+        trailing_text_hiddens=tth,
+        tts_pad_embed=tpe,
+        config=fast.model.model.config.talker_config,
+        predictor_graph=fast.predictor_graph,
+        talker_graph=fast.talker_graph,
+        max_new_tokens=32,
+        min_new_tokens=0,
+        do_sample=False,
+        top_k=0,
+        top_p=1.0,
+        temperature=1.0,
+        repetition_penalty=1.0,
+        subtalker_dosample=False,
+        subtalker_top_k=0,
+        subtalker_top_p=1.0,
+        subtalker_temperature=1.0,
+        parity_mode=True,
+    )
+
+    talker_codes_list, _ = base.model.generate(
+        input_ids=input_ids_base,
+        ref_ids=ref_ids,
+        voice_clone_prompt=vcp,
+        languages=["English"],
+        non_streaming_mode=False,
+        do_sample=False,
+        top_k=0,
+        top_p=1.0,
+        temperature=1.0,
+        repetition_penalty=1.0,
+        max_new_tokens=32,
+        min_new_tokens=0,
+        subtalker_dosample=False,
+        subtalker_top_k=0,
+        subtalker_top_p=1.0,
+        subtalker_temperature=1.0,
+    )
+
+    upstream_codes = talker_codes_list[0].detach().cpu()
+    fast_codes_cpu = fast_codes.detach().cpu()
+    assert torch.equal(upstream_codes, fast_codes_cpu)
