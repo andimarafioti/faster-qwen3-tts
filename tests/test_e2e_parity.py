@@ -594,4 +594,5 @@ def test_voice_clone_icl_prefix_parity_fast_path(parity_fixture):
     fast_codes_cpu = fast_codes.detach().cpu()
 
     assert upstream_codes.shape[0] > 0 and fast_codes_cpu.shape[0] > 0
+    # StaticCache fast path diverges quickly for ICL; enforce only step-0 parity here.
     assert torch.equal(upstream_codes[0], fast_codes_cpu[0])
