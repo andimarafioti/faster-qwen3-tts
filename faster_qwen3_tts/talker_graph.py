@@ -52,6 +52,7 @@ class TalkerGraph:
         self.captured = False
         self.attn_mask = None
         self.attn_mask_table = None
+        self._mask_key = None
 
     def _init_cache_layers(self):
         """Force lazy initialization of StaticCache layers before graph capture."""
@@ -159,9 +160,11 @@ class TalkerGraph:
 
     def set_generation_state(self, attention_mask: torch.Tensor, rope_deltas: torch.Tensor | None):
         """Set padding-aware attention mask and rope deltas for decode parity."""
+        mask_key = None
         full_attention_mask = None
         if attention_mask is not None:
             pad_counts = (attention_mask == 0).sum(dim=-1)
+            mask_key = tuple(pad_counts.tolist())
             full_attention_mask = torch.ones(
                 attention_mask.shape[0],
                 self.max_seq_len,
@@ -171,7 +174,9 @@ class TalkerGraph:
             for b, pads in enumerate(pad_counts.tolist()):
                 if pads > 0:
                     full_attention_mask[b, :pads] = 0
-        self._build_attention_masks(full_attention_mask)
+        if self.attn_mask_table is None or mask_key != self._mask_key:
+            self._build_attention_masks(full_attention_mask)
+            self._mask_key = mask_key
         if rope_deltas is None:
             self.rope_deltas.zero_()
         else:
