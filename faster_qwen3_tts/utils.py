@@ -1,5 +1,4 @@
 import contextlib
-import inspect
 import sys
 
 
@@ -29,24 +28,3 @@ def suppress_flash_attn_warning():
     )
     with contextlib.redirect_stdout(filtered):
         yield
-
-
-def patch_sdpa_enable_gqa():
-    """Patch torch SDPA to ignore enable_gqa on builds that don't support it."""
-    try:
-        import torch
-    except Exception:
-        return
-    try:
-        sig = inspect.signature(torch.nn.functional.scaled_dot_product_attention)
-    except (TypeError, ValueError):
-        return
-    if "enable_gqa" in sig.parameters:
-        return
-    orig = torch.nn.functional.scaled_dot_product_attention
-
-    def _wrapped(*args, **kwargs):
-        kwargs.pop("enable_gqa", None)
-        return orig(*args, **kwargs)
-
-    torch.nn.functional.scaled_dot_product_attention = _wrapped
