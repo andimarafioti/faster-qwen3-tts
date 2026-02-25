@@ -11,6 +11,8 @@ from faster_qwen3_tts import FasterQwen3TTS
 
 
 MODEL_ID = os.environ.get("QWEN_TTS_MODEL", "Qwen/Qwen3-TTS-12Hz-0.6B-Base")
+CUSTOM_MODEL_ID = os.environ.get("QWEN_TTS_CUSTOM_MODEL", "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice")
+VOICE_DESIGN_MODEL_ID = os.environ.get("QWEN_TTS_VOICE_DESIGN_MODEL", "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign")
 
 
 def _seed_all(seed: int = 0) -> None:
@@ -65,6 +67,91 @@ def parity_fixture():
         base=base,
         fast=fast,
         vcp=vcp,
+        input_ids_base=input_ids_base,
+        input_ids_fast=input_ids_fast,
+        tie=tie,
+        tam=tam,
+        tth=tth,
+        tpe=tpe,
+    )
+
+
+@pytest.fixture(scope="module")
+def custom_voice_fixture():
+    _seed_all(0)
+
+    device = "cuda"
+    dtype = torch.bfloat16
+    text = "Short parity test."
+    language = "English"
+
+    base = Qwen3TTSModel.from_pretrained(
+        CUSTOM_MODEL_ID, device_map=device, dtype=dtype, attn_implementation="eager"
+    )
+    fast = FasterQwen3TTS.from_pretrained(
+        CUSTOM_MODEL_ID, device=device, dtype=dtype, attn_implementation="eager"
+    )
+
+    speakers = base.get_supported_speakers()
+    assert speakers, "CustomVoice model returned no supported speakers"
+    speaker = speakers[0]
+
+    input_ids_base = base._tokenize_texts([base._build_assistant_text(text)])
+    input_ids_fast = fast.model._tokenize_texts([fast.model._build_assistant_text(text)])
+
+    _, _, _, tie, tam, tth, tpe = fast._prepare_generation_custom(
+        text=text,
+        language=language,
+        speaker=speaker,
+        instruct=None,
+    )
+
+    return dict(
+        base=base,
+        fast=fast,
+        speaker=speaker,
+        language=language,
+        input_ids_base=input_ids_base,
+        input_ids_fast=input_ids_fast,
+        tie=tie,
+        tam=tam,
+        tth=tth,
+        tpe=tpe,
+    )
+
+
+@pytest.fixture(scope="module")
+def voice_design_fixture():
+    _seed_all(0)
+
+    device = "cuda"
+    dtype = torch.bfloat16
+    text = "Short parity test."
+    instruct = "Warm, calm voice."
+    language = "English"
+
+    base = Qwen3TTSModel.from_pretrained(
+        VOICE_DESIGN_MODEL_ID, device_map=device, dtype=dtype, attn_implementation="eager"
+    )
+    fast = FasterQwen3TTS.from_pretrained(
+        VOICE_DESIGN_MODEL_ID, device=device, dtype=dtype, attn_implementation="eager"
+    )
+
+    input_ids_base = base._tokenize_texts([base._build_assistant_text(text)])
+    input_ids_fast = fast.model._tokenize_texts([fast.model._build_assistant_text(text)])
+
+    _, _, _, tie, tam, tth, tpe = fast._prepare_generation_custom(
+        text=text,
+        language=language,
+        speaker=None,
+        instruct=instruct,
+    )
+
+    return dict(
+        base=base,
+        fast=fast,
+        language=language,
+        instruct=instruct,
         input_ids_base=input_ids_base,
         input_ids_fast=input_ids_fast,
         tie=tie,
@@ -207,3 +294,131 @@ def test_streaming_matches_non_streaming_prefix(parity_fixture):
     stream_codes = torch.cat(chunks, dim=0)
     min_len = min(full_codes.shape[0], stream_codes.shape[0])
     assert torch.equal(full_codes[:min_len].cpu(), stream_codes[:min_len].cpu())
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for custom voice parity test.")
+def test_custom_voice_full_parity_dynamic_cache(custom_voice_fixture):
+    from faster_qwen3_tts.generate import fast_generate
+
+    base = custom_voice_fixture["base"]
+    fast = custom_voice_fixture["fast"]
+    speaker = custom_voice_fixture["speaker"]
+    language = custom_voice_fixture["language"]
+    input_ids_base = custom_voice_fixture["input_ids_base"]
+    input_ids_fast = custom_voice_fixture["input_ids_fast"]
+    tie = custom_voice_fixture["tie"]
+    tam = custom_voice_fixture["tam"]
+    tth = custom_voice_fixture["tth"]
+    tpe = custom_voice_fixture["tpe"]
+
+    assert torch.equal(input_ids_base[0].cpu(), input_ids_fast[0].cpu())
+
+    fast_codes, _ = fast_generate(
+        talker=fast.model.model.talker,
+        talker_input_embeds=tie,
+        attention_mask=tam,
+        trailing_text_hiddens=tth,
+        tts_pad_embed=tpe,
+        config=fast.model.model.config.talker_config,
+        predictor_graph=fast.predictor_graph,
+        talker_graph=fast.talker_graph,
+        max_new_tokens=64,
+        min_new_tokens=0,
+        do_sample=False,
+        top_k=0,
+        top_p=1.0,
+        temperature=1.0,
+        repetition_penalty=1.0,
+        subtalker_dosample=False,
+        subtalker_top_k=0,
+        subtalker_top_p=1.0,
+        subtalker_temperature=1.0,
+        parity_mode=True,
+    )
+
+    talker_codes_list, _ = base.model.generate(
+        input_ids=input_ids_base,
+        instruct_ids=[None],
+        speakers=[speaker],
+        languages=[language],
+        non_streaming_mode=False,
+        do_sample=False,
+        top_k=0,
+        top_p=1.0,
+        temperature=1.0,
+        repetition_penalty=1.0,
+        max_new_tokens=64,
+        min_new_tokens=0,
+        subtalker_dosample=False,
+        subtalker_top_k=0,
+        subtalker_top_p=1.0,
+        subtalker_temperature=1.0,
+    )
+
+    upstream_codes = talker_codes_list[0].detach().cpu()
+    fast_codes_cpu = fast_codes.detach().cpu()
+    assert torch.equal(upstream_codes, fast_codes_cpu)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for voice design parity test.")
+def test_voice_design_full_parity_dynamic_cache(voice_design_fixture):
+    from faster_qwen3_tts.generate import fast_generate
+
+    base = voice_design_fixture["base"]
+    fast = voice_design_fixture["fast"]
+    language = voice_design_fixture["language"]
+    instruct = voice_design_fixture["instruct"]
+    input_ids_base = voice_design_fixture["input_ids_base"]
+    input_ids_fast = voice_design_fixture["input_ids_fast"]
+    tie = voice_design_fixture["tie"]
+    tam = voice_design_fixture["tam"]
+    tth = voice_design_fixture["tth"]
+    tpe = voice_design_fixture["tpe"]
+
+    assert torch.equal(input_ids_base[0].cpu(), input_ids_fast[0].cpu())
+
+    fast_codes, _ = fast_generate(
+        talker=fast.model.model.talker,
+        talker_input_embeds=tie,
+        attention_mask=tam,
+        trailing_text_hiddens=tth,
+        tts_pad_embed=tpe,
+        config=fast.model.model.config.talker_config,
+        predictor_graph=fast.predictor_graph,
+        talker_graph=fast.talker_graph,
+        max_new_tokens=64,
+        min_new_tokens=0,
+        do_sample=False,
+        top_k=0,
+        top_p=1.0,
+        temperature=1.0,
+        repetition_penalty=1.0,
+        subtalker_dosample=False,
+        subtalker_top_k=0,
+        subtalker_top_p=1.0,
+        subtalker_temperature=1.0,
+        parity_mode=True,
+    )
+
+    instruct_ids = base._tokenize_texts([base._build_instruct_text(instruct)])[0]
+    talker_codes_list, _ = base.model.generate(
+        input_ids=input_ids_base,
+        instruct_ids=[instruct_ids],
+        languages=[language],
+        non_streaming_mode=False,
+        do_sample=False,
+        top_k=0,
+        top_p=1.0,
+        temperature=1.0,
+        repetition_penalty=1.0,
+        max_new_tokens=64,
+        min_new_tokens=0,
+        subtalker_dosample=False,
+        subtalker_top_k=0,
+        subtalker_top_p=1.0,
+        subtalker_temperature=1.0,
+    )
+
+    upstream_codes = talker_codes_list[0].detach().cpu()
+    fast_codes_cpu = fast_codes.detach().cpu()
+    assert torch.equal(upstream_codes, fast_codes_cpu)
