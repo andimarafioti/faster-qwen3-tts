@@ -15,11 +15,12 @@ DEFAULT_SPEAKERS = "aiden,serena"
 SPEAKERS = [s.strip() for s in os.environ.get("PARITY_SPEAKERS", DEFAULT_SPEAKERS).split(",") if s.strip()]
 
 TEXTS = [
-    "It is a bright morning, and the city is just waking up. Please keep a calm, clear tone for the first words.",
-    "Please read this sentence with a steady pace, and pause briefly before the final word so the cadence is clear.",
+    "We met at the corner cafe after work and talked about weekend plans. The street was quiet, the lights were warm, and the time passed quickly. We stayed a bit longer.",
+    "On Tuesday morning I missed the bus, so I walked home through the park. I took the long path and listened to the wind in the trees before heading back. I took my time.",
 ]
 
-MAX_NEW_TOKENS = int(os.environ.get("PARITY_MAX_NEW_TOKENS", "96"))
+MAX_NEW_TOKENS = int(os.environ.get("PARITY_MAX_NEW_TOKENS", "168"))
+MIN_NEW_TOKENS = int(os.environ.get("PARITY_MIN_NEW_TOKENS", "2"))
 LANGUAGE = os.environ.get("PARITY_LANGUAGE", "English")
 
 os.makedirs(OUT_DIR, exist_ok=True)
@@ -74,7 +75,7 @@ for speaker in SPEAKERS:
                 predictor_graph=model.predictor_graph,
                 talker_graph=model.talker_graph,
                 max_new_tokens=MAX_NEW_TOKENS,
-                min_new_tokens=2,
+                min_new_tokens=MIN_NEW_TOKENS,
                 temperature=0.9,
                 top_k=50,
                 top_p=1.0,

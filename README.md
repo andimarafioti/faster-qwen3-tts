@@ -12,7 +12,7 @@ Benchmarks include tokenization + inference (apples-to-apples with baseline). RT
 |---|---|---|---|---|---|
 | Jetson AGX Orin 64GB | 0.175 | 2,572ms | 1.57 | 556ms | 9.0x / 4.6x |
 | Jetson Thor | 0.803 | 862ms | 1.50 | 505ms | 1.9x / 1.7x |
-| DGX Spark (GB10) | 1.19 | 631ms | 2.26 | 364ms | 1.9x / 1.7x |
+| DGX Spark (GB10) | 1.78 | 14,431ms | 2.61 | 294ms | 1.5x / 49.1x |
 | RTX 4090 | 1.34 | 462ms | **5.56** | **152ms** | 4.1x / 3.0x |
 | H100 80GB HBM3 | 0.59 | 1,049ms | **4.19** | **224ms** | 7.1x / 4.7x |
 
@@ -22,18 +22,18 @@ Benchmarks include tokenization + inference (apples-to-apples with baseline). RT
 |---|---|---|---|---|---|
 | Jetson AGX Orin 64GB | 0.130 | 2,594ms | 1.27 | 650ms | 9.8x / 4.0x |
 | Jetson Thor | 0.772 | 912ms | 1.26 | 595ms | 1.6x / 1.5x |
-| DGX Spark (GB10) | 0.975 | 749ms | 1.66 | 464ms | 1.7x / 1.6x |
+| DGX Spark (GB10) | 1.43 | 28,539ms | 1.91 | 373ms | 1.3x / 76.5x |
 | RTX 4090 | 1.32 | 468ms | **4.85** | **170ms** | 3.7x / 2.8x |
 | H100 80GB HBM3 | 0.59 | 1,045ms | **3.98** | **236ms** | 6.7x / 4.4x |
 
-**Note:** Baseline TTFA values are **streaming TTFA** from the community `Qwen3-TTS-streaming` fork (which adds streaming). The official `Qwen3-TTS` repo does **not** currently support streaming, so its “TTFA” is effectively **time-to-full-audio**. With RTF near 1.0, that means waiting for the entire sentence/paragraph to finish speaking before you hear anything. CUDA graphs uses `generate_voice_clone_streaming(chunk_size=8)` for TTFA. Both include text tokenization for fair comparison. Speedup shows throughput / TTFA improvement. The streaming fork reports additional speedups that appear tied to `torch.compile`; we couldn’t reproduce those on Jetson-class devices where `torch.compile` isn’t available.
+**Note:** Baseline TTFA values are **streaming TTFA** from the community `Qwen3-TTS-streaming` fork (which adds streaming). The official `Qwen3-TTS` repo does **not** currently support streaming, so its “TTFA” is effectively **time-to-full-audio**. With RTF near 1.0, that means waiting for the entire sentence/paragraph to finish speaking before you hear anything. CUDA graphs uses `generate_voice_clone_streaming(chunk_size=8)` for TTFA. Both include text tokenization for fair comparison. Speedup shows throughput / TTFA improvement. The streaming fork reports additional speedups that appear tied to `torch.compile`; we couldn’t reproduce those on Jetson-class devices where `torch.compile` isn’t available. **DGX Spark baseline values were re-measured with `benchmarks/baseline.py` (no streaming), so TTFA there is time-to-full-audio.**
 
 
 **GPU architecture notes:** RTX 4090 (2.5 GHz clocks) outperforms H100 (1.8 GHz) for single-stream workloads. H100's lower baseline (RTF 0.59 vs 4090's 1.34) reflects design optimization for batch processing rather than single-stream inference.
 
 ## Parity
 
-We maintain parity with upstream Qwen3‑TTS in two layers, and document where (and why) the fast path can differ numerically:
+We maintain parity with upstream Qwen3‑TTS in two layers, and document where (and why) the fast path can differ numerically. When we say **Qwen3TTS vs FasterQwen3TTS**, we are comparing the upstream dynamic‑cache path against our static‑cache CUDA‑graph path.
 
 - **Fast path (static cache + CUDA graphs):** Streaming and non‑streaming share the same decode core and match upstream for the initial window where artifacts are most audible. Tests enforce this prefix parity deterministically.
 - **Parity mode (dynamic cache, tests only):** A dynamic‑cache decode path (no CUDA graphs) that calls `talker.generate(...)` is used in tests to prove exact token‑level equality against upstream for all model types.
@@ -56,12 +56,62 @@ QWEN_TTS_CUSTOM_MODEL=Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice
 QWEN_TTS_VOICE_DESIGN_MODEL=Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign
 ```
 
-### Quality Samples (Static vs Dynamic)
+### Quality Comparison: Qwen3TTS vs FasterQwen3TTS
 
-We provide side‑by‑side audio samples to compare the **static‑cache fast path** against the **dynamic‑cache parity path** (both CustomVoice and ICL/voice‑clone):
+We provide side‑by‑side audio samples to compare **Qwen3TTS** (dynamic cache) against **FasterQwen3TTS** (static cache) for both CustomVoice and ICL/voice‑clone. The algorithms are equivalent, but the kernels and reduction order differ, so results are not bit‑identical; the samples let you judge the perceptual impact directly. All samples use the **1.7B** models and cap generation at ~14 seconds so the model can finish naturally.
 
 - `samples/parity/README.md` describes the prompts and model details
 - `samples/parity/*.wav` contain 2 voices × 2 prompts × {static,dynamic}
+
+**CustomVoice (aiden) – Prompt 1**
+
+<audio controls src="samples/parity/custom_aiden_gen1_static.wav"></audio>
+<audio controls src="samples/parity/custom_aiden_gen1_dynamic.wav"></audio>
+
+**CustomVoice (aiden) – Prompt 2**
+
+<audio controls src="samples/parity/custom_aiden_gen2_static.wav"></audio>
+<audio controls src="samples/parity/custom_aiden_gen2_dynamic.wav"></audio>
+
+**CustomVoice (serena) – Prompt 1**
+
+<audio controls src="samples/parity/custom_serena_gen1_static.wav"></audio>
+<audio controls src="samples/parity/custom_serena_gen1_dynamic.wav"></audio>
+
+**CustomVoice (serena) – Prompt 2**
+
+<audio controls src="samples/parity/custom_serena_gen2_static.wav"></audio>
+<audio controls src="samples/parity/custom_serena_gen2_dynamic.wav"></audio>
+
+**ICL (ref_audio.wav) – Prompt 1**
+
+<audio controls src="samples/parity/icl_ref_audio_gen1_static.wav"></audio>
+<audio controls src="samples/parity/icl_ref_audio_gen1_dynamic.wav"></audio>
+
+**ICL (ref_audio.wav) – Prompt 2**
+
+<audio controls src="samples/parity/icl_ref_audio_gen2_static.wav"></audio>
+<audio controls src="samples/parity/icl_ref_audio_gen2_dynamic.wav"></audio>
+
+**ICL (ref_audio_2.wav) – Prompt 1**
+
+<audio controls src="samples/parity/icl_ref_audio_2_gen1_static.wav"></audio>
+<audio controls src="samples/parity/icl_ref_audio_2_gen1_dynamic.wav"></audio>
+
+**ICL (ref_audio_2.wav) – Prompt 2**
+
+<audio controls src="samples/parity/icl_ref_audio_2_gen2_static.wav"></audio>
+<audio controls src="samples/parity/icl_ref_audio_2_gen2_dynamic.wav"></audio>
+
+**ICL (ref_audio_3.wav) – Prompt 1**
+
+<audio controls src="samples/parity/icl_ref_audio_3_gen1_static.wav"></audio>
+<audio controls src="samples/parity/icl_ref_audio_3_gen1_dynamic.wav"></audio>
+
+**ICL (ref_audio_3.wav) – Prompt 2**
+
+<audio controls src="samples/parity/icl_ref_audio_3_gen2_static.wav"></audio>
+<audio controls src="samples/parity/icl_ref_audio_3_gen2_dynamic.wav"></audio>
 
 ## Demo UI
 

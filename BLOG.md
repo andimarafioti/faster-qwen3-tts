@@ -82,19 +82,69 @@ This approach demonstrates the power of the PyTorch/transformers ecosystem: you 
 
 ## Static Cache vs Dynamic Cache (Parity Notes)
 
-We use **StaticCache + CUDA graphs** for speed, and a **DynamicCache parity mode** in tests to guarantee exact equality with upstream. The algorithms are equivalent, but the kernel path is not:
+We use **StaticCache + CUDA graphs** for speed (FasterQwen3TTS), and a **DynamicCache parity mode** in tests to guarantee exact equality with upstream (Qwen3‑TTS). The algorithms are equivalent, but the kernel path is not:
 
 - **Static cache** uses fixed max‑length KV buffers plus an explicit attention mask. This often selects a different SDPA kernel (masked attention) than the dynamic path.
 - **Dynamic cache** uses the current sequence length and can use `is_causal=True` with no explicit mask, which typically selects a different kernel.
 
 In BF16/TF32, different kernel/reduction orders are **not bit‑exact**, so static vs dynamic outputs can differ slightly even when the math is equivalent. Parity mode validates that our logic matches upstream; the fast path prioritizes throughput.
 
-### Quality Samples
+### Quality Comparison: Qwen3TTS vs FasterQwen3TTS
 
-We provide side‑by‑side samples (static vs dynamic) so you can judge the perceptual differences yourself. The set includes both **CustomVoice** and **ICL (voice‑clone)** prompts:
+We provide side‑by‑side samples comparing **Qwen3TTS** (dynamic cache) against **FasterQwen3TTS** (static cache). The algorithms are equivalent, but the kernels and reduction order differ, so outputs are not bit‑identical. These samples let you judge the perceptual differences yourself. The set includes both **CustomVoice** and **ICL (voice‑clone)** prompts and uses the **1.7B** models with a ~14s generation cap so the model can finish naturally:
 
 - Sample index and prompts: `samples/parity/README.md`
 - Audio files: `samples/parity/*.wav`
+
+**CustomVoice (aiden) – Prompt 1**
+
+<audio controls src="samples/parity/custom_aiden_gen1_static.wav"></audio>
+<audio controls src="samples/parity/custom_aiden_gen1_dynamic.wav"></audio>
+
+**CustomVoice (aiden) – Prompt 2**
+
+<audio controls src="samples/parity/custom_aiden_gen2_static.wav"></audio>
+<audio controls src="samples/parity/custom_aiden_gen2_dynamic.wav"></audio>
+
+**CustomVoice (serena) – Prompt 1**
+
+<audio controls src="samples/parity/custom_serena_gen1_static.wav"></audio>
+<audio controls src="samples/parity/custom_serena_gen1_dynamic.wav"></audio>
+
+**CustomVoice (serena) – Prompt 2**
+
+<audio controls src="samples/parity/custom_serena_gen2_static.wav"></audio>
+<audio controls src="samples/parity/custom_serena_gen2_dynamic.wav"></audio>
+
+**ICL (ref_audio.wav) – Prompt 1**
+
+<audio controls src="samples/parity/icl_ref_audio_gen1_static.wav"></audio>
+<audio controls src="samples/parity/icl_ref_audio_gen1_dynamic.wav"></audio>
+
+**ICL (ref_audio.wav) – Prompt 2**
+
+<audio controls src="samples/parity/icl_ref_audio_gen2_static.wav"></audio>
+<audio controls src="samples/parity/icl_ref_audio_gen2_dynamic.wav"></audio>
+
+**ICL (ref_audio_2.wav) – Prompt 1**
+
+<audio controls src="samples/parity/icl_ref_audio_2_gen1_static.wav"></audio>
+<audio controls src="samples/parity/icl_ref_audio_2_gen1_dynamic.wav"></audio>
+
+**ICL (ref_audio_2.wav) – Prompt 2**
+
+<audio controls src="samples/parity/icl_ref_audio_2_gen2_static.wav"></audio>
+<audio controls src="samples/parity/icl_ref_audio_2_gen2_dynamic.wav"></audio>
+
+**ICL (ref_audio_3.wav) – Prompt 1**
+
+<audio controls src="samples/parity/icl_ref_audio_3_gen1_static.wav"></audio>
+<audio controls src="samples/parity/icl_ref_audio_3_gen1_dynamic.wav"></audio>
+
+**ICL (ref_audio_3.wav) – Prompt 2**
+
+<audio controls src="samples/parity/icl_ref_audio_3_gen2_static.wav"></audio>
+<audio controls src="samples/parity/icl_ref_audio_3_gen2_dynamic.wav"></audio>
 
 ## A Small but High-Leverage Optimization
 

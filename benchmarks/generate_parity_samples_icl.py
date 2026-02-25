@@ -15,22 +15,27 @@ REFS = [
     {
         "name": "ref_audio",
         "path": os.environ.get("PARITY_REF_AUDIO", "ref_audio.wav"),
-        "text": os.environ.get("PARITY_REF_TEXT", "A short reference transcript."),
+        "text": os.environ.get("PARITY_REF_TEXT", ""),
     },
     {
-        "name": "ref_1",
-        "path": os.environ.get("PARITY_REF_AUDIO_2", "ref_1.wav"),
-        "text": os.environ.get("PARITY_REF_TEXT_2", "A short reference transcript."),
+        "name": "ref_audio_2",
+        "path": os.environ.get("PARITY_REF_AUDIO_2", "ref_audio_2.wav"),
+        "text": os.environ.get("PARITY_REF_TEXT_2", ""),
+    },
+    {
+        "name": "ref_audio_3",
+        "path": os.environ.get("PARITY_REF_AUDIO_3", "ref_audio_3.wav"),
+        "text": os.environ.get("PARITY_REF_TEXT_3", ""),
     },
 ]
 
 TEXTS = [
-    "It is a bright morning, and the city is just waking up. Please keep a calm, clear tone for the first words.",
-    "Please read this sentence with a steady pace, and pause briefly before the final word so the cadence is clear.",
+    "We met at the corner cafe after work and talked about weekend plans. The street was quiet, the lights were warm, and the time passed quickly. We stayed a bit longer.",
+    "On Tuesday morning I missed the bus, so I walked home through the park. I took the long path and listened to the wind in the trees before heading back. I took my time.",
 ]
 
-MAX_NEW_TOKENS = int(os.environ.get("PARITY_MAX_NEW_TOKENS", "96"))
-MIN_NEW_TOKENS = int(os.environ.get("PARITY_MIN_NEW_TOKENS", "24"))
+MAX_NEW_TOKENS = int(os.environ.get("PARITY_MAX_NEW_TOKENS", "168"))
+MIN_NEW_TOKENS = int(os.environ.get("PARITY_MIN_NEW_TOKENS", "2"))
 LANGUAGE = os.environ.get("PARITY_LANGUAGE", "English")
 
 os.makedirs(OUT_DIR, exist_ok=True)
@@ -43,6 +48,29 @@ model = FasterQwen3TTS.from_pretrained(
     attn_implementation="eager",
     max_seq_len=2048,
 )
+parakeet = None
+transcripts = {}
+
+def _load_parakeet():
+    from nano_parakeet import from_pretrained as parakeet_from_pretrained
+    parakeet = parakeet_from_pretrained(device="cuda")
+    parakeet.warmup(duration_s=1.0)
+    return parakeet
+
+
+def _transcribe(parakeet, path: str) -> str:
+    import soundfile as sf
+    import torchaudio
+
+    wav, sr = sf.read(path, dtype="float32", always_2d=False)
+    if wav.ndim > 1:
+        wav = wav.mean(axis=1)
+    if sr != 16000:
+        wav_t = torch.from_numpy(wav).unsqueeze(0)
+        wav_t = torchaudio.functional.resample(wav_t, sr, 16000)
+        wav = wav_t.squeeze().numpy()
+    wav_tensor = torch.from_numpy(wav).cuda()
+    return parakeet.transcribe(wav_tensor)
 
 
 def _decode(codec_ids, ref_codes):
@@ -72,6 +100,16 @@ def _decode(codec_ids, ref_codes):
 for ref in REFS:
     if not os.path.exists(ref["path"]):
         raise RuntimeError(f"Reference audio not found: {ref['path']}")
+
+    transcript = ref["text"].strip()
+    if not transcript:
+        if parakeet is None:
+            print("Loading nano-parakeet for reference transcription...")
+            parakeet = _load_parakeet()
+        transcript = _transcribe(parakeet, ref["path"]).strip()
+        print(f"  Transcribed {ref['name']}: '{transcript}'")
+    ref["text"] = transcript
+    transcripts[ref["name"]] = transcript
 
     with torch.inference_mode():
         for idx, text in enumerate(TEXTS, start=1):
@@ -115,5 +153,15 @@ for ref in REFS:
                 path = os.path.join(OUT_DIR, filename)
                 sf.write(path, audio, sr)
                 print(f"Wrote {path} ({len(audio) / sr:.2f}s, {timing['ms_per_step']:.1f} ms/step)")
+
+if transcripts:
+    transcript_path = os.path.join(OUT_DIR, "icl_transcripts.txt")
+    with open(transcript_path, "w", encoding="utf-8") as f:
+        for ref in REFS:
+            name = ref["name"]
+            path = ref["path"]
+            text = transcripts.get(name, "")
+            f.write(f"{name} ({path}): {text}\n")
+    print(f"Wrote {transcript_path}")
 
 print("Done.")
