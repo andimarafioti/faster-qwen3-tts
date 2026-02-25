@@ -234,7 +234,7 @@ We've open-sourced this implementation to help the community deploy Qwen3-TTS in
 git clone https://github.com/andimarafioti/faster-qwen3-tts
 cd faster-qwen3-tts
 ./setup.sh       # creates venv with uv, installs deps, downloads models
-./benchmark.sh   # runs full benchmark, saves JSON + audio samples
+./benchmark.sh   # runs streaming benchmark, saves JSON + audio samples
 ```
 
 Core implementation:

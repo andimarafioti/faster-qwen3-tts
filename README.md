@@ -13,7 +13,7 @@ Benchmarks include tokenization + inference (apples-to-apples with baseline). RT
 | Jetson AGX Orin 64GB | 0.175 | 2,572ms | 1.57 | 556ms | 9.0x / 4.6x |
 | Jetson Thor | 0.803 | 862ms | 1.50 | 505ms | 1.9x / 1.7x |
 | DGX Spark (GB10) | 1.17 | 567ms | 2.56 | 280ms | 2.2x / 2.0x |
-| RTX 4090 | 1.36 | 773ms | **5.28** | **158ms** | 3.9x / 4.9x |
+| RTX 4090 | 0.82 | 800ms | **4.78** | **156ms** | 5.8x / 5.1x |
 | H100 80GB HBM3 | 0.59 | 1,049ms | **4.19** | **224ms** | 7.1x / 4.7x |
 
 ### 1.7B Model
@@ -23,13 +23,13 @@ Benchmarks include tokenization + inference (apples-to-apples with baseline). RT
 | Jetson AGX Orin 64GB | 0.130 | 2,594ms | 1.27 | 650ms | 9.8x / 4.0x |
 | Jetson Thor | 0.772 | 912ms | 1.26 | 595ms | 1.6x / 1.5x |
 | DGX Spark (GB10) | 1.01 | 661ms | 1.87 | 400ms | 1.9x / 1.7x |
-| RTX 4090 | 1.34 | 778ms | **4.62** | **175ms** | 3.4x / 4.4x |
+| RTX 4090 | 0.82 | 850ms | **4.22** | **174ms** | 5.1x / 4.9x |
 | H100 80GB HBM3 | 0.59 | 1,045ms | **3.98** | **236ms** | 6.7x / 4.4x |
 
 **Note:** Baseline TTFA values are **streaming TTFA** from the community `Qwen3-TTS-streaming` fork (which adds streaming) or from our **dynamic-cache parity streaming** path (no CUDA graphs) where available. The official `Qwen3-TTS` repo does **not** currently support streaming, so without a streaming baseline TTFA would be **time-to-full-audio**. CUDA graphs uses `generate_voice_clone_streaming(chunk_size=8)` for TTFA. Both include text tokenization for fair comparison. Speedup shows throughput / TTFA improvement. The streaming fork reports additional speedups that appear tied to `torch.compile`; we couldn’t reproduce those on Jetson-class devices where `torch.compile` isn’t available.
 
 
-**GPU architecture notes:** RTX 4090 (2.5 GHz clocks) outperforms H100 (1.8 GHz) for single-stream workloads. H100's lower baseline (RTF 0.59 vs 4090's 1.34) reflects design optimization for batch processing rather than single-stream inference.
+**GPU architecture notes:** RTX 4090 (2.5 GHz clocks) outperforms H100 (1.8 GHz) for single-stream workloads. H100's lower baseline (RTF 0.59 vs 4090's 0.82) reflects design optimization for batch processing rather than single-stream inference.
 
 ## Parity
 
@@ -134,7 +134,7 @@ Features: voice clone (upload any WAV), voice design (1.7B-VoiceDesign model), s
 git clone https://github.com/andimarafioti/faster-qwen3-tts
 cd faster-qwen3-tts
 ./setup.sh       # creates venv with uv, installs deps, downloads models
-./benchmark.sh   # runs full benchmark, saves JSON + audio samples
+./benchmark.sh   # runs streaming benchmark, saves JSON + audio samples
 ```
 
 Requires: Python 3.10+, NVIDIA GPU with CUDA, [uv](https://docs.astral.sh/uv/).
