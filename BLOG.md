@@ -91,7 +91,7 @@ In BF16/TF32, different kernel/reduction orders are **not bit‑exact**, so stat
 
 ### Quality Samples
 
-We provide side‑by‑side samples (static vs dynamic) so you can judge the perceptual differences yourself:
+We provide side‑by‑side samples (static vs dynamic) so you can judge the perceptual differences yourself. The set includes both **CustomVoice** and **ICL (voice‑clone)** prompts:
 
 - Sample index and prompts: `samples/parity/README.md`
 - Audio files: `samples/parity/*.wav`
