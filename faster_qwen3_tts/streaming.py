@@ -51,6 +51,11 @@ def fast_generate_streaming(
         if i != eos_id:
             suppress_mask[i] = True
 
+    predictor = talker.code_predictor
+    talker_codec_embed = talker.get_input_embeddings()
+    talker_codec_head = talker.codec_head
+    predictor_codec_embeds = predictor.get_input_embeddings()
+    num_code_groups = config.num_code_groups
 
     # === PREFILL (still uses HF forward for variable-length prefill) ===
     t_start = time.time()
