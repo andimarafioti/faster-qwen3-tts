@@ -33,10 +33,12 @@ Benchmarks include tokenization + inference (apples-to-apples with baseline). RT
 
 ## Parity
 
-We maintain parity with upstream Qwen3‑TTS in two layers:
+We maintain parity with upstream Qwen3‑TTS in two layers, and document where (and why) the fast path can differ numerically:
 
-- **Fast path parity (CUDA graphs):** Streaming and non‑streaming use the same decode core and match upstream for the initial window where artifacts are most audible. Tests enforce this prefix parity deterministically.
-- **Full parity mode (tests only):** A dynamic‑cache decode path (no CUDA graphs) that calls `talker.generate(...)` is used in tests to prove exact token‑level equality against upstream for all model types.
+- **Fast path (static cache + CUDA graphs):** Streaming and non‑streaming share the same decode core and match upstream for the initial window where artifacts are most audible. Tests enforce this prefix parity deterministically.
+- **Parity mode (dynamic cache, tests only):** A dynamic‑cache decode path (no CUDA graphs) that calls `talker.generate(...)` is used in tests to prove exact token‑level equality against upstream for all model types.
+
+**Why can static cache differ from dynamic cache?** The math is equivalent, but the kernel path is not. Static cache uses a fixed max‑length KV buffer and an explicit attention mask, which often selects a different SDPA kernel than the dynamic cache path (shorter K/V, `is_causal=True`, mask‑free). In BF16/TF32, different kernel/reduction orders are not bit‑exact, so the outputs can differ slightly even when the algorithm is the same.
 
 Tests live in `tests/test_e2e_parity.py` and cover:
 
@@ -44,6 +46,7 @@ Tests live in `tests/test_e2e_parity.py` and cover:
 - Streaming vs non‑streaming parity (fast path)
 - CustomVoice full equality (parity mode)
 - VoiceDesign full equality (parity mode)
+- Voice clone ICL full equality (parity mode)
 
 You can control the model IDs used by tests via environment variables:
 
@@ -52,6 +55,13 @@ QWEN_TTS_MODEL=Qwen/Qwen3-TTS-12Hz-0.6B-Base
 QWEN_TTS_CUSTOM_MODEL=Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice
 QWEN_TTS_VOICE_DESIGN_MODEL=Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign
 ```
+
+### Quality Samples (Static vs Dynamic)
+
+We provide side‑by‑side audio samples to compare the **static‑cache fast path** against the **dynamic‑cache parity path**:
+
+- `samples/parity/README.md` describes the prompts and model details
+- `samples/parity/*.wav` contain 2 voices × 2 prompts × {static,dynamic}
 
 ## Demo UI
 

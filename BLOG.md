@@ -80,6 +80,22 @@ The key insight: transformers already ships everything you need. Its `StaticCach
 
 This approach demonstrates the power of the PyTorch/transformers ecosystem: you don't need a custom inference engine or hand-rolled attention kernels. The building blocks — `StaticCache`, `cache_position`, `CUDAGraph` — are already there. You just need to connect them.
 
+## Static Cache vs Dynamic Cache (Parity Notes)
+
+We use **StaticCache + CUDA graphs** for speed, and a **DynamicCache parity mode** in tests to guarantee exact equality with upstream. The algorithms are equivalent, but the kernel path is not:
+
+- **Static cache** uses fixed max‑length KV buffers plus an explicit attention mask. This often selects a different SDPA kernel (masked attention) than the dynamic path.
+- **Dynamic cache** uses the current sequence length and can use `is_causal=True` with no explicit mask, which typically selects a different kernel.
+
+In BF16/TF32, different kernel/reduction orders are **not bit‑exact**, so static vs dynamic outputs can differ slightly even when the math is equivalent. Parity mode validates that our logic matches upstream; the fast path prioritizes throughput.
+
+### Quality Samples
+
+We provide side‑by‑side samples (static vs dynamic) so you can judge the perceptual differences yourself:
+
+- Sample index and prompts: `samples/parity/README.md`
+- Audio files: `samples/parity/*.wav`
+
 ## A Small but High-Leverage Optimization
 
 While profiling, we found a surprising hotspot: the **repetition penalty** logic in the decode loop. It was a small Python loop that indexed GPU tensors per token, which triggered CPU↔GPU syncs and cost a few milliseconds per step. On fast GPUs, that overhead becomes a meaningful fraction of the total decode time.
