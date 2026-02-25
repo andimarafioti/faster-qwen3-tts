@@ -650,6 +650,7 @@ class FasterQwen3TTS:
         chunk_size: int = 12,
         xvec_only: bool = True,
         append_silence: bool = True,
+        parity_mode: bool = False,
     ) -> Generator[Tuple[np.ndarray, int, dict], None, None]:
         """
         Stream voice-cloned speech generation, yielding audio chunks.
@@ -673,11 +674,12 @@ class FasterQwen3TTS:
             xvec_only: When True (default), use only the speaker embedding for voice cloning.
                 This prevents phoneme bleed-through from the reference and allows clean
                 language switching. Set to False for full ICL mode (reference audio in context).
+            parity_mode: When True, disables CUDA graphs and uses dynamic cache streaming.
 
         Yields:
             Tuple of (audio_chunk_numpy, sample_rate, timing_dict)
         """
-        from .streaming import fast_generate_streaming
+        from .streaming import fast_generate_streaming, parity_generate_streaming
 
         m, talker, config, tie, tam, tth, tpe, ref_codes = self._prepare_generation(
             text,
@@ -700,15 +702,14 @@ class FasterQwen3TTS:
         prev_gen_audio_len = 0  # tracks position within the generated (non-ref) audio
         samples_per_frame = None
 
-        for codec_chunk, timing in fast_generate_streaming(
+        stream_fn = parity_generate_streaming if parity_mode else fast_generate_streaming
+        stream_kwargs = dict(
             talker=talker,
             talker_input_embeds=tie,
             attention_mask=tam,
             trailing_text_hiddens=tth,
             tts_pad_embed=tpe,
             config=config,
-            predictor_graph=self.predictor_graph,
-            talker_graph=self.talker_graph,
             max_new_tokens=max_new_tokens,
             min_new_tokens=min_new_tokens,
             temperature=temperature,
@@ -717,7 +718,12 @@ class FasterQwen3TTS:
             do_sample=do_sample,
             repetition_penalty=repetition_penalty,
             chunk_size=chunk_size,
-        ):
+        )
+        if not parity_mode:
+            stream_kwargs["predictor_graph"] = self.predictor_graph
+            stream_kwargs["talker_graph"] = self.talker_graph
+
+        for codec_chunk, timing in stream_fn(**stream_kwargs):
             all_codes.append(codec_chunk)
             n_new = codec_chunk.shape[0]
             all_flat = torch.cat(all_codes, dim=0)

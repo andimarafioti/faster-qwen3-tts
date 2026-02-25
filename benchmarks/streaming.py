@@ -10,6 +10,7 @@ from faster_qwen3_tts import FasterQwen3TTS
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODEL_SIZE = os.environ.get('MODEL_SIZE', '0.6B')
 MODEL_ID = f'Qwen/Qwen3-TTS-12Hz-{MODEL_SIZE}-Base'
+PARITY_STREAMING = os.environ.get('PARITY_STREAMING', '0') == '1'
 text = "Ladies and gentlemen, I have just been informed that this speech is being generated faster than I can speak it. The robots have officially won. Please remain calm."
 ref_audio = os.path.join(PROJECT_DIR, 'ref_audio.wav')
 ref_text = "I'm confused why some people have super short timelines, yet at the same time are bullish on scaling up reinforcement learning atop LLMs. If we're actually close to a human-like learner, then this whole approach of training on verifiable outcomes."
@@ -24,7 +25,8 @@ model = FasterQwen3TTS.from_pretrained(
 )
 
 # Warmup (includes CUDA graph capture)
-print("\nWarmup run...")
+mode_label = "parity streaming (dynamic cache)" if PARITY_STREAMING else "streaming (CUDA graphs)"
+print(f"\nWarmup run ({mode_label})...")
 start = time.perf_counter()
 audio_list, sr = model.generate_voice_clone(
     text=text[:50],
@@ -48,6 +50,7 @@ for chunk_size in [4, 8, 12]:
             ref_audio=ref_audio,
             ref_text=ref_text,
             chunk_size=chunk_size,
+            parity_mode=PARITY_STREAMING,
         )
         first_chunk, sr, timing = next(gen)
         torch.cuda.synchronize()
@@ -75,6 +78,7 @@ for run in range(3):
         ref_audio=ref_audio,
         ref_text=ref_text,
         chunk_size=12,
+        parity_mode=PARITY_STREAMING,
     ):
         t_chunk = time.perf_counter() - t_total
         chunks.append(audio_chunk)
@@ -129,6 +133,7 @@ chunks = []
 for audio_chunk, sr, _ in model.generate_voice_clone_streaming(
     text=text, language="English",
     ref_audio=ref_audio, ref_text=ref_text, chunk_size=12,
+    parity_mode=PARITY_STREAMING,
 ):
     chunks.append(audio_chunk)
 streaming_audio = np.concatenate(chunks)

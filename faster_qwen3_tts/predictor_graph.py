@@ -17,6 +17,8 @@ import torch
 from transformers import StaticCache
 from transformers.masking_utils import create_causal_mask, create_sliding_window_causal_mask
 
+from .sampling import sample_logits
+
 
 class PredictorGraph:
     """
@@ -106,27 +108,6 @@ class PredictorGraph:
         for pos in self.decode_cache_positions:
             self.decode_attn.append(self._make_attn_mask(dummy_decode, pos))
 
-    def _sample(self, logits):
-        """Sample one token from logits [1, 1, vocab]. Returns [1] long tensor."""
-        l = logits[:, 0, :]  # [1, vocab]
-        if not self.do_sample:
-            return torch.argmax(l, dim=-1)
-        l = l / self.temperature
-        if self.top_k > 0:
-            topk_vals, _ = torch.topk(l, min(self.top_k, l.shape[-1]))
-            l = torch.where(l < topk_vals[:, -1:], torch.full_like(l, float('-inf')), l)
-        if self.top_p < 1.0:
-            sorted_logits, sorted_indices = torch.sort(l, descending=True)
-            probs = torch.softmax(sorted_logits, dim=-1)
-            cumulative_probs = torch.cumsum(probs, dim=-1)
-            sorted_indices_to_remove = cumulative_probs > self.top_p
-            sorted_indices_to_remove[:, 0] = False
-            sorted_logits[sorted_indices_to_remove] = float('-inf')
-            l = torch.full_like(l, float('-inf'))
-            l.scatter_(-1, sorted_indices, sorted_logits)
-        probs = torch.softmax(l, dim=-1)
-        return torch.multinomial(probs, 1)[:, 0]
-
     def _full_loop(self):
         """The full 15-step predictor loop on static buffers."""
         # Project input from talker hidden size to predictor hidden size
@@ -144,7 +125,13 @@ class PredictorGraph:
 
         # First codebook: logits from last position
         logits = self.lm_heads[0](h[:, -1:, :])  # [1, 1, vocab]
-        tok = self._sample(logits)  # [1]
+        tok = sample_logits(
+            logits,
+            temperature=self.temperature,
+            top_k=self.top_k,
+            top_p=self.top_p,
+            do_sample=self.do_sample,
+        )
         self.output_tokens[0] = tok[0]
 
         # Remaining 14 codebooks
@@ -164,7 +151,13 @@ class PredictorGraph:
             h = out.last_hidden_state
 
             logits = self.lm_heads[cb_idx](h[:, -1:, :])
-            tok = self._sample(logits)
+            tok = sample_logits(
+                logits,
+                temperature=self.temperature,
+                top_k=self.top_k,
+                top_p=self.top_p,
+                do_sample=self.do_sample,
+            )
             self.output_tokens[cb_idx] = tok[0]
 
         return self.output_tokens
