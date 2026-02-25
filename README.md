@@ -10,7 +10,7 @@ Benchmarks include tokenization + inference (apples-to-apples with baseline). RT
 
 | GPU | Baseline RTF | Baseline TTFA | CUDA Graphs RTF | CUDA Graphs TTFA | Speedup |
 |---|---|---|---|---|---|
-| Jetson AGX Orin 64GB | 0.175 | 2,572ms | 1.57 | 556ms | 9.0x / 4.6x |
+| Jetson AGX Orin 64GB | 0.179 | 3,641ms | 1.307 | 597ms | 7.3x / 6.1x |
 | DGX Spark (GB10) | 1.17 | 567ms | 2.56 | 280ms | 2.2x / 2.0x |
 | RTX 4090 | 0.82 | 800ms | **4.78** | **156ms** | 5.8x / 5.1x |
 | H100 80GB HBM3 | 0.59 | 1,049ms | **4.19** | **224ms** | 7.1x / 4.7x |
@@ -19,7 +19,7 @@ Benchmarks include tokenization + inference (apples-to-apples with baseline). RT
 
 | GPU | Baseline RTF | Baseline TTFA | CUDA Graphs RTF | CUDA Graphs TTFA | Speedup |
 |---|---|---|---|---|---|
-| Jetson AGX Orin 64GB | 0.130 | 2,594ms | 1.27 | 650ms | 9.8x / 4.0x |
+| Jetson AGX Orin 64GB | 0.183 | 3,573ms | 1.089 | 693ms | 6.0x / 5.2x |
 | DGX Spark (GB10) | 1.01 | 661ms | 1.87 | 400ms | 1.9x / 1.7x |
 | RTX 4090 | 0.82 | 850ms | **4.22** | **174ms** | 5.1x / 4.9x |
 | H100 80GB HBM3 | 0.59 | 1,045ms | **3.98** | **236ms** | 6.7x / 4.4x |
