@@ -58,7 +58,7 @@ QWEN_TTS_VOICE_DESIGN_MODEL=Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign
 
 ### Quality Samples (Static vs Dynamic)
 
-We provide side‑by‑side audio samples to compare the **static‑cache fast path** against the **dynamic‑cache parity path**:
+We provide side‑by‑side audio samples to compare the **static‑cache fast path** against the **dynamic‑cache parity path** (both CustomVoice and ICL/voice‑clone):
 
 - `samples/parity/README.md` describes the prompts and model details
 - `samples/parity/*.wav` contain 2 voices × 2 prompts × {static,dynamic}
