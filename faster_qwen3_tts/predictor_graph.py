@@ -65,6 +65,7 @@ class PredictorGraph:
         # I/O buffers
         self.input_buf = torch.zeros(1, 2, talker_hidden_size, dtype=dtype, device=device)
         self.output_tokens = torch.zeros(self.num_codebooks, dtype=torch.long, device=device)
+        self.sample_uniform = torch.zeros(self.num_codebooks, dtype=torch.float32, device=device)
 
         self.graph = None
         self.captured = False
@@ -131,6 +132,7 @@ class PredictorGraph:
             top_k=self.top_k,
             top_p=self.top_p,
             do_sample=self.do_sample,
+            sample_uniform=self.sample_uniform[0] if self.do_sample else None,
         )
         self.output_tokens[0] = tok[0]
 
@@ -157,6 +159,7 @@ class PredictorGraph:
                 top_k=self.top_k,
                 top_p=self.top_p,
                 do_sample=self.do_sample,
+                sample_uniform=self.sample_uniform[cb_idx] if self.do_sample else None,
             )
             self.output_tokens[cb_idx] = tok[0]
 
@@ -204,6 +207,8 @@ class PredictorGraph:
         Returns: [15] long tensor of codebook tokens
         """
         self.input_buf.copy_(pred_input)
+        if self.do_sample:
+            self.sample_uniform.uniform_()
         self.static_cache.reset()
         self.graph.replay()
         return self.output_tokens.clone()
