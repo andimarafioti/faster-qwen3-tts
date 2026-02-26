@@ -418,6 +418,14 @@ body {
 }
 .msg-bar .sw-btn:hover { background: rgba(234,179,8,0.3); }
 
+/* ── Queue indicator ── */
+.queue-bar {
+  display: none; padding: 6px 12px;
+  border-radius: var(--radius-sm); font-size: 13px; color: var(--text2);
+  background: rgba(99,102,241,0.08); border: 1px solid rgba(99,102,241,0.2);
+}
+.queue-bar.show { display: flex; align-items: center; gap: 8px; }
+
 /* ── Progress ── */
 .pbar-wrap {
   height: 2px; background: var(--border);
@@ -723,6 +731,7 @@ body {
     </div>
     <!-- Messages -->
     <div class="msg-bar" id="msgBar"></div>
+    <div class="queue-bar" id="queueBar"></div>
 
     <!-- Progress -->
     <div class="pbar-wrap" id="pbarWrap"><div class="pbar" id="pbar"></div></div>
@@ -1529,6 +1538,7 @@ async function generate(mode) {
   }
   if (mode === 'custom' && !$('speakerId').value) { showMsg('err', 'Select a speaker first.'); return; }
   hideMsg();
+  $('queueBar').className = 'queue-bar';
 
   busy = true;
   setPlayBtns(true);
@@ -1602,7 +1612,15 @@ async function runStream(fd) {
       if (!line.startsWith('data: ')) continue;
       const d = JSON.parse(line.slice(6));
 
-      if (d.type === 'chunk') {
+      if (d.type === 'queued') {
+        const bar = $('queueBar');
+        bar.textContent = d.position === 1
+          ? 'Waiting... (1 request ahead of you)'
+          : `Waiting... (${d.position} requests ahead of you)`;
+        bar.classList.add('show');
+
+      } else if (d.type === 'chunk') {
+        $('queueBar').className = 'queue-bar';
         if (!audioInited) { await initAudio(d.sample_rate); audioInited = true; }
         // Capture server wall time on first chunk
         if (firstChunkAt == null && d.elapsed_ms != null) firstServerWall = d.elapsed_ms;
@@ -1610,6 +1628,7 @@ async function runStream(fd) {
         enqueueChunk(d.audio_b64);
 
       } else if (d.type === 'done') {
+        $('queueBar').className = 'queue-bar';
         pushMetrics(d.ttfa_ms, d.rtf, d.total_audio_s, d.voice_clone_ms);
         await chunkQ;
         setDone();
@@ -1617,6 +1636,7 @@ async function runStream(fd) {
         if (blob) setPlayer(blob);
 
       } else if (d.type === 'error') {
+        $('queueBar').className = 'queue-bar';
         throw new Error(d.message);
       }
     }

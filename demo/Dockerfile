@@ -1,7 +1,8 @@
-FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
+FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
+ENV MODEL_CACHE_SIZE=5
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip python3-venv \
@@ -12,7 +13,7 @@ WORKDIR /app
 COPY . /app
 
 RUN python3 -m pip install --upgrade pip \
-    && python3 -m pip install --index-url https://download.pytorch.org/whl/cu121 torch \
+    && python3 -m pip install --index-url https://download.pytorch.org/whl/cu126 torch torchaudio \
     && python3 -m pip install "faster-qwen3-tts[demo]" \
     && python3 -m pip install -r requirements.txt
 

@@ -11,6 +11,7 @@ Usage:
 import argparse
 import asyncio
 import base64
+from collections import OrderedDict
 import hashlib
 import io
 import json
@@ -145,13 +146,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-_model: FasterQwen3TTS | None = None
-_model_name: str | None = None
-_model_lock = threading.Lock()
+_model_cache: OrderedDict[str, FasterQwen3TTS] = OrderedDict()
+_model_cache_max: int = int(os.environ.get("MODEL_CACHE_SIZE", "2"))
+_active_model_name: str | None = None
 _loading = False
 _ref_cache: dict[str, str] = {}
 _ref_cache_lock = threading.Lock()
 _parakeet = None
+_generation_lock = asyncio.Lock()
+_generation_waiters: int = 0  # requests waiting for or holding the generation lock
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -222,15 +225,16 @@ async def transcribe_audio(audio: UploadFile = File(...)):
 async def get_status():
     speakers = []
     model_type = None
-    if _model is not None:
+    active = _model_cache.get(_active_model_name) if _active_model_name else None
+    if active is not None:
         try:
-            model_type = _model.model.model.tts_model_type
-            speakers = _model.model.get_supported_speakers() or []
+            model_type = active.model.model.tts_model_type
+            speakers = active.model.get_supported_speakers() or []
         except Exception:
             speakers = []
     return {
-        "loaded": _model is not None,
-        "model": _model_name,
+        "loaded": active is not None,
+        "model": _active_model_name,
         "loading": _loading,
         "available_models": AVAILABLE_MODELS,
         "model_type": model_type,
@@ -240,6 +244,8 @@ async def get_status():
             {"id": p["id"], "label": p["label"], "ref_text": p["ref_text"]}
             for p in _preset_refs.values()
         ],
+        "queue_depth": _generation_waiters,
+        "cached_models": list(_model_cache.keys()),
     }
 
 
@@ -259,32 +265,40 @@ async def get_preset_ref(preset_id: str):
 
 @app.post("/load")
 async def load_model(model_id: str = Form(...)):
-    global _model, _model_name, _loading
+    global _active_model_name, _loading
 
-    if _model_name == model_id and _model is not None:
+    # Already in cache — instant switch, no GPU work needed
+    if model_id in _model_cache:
+        _active_model_name = model_id
+        _model_cache.move_to_end(model_id)
         return {"status": "already_loaded", "model": model_id}
 
     _loading = True
 
     def _do_load():
-        global _model, _model_name, _loading
+        global _active_model_name, _loading
         try:
-            with _model_lock:
-                new_model = FasterQwen3TTS.from_pretrained(
-                    model_id,
-                    device="cuda",
-                    dtype=torch.bfloat16,
-                )
-                print("Capturing CUDA graphs…")
-                new_model._warmup(prefill_len=100)
-                _model = new_model
-                _model_name = model_id
-                _prime_preset_voice_cache(new_model)
-                print("CUDA graphs captured — model ready.")
+            if len(_model_cache) >= _model_cache_max:
+                evicted, _ = _model_cache.popitem(last=False)
+                print(f"Model cache full — evicted: {evicted}")
+            new_model = FasterQwen3TTS.from_pretrained(
+                model_id,
+                device="cuda",
+                dtype=torch.bfloat16,
+            )
+            print("Capturing CUDA graphs…")
+            new_model._warmup(prefill_len=100)
+            _model_cache[model_id] = new_model
+            _model_cache.move_to_end(model_id)
+            _active_model_name = model_id
+            _prime_preset_voice_cache(new_model)
+            print("CUDA graphs captured — model ready.")
         finally:
             _loading = False
 
-    await asyncio.to_thread(_do_load)
+    # Hold the generation lock while loading to prevent OOM from concurrent inference
+    async with _generation_lock:
+        await asyncio.to_thread(_do_load)
     return {"status": "loaded", "model": model_id}
 
 
@@ -304,10 +318,10 @@ async def generate_stream(
     ref_preset: str = Form(""),
     ref_audio: UploadFile = File(None),
 ):
-    if _model is None:
+    if not _active_model_name or _active_model_name not in _model_cache:
         raise HTTPException(status_code=400, detail="Model not loaded. Click 'Load' first.")
 
-    model = _model
+    model = _model_cache[_active_model_name]
     tmp_path = None
     tmp_is_cached = False
 
@@ -448,11 +462,22 @@ async def generate_stream(
             if tmp_path and os.path.exists(tmp_path) and not tmp_is_cached:
                 os.unlink(tmp_path)
 
-    thread = threading.Thread(target=run_generation, daemon=True)
-    thread.start()
-
     async def sse():
+        global _generation_waiters
+        lock_acquired = False
+        _generation_waiters += 1
+        people_ahead = _generation_waiters - 1 + (1 if _generation_lock.locked() else 0)
         try:
+            if people_ahead > 0:
+                yield f"data: {json.dumps({'type': 'queued', 'position': people_ahead})}\n\n"
+
+            await _generation_lock.acquire()
+            lock_acquired = True
+            _generation_waiters -= 1
+
+            thread = threading.Thread(target=run_generation, daemon=True)
+            thread.start()
+
             while True:
                 msg = await queue.get()
                 if msg is None:
@@ -460,6 +485,11 @@ async def generate_stream(
                 yield f"data: {msg}\n\n"
         except asyncio.CancelledError:
             pass
+        finally:
+            if lock_acquired:
+                _generation_lock.release()
+            else:
+                _generation_waiters -= 1
 
     return StreamingResponse(
         sse(),
@@ -485,10 +515,10 @@ async def generate_non_streaming(
     ref_preset: str = Form(""),
     ref_audio: UploadFile = File(None),
 ):
-    if _model is None:
+    if not _active_model_name or _active_model_name not in _model_cache:
         raise HTTPException(status_code=400, detail="Model not loaded. Click 'Load' first.")
 
-    model = _model
+    model = _model_cache[_active_model_name]
     tmp_path = None
     tmp_is_cached = False
 
@@ -545,7 +575,13 @@ async def generate_non_streaming(
         dur = len(audio) / sr
         return audio, sr, elapsed, dur
 
+    global _generation_waiters
+    _generation_waiters += 1
+    lock_acquired = False
     try:
+        await _generation_lock.acquire()
+        lock_acquired = True
+        _generation_waiters -= 1
         audio, sr, elapsed, dur = await asyncio.to_thread(run)
         rtf = dur / elapsed if elapsed > 0 else 0.0
         return JSONResponse({
@@ -558,6 +594,10 @@ async def generate_non_streaming(
             },
         })
     finally:
+        if lock_acquired:
+            _generation_lock.release()
+        else:
+            _generation_waiters -= 1
         if tmp_path and os.path.exists(tmp_path) and not tmp_is_cached:
             os.unlink(tmp_path)
 
@@ -581,17 +621,18 @@ def main():
     args = parser.parse_args()
 
     if not args.no_preload:
-        global _model, _model_name, _parakeet
+        global _active_model_name, _parakeet
         print(f"Loading model: {args.model}")
-        _model = FasterQwen3TTS.from_pretrained(
+        _startup_model = FasterQwen3TTS.from_pretrained(
             args.model,
             device="cuda",
             dtype=torch.bfloat16,
         )
-        _model_name = args.model
         print("Capturing CUDA graphs…")
-        _model._warmup(prefill_len=100)
-        _prime_preset_voice_cache(_model)
+        _startup_model._warmup(prefill_len=100)
+        _model_cache[args.model] = _startup_model
+        _active_model_name = args.model
+        _prime_preset_voice_cache(_startup_model)
         print("TTS model ready.")
 
         print("Loading transcription model (nano-parakeet)…")
