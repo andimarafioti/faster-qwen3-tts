@@ -1,6 +1,11 @@
 # Baseline benchmark - copy paste and run
 # Usage: python baseline_bench.py
-import torch, time, sys, os, numpy as np
+import os
+import sys
+import time
+
+import numpy as np
+import torch
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from qwen_tts import Qwen3TTSModel

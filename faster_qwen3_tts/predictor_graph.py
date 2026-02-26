@@ -17,6 +17,8 @@ import torch
 from transformers import StaticCache
 from transformers.masking_utils import create_causal_mask, create_sliding_window_causal_mask
 
+from .sampling import sample_logits
+
 
 class PredictorGraph:
     """
@@ -29,7 +31,8 @@ class PredictorGraph:
         codebook_tokens = mpg.run(pred_input)  # pred_input: [1, 2, H]
     """
 
-    def __init__(self, code_predictor, pred_config, talker_hidden_size, device='cuda:0', dtype=torch.bfloat16):
+    def __init__(self, code_predictor, pred_config, talker_hidden_size, device='cuda:0', dtype=torch.bfloat16,
+                 do_sample=True, top_k=50, top_p=1.0, temperature=0.9):
         self.device = device
         self.dtype = dtype
         self.num_layers = pred_config.num_hidden_layers
@@ -37,6 +40,10 @@ class PredictorGraph:
         self.num_code_groups = pred_config.num_code_groups
         self.num_codebooks = self.num_code_groups - 1  # 15
         self.max_seq = 2 + self.num_codebooks  # 17
+        self.do_sample = do_sample
+        self.top_k = top_k
+        self.top_p = top_p
+        self.temperature = temperature
 
         # Extract model components (references, not copies)
         cp = code_predictor
@@ -118,7 +125,13 @@ class PredictorGraph:
 
         # First codebook: logits from last position
         logits = self.lm_heads[0](h[:, -1:, :])  # [1, 1, vocab]
-        tok = torch.argmax(logits[:, 0, :], dim=-1)  # [1]
+        tok = sample_logits(
+            logits[:, 0, :],
+            temperature=self.temperature,
+            top_k=self.top_k,
+            top_p=self.top_p,
+            do_sample=self.do_sample,
+        )
         self.output_tokens[0] = tok[0]
 
         # Remaining 14 codebooks
@@ -138,7 +151,13 @@ class PredictorGraph:
             h = out.last_hidden_state
 
             logits = self.lm_heads[cb_idx](h[:, -1:, :])
-            tok = torch.argmax(logits[:, 0, :], dim=-1)
+            tok = sample_logits(
+                logits[:, 0, :],
+                temperature=self.temperature,
+                top_k=self.top_k,
+                top_p=self.top_p,
+                do_sample=self.do_sample,
+            )
             self.output_tokens[cb_idx] = tok[0]
 
         return self.output_tokens

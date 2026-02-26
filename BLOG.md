@@ -34,7 +34,6 @@ CustomVoice uses predefined speaker IDs (no reference audio). These benchmarks u
 | GPU | Baseline RTF | Baseline TTFA | CUDA Graphs RTF | CUDA Graphs TTFA | Speedup |
 |---|---|---|---|---|---|
 | Jetson AGX Orin 64GB | 0.175 | 2,572ms | **1.57** | **556ms** | 9.0x / 4.6x |
-| Jetson Thor | 0.803 | 862ms | 1.50 | 505ms | 1.9x / 1.7x |
 | DGX Spark (GB10) | 1.19 | 631ms | 2.26 | 364ms | 1.9x / 1.7x |
 | RTX 4090 | 1.34 | 462ms | **5.56** | **152ms** | 4.1x / 3.0x |
 | H100 80GB HBM3 | 0.59 | 1,049ms | **4.19** | **224ms** | 7.1x / 4.7x |
@@ -44,7 +43,6 @@ CustomVoice uses predefined speaker IDs (no reference audio). These benchmarks u
 | GPU | Baseline RTF | Baseline TTFA | CUDA Graphs RTF | CUDA Graphs TTFA | Speedup |
 |---|---|---|---|---|---|
 | Jetson AGX Orin 64GB | 0.130 | 2,594ms | **1.27** | **650ms** | 9.8x / 4.0x |
-| Jetson Thor | 0.772 | 912ms | 1.26 | 595ms | 1.6x / 1.5x |
 | DGX Spark (GB10) | 0.975 | 749ms | 1.66 | 464ms | 1.7x / 1.6x |
 | RTX 4090 | 1.32 | 468ms | **4.85** | **170ms** | 3.7x / 2.8x |
 | H100 80GB HBM3 | 0.59 | 1,045ms | **3.98** | **236ms** | 6.7x / 4.4x |
@@ -57,7 +55,7 @@ RTF > 1.0 = faster than real-time. TTFA = Time to First Audio, measured as time 
 
 **Why do speedups range from 1.2x to 8.7x?** CUDA graphs eliminate kernel dispatch overhead: each decode step launches ~500 small GPU operations, and in a standard Python loop the GPU idles between them while the CPU prepares each launch. The speedup scales with the CPU/GPU imbalance. When the GPU finishes kernels faster than the CPU can dispatch them — whether because the CPU is slow (Jetson Orin's 12 Cortex-A78AE cores) or because the GPU is fast (4090, H100) — there's idle time to recover, and CUDA graphs recover it. This is the common case: most real-world GPU setups have this imbalance, yielding **3–9x improvements**.
 
-The two exceptions in our benchmarks are NVIDIA's **Jetson Thor** and **DGX Spark**, both of which pair unusually powerful CPUs with more moderate GPUs. Thor's next-gen CPU pushes baseline to RTF 0.80 (4.5x faster than Orin without any optimization), and the Spark's 72-core Grace CPU reaches baseline RTF 1.19 — already real-time. With less dispatch overhead to eliminate, CUDA graphs add a modest 1.2–1.9x. The Spark is a particularly clean demonstration of the mechanism: its Grace CPU dispatches kernels efficiently enough that baseline Python overhead is minimal, confirming that CUDA graphs specifically target the CPU-to-GPU dispatch gap. These are purpose-built machines with exceptional CPU/GPU balance — on standard hardware, expect the larger speedups.
+The two exceptions in our benchmarks are NVIDIA's **Jetson AGX Orin** and **DGX Spark**, both of which pair unusually powerful CPUs with more moderate GPUs. The Spark's 72-core Grace CPU reaches baseline RTF 1.19 — already real-time. With less dispatch overhead to eliminate, CUDA graphs add a modest 1.2–1.9x. The Spark is a particularly clean demonstration of the mechanism: its Grace CPU dispatches kernels efficiently enough that baseline Python overhead is minimal, confirming that CUDA graphs specifically target the CPU-to-GPU dispatch gap. These are purpose-built machines with exceptional CPU/GPU balance — on standard hardware, expect the larger speedups.
 
 ## How We Did It (The "Magic")
 
@@ -79,6 +77,72 @@ The key insight: transformers already ships everything you need. Its `StaticCach
 | **Total per step** | **330ms** | **54ms** |
 
 This approach demonstrates the power of the PyTorch/transformers ecosystem: you don't need a custom inference engine or hand-rolled attention kernels. The building blocks — `StaticCache`, `cache_position`, `CUDAGraph` — are already there. You just need to connect them.
+
+## Static Cache vs Dynamic Cache (Parity Notes)
+
+We use **StaticCache + CUDA graphs** for speed (FasterQwen3TTS), and a **DynamicCache parity mode** in tests to guarantee exact equality with upstream (Qwen3‑TTS). The algorithms are equivalent, but the kernel path is not:
+
+- **Static cache** uses fixed max‑length KV buffers plus an explicit attention mask. This often selects a different SDPA kernel (masked attention) than the dynamic path.
+- **Dynamic cache** uses the current sequence length and can use `is_causal=True` with no explicit mask, which typically selects a different kernel.
+
+In BF16/TF32, different kernel/reduction orders are **not bit‑exact**, so static vs dynamic outputs can differ slightly even when the math is equivalent. Parity mode validates that our logic matches upstream; the fast path prioritizes throughput.
+
+### Quality Comparison: Qwen3TTS vs FasterQwen3TTS
+
+We provide side‑by‑side samples comparing **Qwen3TTS** (dynamic cache) against **FasterQwen3TTS** (static cache). The algorithms are equivalent, but the kernels and reduction order differ, so outputs are not bit‑identical. These samples let you judge the perceptual differences yourself. The set includes both **CustomVoice** and **ICL (voice‑clone)** prompts and uses the **1.7B** models with a ~14s generation cap so the model can finish naturally:
+
+- Sample index and prompts: `samples/parity/README.md`
+- Audio files: `samples/parity/*.wav`
+
+**CustomVoice (aiden) – Prompt 1**
+
+<audio controls src="samples/parity/custom_aiden_gen1_static.wav"></audio>
+<audio controls src="samples/parity/custom_aiden_gen1_dynamic.wav"></audio>
+
+**CustomVoice (aiden) – Prompt 2**
+
+<audio controls src="samples/parity/custom_aiden_gen2_static.wav"></audio>
+<audio controls src="samples/parity/custom_aiden_gen2_dynamic.wav"></audio>
+
+**CustomVoice (serena) – Prompt 1**
+
+<audio controls src="samples/parity/custom_serena_gen1_static.wav"></audio>
+<audio controls src="samples/parity/custom_serena_gen1_dynamic.wav"></audio>
+
+**CustomVoice (serena) – Prompt 2**
+
+<audio controls src="samples/parity/custom_serena_gen2_static.wav"></audio>
+<audio controls src="samples/parity/custom_serena_gen2_dynamic.wav"></audio>
+
+**ICL (ref_audio.wav) – Prompt 1**
+
+<audio controls src="samples/parity/icl_ref_audio_gen1_static.wav"></audio>
+<audio controls src="samples/parity/icl_ref_audio_gen1_dynamic.wav"></audio>
+
+**ICL (ref_audio.wav) – Prompt 2**
+
+<audio controls src="samples/parity/icl_ref_audio_gen2_static.wav"></audio>
+<audio controls src="samples/parity/icl_ref_audio_gen2_dynamic.wav"></audio>
+
+**ICL (ref_audio_2.wav) – Prompt 1**
+
+<audio controls src="samples/parity/icl_ref_audio_2_gen1_static.wav"></audio>
+<audio controls src="samples/parity/icl_ref_audio_2_gen1_dynamic.wav"></audio>
+
+**ICL (ref_audio_2.wav) – Prompt 2**
+
+<audio controls src="samples/parity/icl_ref_audio_2_gen2_static.wav"></audio>
+<audio controls src="samples/parity/icl_ref_audio_2_gen2_dynamic.wav"></audio>
+
+**ICL (ref_audio_3.wav) – Prompt 1**
+
+<audio controls src="samples/parity/icl_ref_audio_3_gen1_static.wav"></audio>
+<audio controls src="samples/parity/icl_ref_audio_3_gen1_dynamic.wav"></audio>
+
+**ICL (ref_audio_3.wav) – Prompt 2**
+
+<audio controls src="samples/parity/icl_ref_audio_3_gen2_static.wav"></audio>
+<audio controls src="samples/parity/icl_ref_audio_3_gen2_dynamic.wav"></audio>
 
 ## A Small but High-Leverage Optimization
 
@@ -168,7 +232,7 @@ We've open-sourced this implementation to help the community deploy Qwen3-TTS in
 git clone https://github.com/andimarafioti/faster-qwen3-tts
 cd faster-qwen3-tts
 ./setup.sh       # creates venv with uv, installs deps, downloads models
-./benchmark.sh   # runs full benchmark, saves JSON + audio samples
+./benchmark.sh   # runs streaming benchmark, saves JSON + audio samples
 ```
 
 Core implementation:
@@ -197,4 +261,4 @@ Qwen3-TTS is a beast of a model. By leveraging the `StaticCache` API already ava
 
 ---
 
-*Model: Qwen3-TTS-12Hz (0.6B and 1.7B). Benchmarked on Jetson AGX Orin 64GB (JetPack 6, PyTorch 2.5.0a0), Jetson Thor (PyTorch 2.10.0+cu130), DGX Spark (GB10, PyTorch 2.11.0+cu130), RTX 4090 (PyTorch 2.10.0+cu128), and H100 80GB (PyTorch 2.10.0+cu128). NVIDIA provided the Jetson AGX Orin board used in this work.*
+*Model: Qwen3-TTS-12Hz (0.6B and 1.7B). Benchmarked on Jetson AGX Orin 64GB (JetPack 6, PyTorch 2.5.0a0), DGX Spark (GB10, PyTorch 2.11.0+cu130), RTX 4090 (PyTorch 2.10.0+cu128), and H100 80GB (PyTorch 2.10.0+cu128). NVIDIA provided the Jetson AGX Orin board and DGX Spark used in this work.*

@@ -105,6 +105,9 @@ class FasterQwen3TTS:
             talker_hidden,
             device=device,
             dtype=dtype,
+            do_sample=True,
+            top_k=50,
+            temperature=0.9,
         )
         
         talker_graph = TalkerGraph(
@@ -158,19 +161,21 @@ class FasterQwen3TTS:
         )
     
     def _load_ref_audio_with_silence(self, ref_audio: Union[str, Path], silence_secs: float = 0.5) -> Tuple[np.ndarray, int]:
-        """Load reference audio and append trailing silence.
+        """Load reference audio and optionally append trailing silence.
 
         The ICL voice-cloning prompt ends with the last codec token of the reference
         audio, so the model's first generated token is conditioned on whatever phoneme
-        the reference ends with.  Appending a short silence makes the last tokens
+        the reference ends with. Appending a short silence makes the last tokens
         encode silence instead, preventing that phoneme from bleeding into the start
-        of the generated speech.
+        of the generated speech. Set silence_secs=0 to disable this behavior.
         """
         audio, sr = sf.read(str(ref_audio), dtype="float32", always_2d=False)
         if audio.ndim > 1:
             audio = audio.mean(axis=1)  # convert to mono
-        silence = np.zeros(int(silence_secs * sr), dtype=np.float32)
-        return np.concatenate([audio, silence]), sr
+        if silence_secs > 0:
+            silence = np.zeros(int(silence_secs * sr), dtype=np.float32)
+            audio = np.concatenate([audio, silence])
+        return audio, sr
 
     def _prepare_generation(
         self,
@@ -179,6 +184,8 @@ class FasterQwen3TTS:
         ref_text: str,
         language: str,
         xvec_only: bool = True,
+        non_streaming_mode: bool = False,
+        append_silence: bool = True,
     ):
         """Prepare inputs for generation (shared by streaming and non-streaming).
 
@@ -191,7 +198,7 @@ class FasterQwen3TTS:
         input_texts = [self.model._build_assistant_text(text)]
         input_ids = self.model._tokenize_texts(input_texts)
 
-        cache_key = (str(ref_audio), ref_text, xvec_only)
+        cache_key = (str(ref_audio), ref_text, xvec_only, append_silence)
         if cache_key in self._voice_prompt_cache:
             vcp, ref_ids = self._voice_prompt_cache[cache_key]
         elif xvec_only:
@@ -210,7 +217,8 @@ class FasterQwen3TTS:
             ref_ids = [None] * len(input_ids)
             self._voice_prompt_cache[cache_key] = (vcp, ref_ids)
         else:
-            ref_audio_input = self._load_ref_audio_with_silence(ref_audio)
+            silence_secs = 0.5 if append_silence else 0.0
+            ref_audio_input = self._load_ref_audio_with_silence(ref_audio, silence_secs=silence_secs)
             prompt_items = self.model.create_voice_clone_prompt(
                 ref_audio=ref_audio_input,
                 ref_text=ref_text
@@ -236,7 +244,7 @@ class FasterQwen3TTS:
             voice_clone_prompt=vcp,
             languages=[language] if language is not None else ["Auto"],
             speakers=None,
-            non_streaming_mode=False,
+            non_streaming_mode=non_streaming_mode,
         )
 
         if not self._warmed_up:
@@ -522,11 +530,15 @@ class FasterQwen3TTS:
         ref_audio: Union[str, Path],
         ref_text: str,
         max_new_tokens: int = 2048,
+        min_new_tokens: int = 2,
         temperature: float = 0.9,
         top_k: int = 50,
+        top_p: float = 1.0,
         do_sample: bool = True,
         repetition_penalty: float = 1.05,
         xvec_only: bool = True,
+        non_streaming_mode: bool = True,
+        append_silence: bool = True,
     ) -> Tuple[list, int]:
         """
         Generate speech with voice cloning using reference audio.
@@ -537,13 +549,16 @@ class FasterQwen3TTS:
             ref_audio: Path to reference audio file
             ref_text: Transcription of reference audio
             max_new_tokens: Maximum tokens to generate
+            min_new_tokens: Minimum tokens before EOS is allowed
             temperature: Sampling temperature
             top_k: Top-k sampling
+            top_p: Top-p (nucleus) sampling
             do_sample: Whether to sample
             repetition_penalty: Repetition penalty
             xvec_only: When True (default), use only the speaker embedding for voice cloning.
                 This prevents phoneme bleed-through from the reference and allows clean
                 language switching. Set to False for full ICL mode (reference audio in context).
+            non_streaming_mode: Match upstream non-streaming prompt layout. Default True for better non-streaming quality.
 
         Returns:
             Tuple of ([audio_waveform], sample_rate)
@@ -551,7 +566,13 @@ class FasterQwen3TTS:
         from .generate import fast_generate
 
         m, talker, config, tie, tam, tth, tpe, ref_codes = self._prepare_generation(
-            text, ref_audio, ref_text, language=language, xvec_only=xvec_only
+            text,
+            ref_audio,
+            ref_text,
+            language=language,
+            xvec_only=xvec_only,
+            non_streaming_mode=non_streaming_mode,
+            append_silence=append_silence,
         )
 
         codec_ids, timing = fast_generate(
@@ -564,8 +585,10 @@ class FasterQwen3TTS:
             predictor_graph=self.predictor_graph,
             talker_graph=self.talker_graph,
             max_new_tokens=max_new_tokens,
+            min_new_tokens=min_new_tokens,
             temperature=temperature,
             top_k=top_k,
+            top_p=top_p,
             do_sample=do_sample,
             repetition_penalty=repetition_penalty,
         )
@@ -618,12 +641,16 @@ class FasterQwen3TTS:
         ref_audio: Union[str, Path],
         ref_text: str,
         max_new_tokens: int = 2048,
+        min_new_tokens: int = 2,
         temperature: float = 0.9,
         top_k: int = 50,
+        top_p: float = 1.0,
         do_sample: bool = True,
         repetition_penalty: float = 1.05,
         chunk_size: int = 12,
         xvec_only: bool = True,
+        append_silence: bool = True,
+        parity_mode: bool = False,
     ) -> Generator[Tuple[np.ndarray, int, dict], None, None]:
         """
         Stream voice-cloned speech generation, yielding audio chunks.
@@ -637,22 +664,30 @@ class FasterQwen3TTS:
             ref_audio: Path to reference audio file
             ref_text: Transcription of reference audio
             max_new_tokens: Maximum tokens to generate
+            min_new_tokens: Minimum tokens before EOS is allowed
             temperature: Sampling temperature
             top_k: Top-k sampling
+            top_p: Top-p (nucleus) sampling
             do_sample: Whether to sample
             repetition_penalty: Repetition penalty
             chunk_size: Codec steps per chunk (12 = ~1 second)
             xvec_only: When True (default), use only the speaker embedding for voice cloning.
                 This prevents phoneme bleed-through from the reference and allows clean
                 language switching. Set to False for full ICL mode (reference audio in context).
+            parity_mode: When True, disables CUDA graphs and uses dynamic cache streaming.
 
         Yields:
             Tuple of (audio_chunk_numpy, sample_rate, timing_dict)
         """
-        from .streaming import fast_generate_streaming
+        from .streaming import fast_generate_streaming, parity_generate_streaming
 
         m, talker, config, tie, tam, tth, tpe, ref_codes = self._prepare_generation(
-            text, ref_audio, ref_text, language=language, xvec_only=xvec_only
+            text,
+            ref_audio,
+            ref_text,
+            language=language,
+            xvec_only=xvec_only,
+            append_silence=append_silence,
         )
 
         speech_tokenizer = m.speech_tokenizer
@@ -667,22 +702,28 @@ class FasterQwen3TTS:
         prev_gen_audio_len = 0  # tracks position within the generated (non-ref) audio
         samples_per_frame = None
 
-        for codec_chunk, timing in fast_generate_streaming(
+        stream_fn = parity_generate_streaming if parity_mode else fast_generate_streaming
+        stream_kwargs = dict(
             talker=talker,
             talker_input_embeds=tie,
             attention_mask=tam,
             trailing_text_hiddens=tth,
             tts_pad_embed=tpe,
             config=config,
-            predictor_graph=self.predictor_graph,
-            talker_graph=self.talker_graph,
             max_new_tokens=max_new_tokens,
+            min_new_tokens=min_new_tokens,
             temperature=temperature,
             top_k=top_k,
+            top_p=top_p,
             do_sample=do_sample,
             repetition_penalty=repetition_penalty,
             chunk_size=chunk_size,
-        ):
+        )
+        if not parity_mode:
+            stream_kwargs["predictor_graph"] = self.predictor_graph
+            stream_kwargs["talker_graph"] = self.talker_graph
+
+        for codec_chunk, timing in stream_fn(**stream_kwargs):
             all_codes.append(codec_chunk)
             n_new = codec_chunk.shape[0]
             all_flat = torch.cat(all_codes, dim=0)
@@ -750,8 +791,10 @@ class FasterQwen3TTS:
         language: str,
         instruct: Optional[str] = None,
         max_new_tokens: int = 2048,
+        min_new_tokens: int = 2,
         temperature: float = 0.9,
         top_k: int = 50,
+        top_p: float = 1.0,
         do_sample: bool = True,
         repetition_penalty: float = 1.05,
     ) -> Tuple[list, int]:
@@ -783,8 +826,10 @@ class FasterQwen3TTS:
             predictor_graph=self.predictor_graph,
             talker_graph=self.talker_graph,
             max_new_tokens=max_new_tokens,
+            min_new_tokens=min_new_tokens,
             temperature=temperature,
             top_k=top_k,
+            top_p=top_p,
             do_sample=do_sample,
             repetition_penalty=repetition_penalty,
         )
@@ -823,8 +868,10 @@ class FasterQwen3TTS:
         language: str,
         instruct: Optional[str] = None,
         max_new_tokens: int = 2048,
+        min_new_tokens: int = 2,
         temperature: float = 0.9,
         top_k: int = 50,
+        top_p: float = 1.0,
         do_sample: bool = True,
         repetition_penalty: float = 1.05,
         chunk_size: int = 12,
@@ -865,8 +912,10 @@ class FasterQwen3TTS:
             predictor_graph=self.predictor_graph,
             talker_graph=self.talker_graph,
             max_new_tokens=max_new_tokens,
+            min_new_tokens=min_new_tokens,
             temperature=temperature,
             top_k=top_k,
+            top_p=top_p,
             do_sample=do_sample,
             repetition_penalty=repetition_penalty,
             chunk_size=chunk_size,
@@ -916,8 +965,10 @@ class FasterQwen3TTS:
         instruct: str,
         language: str,
         max_new_tokens: int = 2048,
+        min_new_tokens: int = 2,
         temperature: float = 0.9,
         top_k: int = 50,
+        top_p: float = 1.0,
         do_sample: bool = True,
         repetition_penalty: float = 1.05,
     ) -> Tuple[list, int]:
@@ -945,8 +996,10 @@ class FasterQwen3TTS:
             predictor_graph=self.predictor_graph,
             talker_graph=self.talker_graph,
             max_new_tokens=max_new_tokens,
+            min_new_tokens=min_new_tokens,
             temperature=temperature,
             top_k=top_k,
+            top_p=top_p,
             do_sample=do_sample,
             repetition_penalty=repetition_penalty,
         )
@@ -984,8 +1037,10 @@ class FasterQwen3TTS:
         instruct: str,
         language: str,
         max_new_tokens: int = 2048,
+        min_new_tokens: int = 2,
         temperature: float = 0.9,
         top_k: int = 50,
+        top_p: float = 1.0,
         do_sample: bool = True,
         repetition_penalty: float = 1.05,
         chunk_size: int = 12,
@@ -1022,8 +1077,10 @@ class FasterQwen3TTS:
             predictor_graph=self.predictor_graph,
             talker_graph=self.talker_graph,
             max_new_tokens=max_new_tokens,
+            min_new_tokens=min_new_tokens,
             temperature=temperature,
             top_k=top_k,
+            top_p=top_p,
             do_sample=do_sample,
             repetition_penalty=repetition_penalty,
             chunk_size=chunk_size,

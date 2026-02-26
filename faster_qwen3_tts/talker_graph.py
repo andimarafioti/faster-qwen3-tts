@@ -44,11 +44,15 @@ class TalkerGraph:
 
         # Cache position buffer — updated before each graph replay
         self.cache_position = torch.zeros(1, dtype=torch.long, device=device)
+        # Rope deltas from prefill (shape [batch, 1]) and position ids buffer.
+        self.rope_deltas = torch.zeros(1, 1, dtype=torch.float32, device=device)
+        self.position_ids = torch.zeros(3, 1, 1, dtype=torch.float32, device=device)
 
         self.graph = None
         self.captured = False
         self.attn_mask = None
         self.attn_mask_table = None
+        self._mask_key = None
 
     def _init_cache_layers(self):
         """Force lazy initialization of StaticCache layers before graph capture."""
@@ -60,7 +64,7 @@ class TalkerGraph:
             if not layer.is_initialized:
                 layer.lazy_initialization(dummy_k)
 
-    def _build_attention_masks(self):
+    def _build_attention_masks(self, attention_mask: torch.Tensor | None = None):
         dummy = torch.zeros(1, 1, self.hidden_size, dtype=self.dtype, device=self.device)
         max_len = self.max_seq_len
         self.attn_mask_table = [None] * max_len
@@ -72,13 +76,16 @@ class TalkerGraph:
             full = mask_fn(
                 config=self.model.config,
                 input_embeds=dummy,
-                attention_mask=None,
+                attention_mask=attention_mask,
                 cache_position=pos,
                 past_key_values=self.static_cache,
             )
             self.attn_mask_table[i] = full
 
-        self.attn_mask = self.attn_mask_table[0].clone()
+        if self.attn_mask is None:
+            self.attn_mask = self.attn_mask_table[0].clone()
+        else:
+            self.attn_mask.copy_(self.attn_mask_table[0])
 
     def _set_attention_mask(self, position: int):
         self.attn_mask.copy_(self.attn_mask_table[position])
@@ -90,6 +97,7 @@ class TalkerGraph:
             attention_mask=self.attn_mask,
             past_key_values=self.static_cache,
             cache_position=self.cache_position,
+            position_ids=self.position_ids,
             use_cache=True,
         )
         self.output_buf.copy_(out.last_hidden_state)
@@ -150,6 +158,32 @@ class TalkerGraph:
             self.static_cache.update(k, v, li, {"cache_position": cache_pos})
         return seq_len
 
+    def set_generation_state(self, attention_mask: torch.Tensor, rope_deltas: torch.Tensor | None):
+        """Set padding-aware attention mask and rope deltas for decode parity."""
+        mask_key = None
+        full_attention_mask = None
+        if attention_mask is not None:
+            pad_counts = (attention_mask == 0).sum(dim=-1)
+            mask_key = tuple(pad_counts.tolist())
+            full_attention_mask = torch.ones(
+                attention_mask.shape[0],
+                self.max_seq_len,
+                dtype=attention_mask.dtype,
+                device=attention_mask.device,
+            )
+            for b, pads in enumerate(pad_counts.tolist()):
+                if pads > 0:
+                    full_attention_mask[b, :pads] = 0
+        if self.attn_mask_table is None or mask_key != self._mask_key:
+            self._build_attention_masks(full_attention_mask)
+            self._mask_key = mask_key
+        if rope_deltas is None:
+            self.rope_deltas.zero_()
+        else:
+            if rope_deltas.dim() == 1:
+                rope_deltas = rope_deltas.unsqueeze(1)
+            self.rope_deltas.copy_(rope_deltas.to(self.rope_deltas.device, dtype=self.rope_deltas.dtype))
+
     @torch.inference_mode()
     def run(self, input_embeds: torch.Tensor, position: int) -> torch.Tensor:
         """
@@ -161,7 +195,9 @@ class TalkerGraph:
         self.input_buf.copy_(input_embeds)
         self.cache_position[0] = position
         self._set_attention_mask(position)
-
+        # position_ids = arange(seq_len=1) + cache_position + rope_deltas
+        delta = self.rope_deltas + self.cache_position[0].to(self.rope_deltas.dtype)
+        self.position_ids.copy_(delta.unsqueeze(0).expand(3, -1, -1))
         self.graph.replay()
 
         return self.output_buf  # static buffer — caller should use immediately or clone

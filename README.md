@@ -10,26 +10,146 @@ Benchmarks include tokenization + inference (apples-to-apples with baseline). RT
 
 | GPU | Baseline RTF | Baseline TTFA | CUDA Graphs RTF | CUDA Graphs TTFA | Speedup |
 |---|---|---|---|---|---|
-| Jetson AGX Orin 64GB | 0.175 | 2,572ms | 1.57 | 556ms | 9.0x / 4.6x |
-| Jetson Thor | 0.803 | 862ms | 1.50 | 505ms | 1.9x / 1.7x |
-| DGX Spark (GB10) | 1.19 | 631ms | 2.26 | 364ms | 1.9x / 1.7x |
-| RTX 4090 | 1.34 | 462ms | **5.56** | **152ms** | 4.1x / 3.0x |
-| H100 80GB HBM3 | 0.59 | 1,049ms | **4.19** | **224ms** | 7.1x / 4.7x |
+| Jetson AGX Orin 64GB | 0.179 | 3,641ms | 1.307 | 597ms | 7.3x / 6.1x |
+| DGX Spark (GB10) | 1.17 | 567ms | 2.56 | 280ms | 2.2x / 2.0x |
+| RTX 4090 | 0.82 | 800ms | **4.78** | **156ms** | 5.8x / 5.1x |
+| H100 80GB HBM3 | 0.435 | 1,474ms | **3.884** | **228ms** | 8.9x / 6.5x |
 
 ### 1.7B Model
 
 | GPU | Baseline RTF | Baseline TTFA | CUDA Graphs RTF | CUDA Graphs TTFA | Speedup |
 |---|---|---|---|---|---|
-| Jetson AGX Orin 64GB | 0.130 | 2,594ms | 1.27 | 650ms | 9.8x / 4.0x |
-| Jetson Thor | 0.772 | 912ms | 1.26 | 595ms | 1.6x / 1.5x |
-| DGX Spark (GB10) | 0.975 | 749ms | 1.66 | 464ms | 1.7x / 1.6x |
-| RTX 4090 | 1.32 | 468ms | **4.85** | **170ms** | 3.7x / 2.8x |
-| H100 80GB HBM3 | 0.59 | 1,045ms | **3.98** | **236ms** | 6.7x / 4.4x |
+| Jetson AGX Orin 64GB | 0.183 | 3,573ms | 1.089 | 693ms | 6.0x / 5.2x |
+| DGX Spark (GB10) | 1.01 | 661ms | 1.87 | 400ms | 1.9x / 1.7x |
+| RTX 4090 | 0.82 | 850ms | **4.22** | **174ms** | 5.1x / 4.9x |
+| H100 80GB HBM3 | 0.439 | 1,525ms | **3.304** | **241ms** | 7.5x / 6.3x |
 
-**Note:** Baseline TTFA values are **streaming TTFA** from the community `Qwen3-TTS-streaming` fork (which adds streaming). The official `Qwen3-TTS` repo does **not** currently support streaming, so its “TTFA” is effectively **time-to-full-audio**. With RTF near 1.0, that means waiting for the entire sentence/paragraph to finish speaking before you hear anything. CUDA graphs uses `generate_voice_clone_streaming(chunk_size=8)` for TTFA. Both include text tokenization for fair comparison. Speedup shows throughput / TTFA improvement. The streaming fork reports additional speedups that appear tied to `torch.compile`; we couldn’t reproduce those on Jetson-class devices where `torch.compile` isn’t available.
+**Note:** Baseline TTFA values are **streaming TTFA** from the community `Qwen3-TTS-streaming` fork (which adds streaming) or from our **dynamic-cache parity streaming** path (no CUDA graphs) where available. The official `Qwen3-TTS` repo does **not** currently support streaming, so without a streaming baseline TTFA would be **time-to-full-audio**. CUDA graphs uses `generate_voice_clone_streaming(chunk_size=8)` for TTFA. Both include text tokenization for fair comparison. Speedup shows throughput / TTFA improvement. The streaming fork reports additional speedups that appear tied to `torch.compile`; we couldn’t reproduce those on Jetson-class devices where `torch.compile` isn’t available.
 
 
-**GPU architecture notes:** RTX 4090 (2.5 GHz clocks) outperforms H100 (1.8 GHz) for single-stream workloads. H100's lower baseline (RTF 0.59 vs 4090's 1.34) reflects design optimization for batch processing rather than single-stream inference.
+**GPU architecture notes:** RTX 4090 (2.5 GHz clocks) outperforms H100 (1.8 GHz) for single-stream workloads. H100's lower baseline (RTF 0.59 vs 4090's 0.82) reflects design optimization for batch processing rather than single-stream inference.
+
+## Parity
+
+We maintain parity with upstream Qwen3‑TTS in two layers, and document where (and why) the fast path can differ numerically. When we say **Qwen3TTS vs FasterQwen3TTS**, we are comparing the upstream dynamic‑cache path against our static‑cache CUDA‑graph path.
+
+- **Fast path (static cache + CUDA graphs):** Streaming and non‑streaming share the same decode core and match upstream for the initial window where artifacts are most audible. Tests enforce this prefix parity deterministically.
+- **Parity mode (dynamic cache, tests only):** A dynamic‑cache decode path (no CUDA graphs) that calls `talker.generate(...)` is used in tests to prove exact token‑level equality against upstream for all model types.
+
+**Why can static cache differ from dynamic cache?** The math is equivalent, but the kernel path is not. Static cache uses a fixed max‑length KV buffer and an explicit attention mask, which often selects a different SDPA kernel than the dynamic cache path (shorter K/V, `is_causal=True`, mask‑free). In BF16/TF32, different kernel/reduction orders are not bit‑exact, so the outputs can differ slightly even when the algorithm is the same.
+
+**Parity streaming note:** The dynamic‑cache parity streaming path is intentionally slow. On an RTX 4090 it measured ~0.77s TTFA (chunk_size=8) and ~1.17s TTFA (chunk_size=12), versus ~0.16–0.18s TTFA in the fast CUDA‑graph path. Use parity streaming only for validation, not performance.
+
+Tests live in `tests/test_e2e_parity.py` and cover:
+
+- Voice clone (x‑vector) prefix parity vs upstream
+- Streaming vs non‑streaming parity (fast path)
+- CustomVoice full equality (parity mode)
+- VoiceDesign full equality (parity mode)
+- Voice clone ICL full equality (parity mode)
+
+You can control the model IDs used by tests via environment variables:
+
+```
+QWEN_TTS_MODEL=Qwen/Qwen3-TTS-12Hz-0.6B-Base
+QWEN_TTS_CUSTOM_MODEL=Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice
+QWEN_TTS_VOICE_DESIGN_MODEL=Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign
+```
+
+### Quality Comparison: Qwen3TTS vs FasterQwen3TTS
+
+We provide side‑by‑side audio samples to compare **Qwen3TTS** (dynamic cache) against **FasterQwen3TTS** (static cache) for both CustomVoice and ICL/voice‑clone. The algorithms are equivalent, but the kernels and reduction order differ, so results are not bit‑identical; the samples let you judge the perceptual impact directly. All samples use the **1.7B** models and cap generation at ~14 seconds so the model can finish naturally.
+
+- `samples/parity/README.md` describes the prompts and model details
+- `samples/parity/*.wav` contain 2 voices × 2 prompts × {static,dynamic}
+
+**CustomVoice (aiden) – Prompt 1**
+
+<audio controls src="samples/parity/custom_aiden_gen1_static.wav"></audio>
+<audio controls src="samples/parity/custom_aiden_gen1_dynamic.wav"></audio>
+
+**CustomVoice (aiden) – Prompt 2**
+
+<audio controls src="samples/parity/custom_aiden_gen2_static.wav"></audio>
+<audio controls src="samples/parity/custom_aiden_gen2_dynamic.wav"></audio>
+
+**CustomVoice (serena) – Prompt 1**
+
+<audio controls src="samples/parity/custom_serena_gen1_static.wav"></audio>
+<audio controls src="samples/parity/custom_serena_gen1_dynamic.wav"></audio>
+
+**CustomVoice (serena) – Prompt 2**
+
+<audio controls src="samples/parity/custom_serena_gen2_static.wav"></audio>
+<audio controls src="samples/parity/custom_serena_gen2_dynamic.wav"></audio>
+
+**ICL (ref_audio.wav) – Prompt 1**
+
+<audio controls src="samples/parity/icl_ref_audio_gen1_static.wav"></audio>
+<audio controls src="samples/parity/icl_ref_audio_gen1_dynamic.wav"></audio>
+
+**ICL (ref_audio.wav) – Prompt 2**
+
+<audio controls src="samples/parity/icl_ref_audio_gen2_static.wav"></audio>
+<audio controls src="samples/parity/icl_ref_audio_gen2_dynamic.wav"></audio>
+
+**ICL (ref_audio_2.wav) – Prompt 1**
+
+<audio controls src="samples/parity/icl_ref_audio_2_gen1_static.wav"></audio>
+<audio controls src="samples/parity/icl_ref_audio_2_gen1_dynamic.wav"></audio>
+
+**ICL (ref_audio_2.wav) – Prompt 2**
+
+<audio controls src="samples/parity/icl_ref_audio_2_gen2_static.wav"></audio>
+<audio controls src="samples/parity/icl_ref_audio_2_gen2_dynamic.wav"></audio>
+
+**ICL (ref_audio_3.wav) – Prompt 1**
+
+<audio controls src="samples/parity/icl_ref_audio_3_gen1_static.wav"></audio>
+<audio controls src="samples/parity/icl_ref_audio_3_gen1_dynamic.wav"></audio>
+
+**ICL (ref_audio_3.wav) – Prompt 2**
+
+<audio controls src="samples/parity/icl_ref_audio_3_gen2_static.wav"></audio>
+<audio controls src="samples/parity/icl_ref_audio_3_gen2_dynamic.wav"></audio>
+
+### non_streaming_mode Comparison (ICL)
+
+We provide side‑by‑side samples comparing **non_streaming_mode=False** vs **True** for ICL voice cloning.
+All samples use the **1.7B** model with `xvec_only=False`.
+
+- `samples/non_streaming_mode/README.md` describes prompts, settings, and filenames
+- `samples/non_streaming_mode/*.wav` contain 3 references × 2 prompts × {nsm_false,nsm_true}
+
+**ICL (ref_audio.wav) – Prompt 1**
+
+<audio controls src="samples/non_streaming_mode/icl_ref_audio_gen1_nsm_false.wav"></audio>
+<audio controls src="samples/non_streaming_mode/icl_ref_audio_gen1_nsm_true.wav"></audio>
+
+**ICL (ref_audio.wav) – Prompt 2**
+
+<audio controls src="samples/non_streaming_mode/icl_ref_audio_gen2_nsm_false.wav"></audio>
+<audio controls src="samples/non_streaming_mode/icl_ref_audio_gen2_nsm_true.wav"></audio>
+
+**ICL (ref_audio_2.wav) – Prompt 1**
+
+<audio controls src="samples/non_streaming_mode/icl_ref_audio_2_gen1_nsm_false.wav"></audio>
+<audio controls src="samples/non_streaming_mode/icl_ref_audio_2_gen1_nsm_true.wav"></audio>
+
+**ICL (ref_audio_2.wav) – Prompt 2**
+
+<audio controls src="samples/non_streaming_mode/icl_ref_audio_2_gen2_nsm_false.wav"></audio>
+<audio controls src="samples/non_streaming_mode/icl_ref_audio_2_gen2_nsm_true.wav"></audio>
+
+**ICL (ref_audio_3.wav) – Prompt 1**
+
+<audio controls src="samples/non_streaming_mode/icl_ref_audio_3_gen1_nsm_false.wav"></audio>
+<audio controls src="samples/non_streaming_mode/icl_ref_audio_3_gen1_nsm_true.wav"></audio>
+
+**ICL (ref_audio_3.wav) – Prompt 2**
+
+<audio controls src="samples/non_streaming_mode/icl_ref_audio_3_gen2_nsm_false.wav"></audio>
+<audio controls src="samples/non_streaming_mode/icl_ref_audio_3_gen2_nsm_true.wav"></audio>
 
 ## Demo UI
 
@@ -50,7 +170,7 @@ Features: voice clone (upload any WAV), voice design (1.7B-VoiceDesign model), s
 git clone https://github.com/andimarafioti/faster-qwen3-tts
 cd faster-qwen3-tts
 ./setup.sh       # creates venv with uv, installs deps, downloads models
-./benchmark.sh   # runs full benchmark, saves JSON + audio samples
+./benchmark.sh   # runs streaming benchmark, saves JSON + audio samples
 ```
 
 Requires: Python 3.10+, NVIDIA GPU with CUDA, [uv](https://docs.astral.sh/uv/).
@@ -214,11 +334,36 @@ faster-qwen3-tts serve \
 
 The CUDA graphs are unchanged — both predictor and talker graphs are replayed per step. The streaming generator yields codec ID chunks every `chunk_size` steps, and the model wrapper decodes each chunk to audio using a sliding window with 25-frame left context (matching the upstream codec's `chunked_decode` pattern) to avoid boundary artifacts.
 
-## Voice Cloning: ICL Phoneme Artifact
+## Voice Cloning Quality
 
-In ICL (In-Context Learning) mode — the default voice cloning path — the model's prefill sequence ends with the last codec token of the reference audio. The model conditions its **first generated token** on whatever phoneme the reference audio happens to end on. If the reference ends mid-word or on a consonant cluster, that phoneme bleeds into the very start of the generated speech.
+### Cloning modes
 
-**The fix is applied automatically.** The wrapper appends 0.5 seconds of silence to the reference audio before encoding it. This ensures the last codec tokens in the prefill represent silence, giving the model a clean starting point regardless of how the reference recording ends — no changes to your calling code required.
+`generate_voice_clone` exposes two modes via `xvec_only`:
+
+| Mode | `xvec_only` | Notes |
+|---|---|---|
+| Simple (x-vector) | `True` (default) | Speaker embedding only — shorter prefill, clean language switching, no `ref_text` needed |
+| Advanced (ICL) | `False` | Full reference audio in context — requires accurate `ref_text`, may produce a brief artifact at the start |
+
+Simple mode is the default and generally produces clean results. Advanced (ICL) mode can more closely match the reference timbre but requires an accurate transcript and sometimes has a rough start on the first word.
+
+### Decoder context (ICL mode)
+
+The 12 Hz codec uses a causal `chunked_decode`: each frame is reconstructed using prior frames as acoustic context. In ICL mode the reference audio codec tokens are prepended to the generated tokens before decoding, then the reference portion is trimmed from the output. Without this, the codec decoder starts cold with no voice context — the model generates the right tokens but they get reconstructed in the wrong voice. This is handled automatically.
+
+### Non-streaming vs streaming quality
+
+`generate_voice_clone` defaults to `non_streaming_mode=True` to put the **full target text** into the prefill before any audio is generated. This improves prosody/consistency for non‑streaming use cases.
+
+`generate_voice_clone_streaming` always uses `non_streaming_mode=False` — text is fed token‑by‑token during decode, which is the correct tradeoff for streaming since the full sentence isn't known in advance.
+
+**Performance impact (RTX 4090, 1.7B, ICL, chunk_size=8):** TTFA is unchanged (≈159ms ± 1ms), and RTF is effectively the same (nsm=False: 4.87 ± 0.01, nsm=True: 4.85 ± 0.01).
+
+### ICL Phoneme Artifact
+
+In ICL mode the model's prefill ends with the last codec token of the reference audio, so the first generated token is conditioned on whatever phoneme the reference ends on. If the reference ends mid-word, that phoneme bleeds into the generated speech.
+
+**The fix is applied by default.** The wrapper appends 0.5 s of silence to the reference audio before encoding it, giving the model a clean starting point regardless of how the recording ends. Set `append_silence=False` to match the upstream behavior exactly.
 
 ## Voice Cloning with Precomputed Speaker Embeddings
 
