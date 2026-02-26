@@ -147,7 +147,7 @@ app.add_middleware(
 )
 
 _model_cache: OrderedDict[str, FasterQwen3TTS] = OrderedDict()
-_model_cache_max: int = 5  # max models to keep loaded simultaneously
+_model_cache_max: int = int(os.environ.get("MODEL_CACHE_SIZE", "2"))
 _active_model_name: str | None = None
 _loading = False
 _ref_cache: dict[str, str] = {}
