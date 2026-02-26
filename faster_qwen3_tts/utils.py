@@ -28,36 +28,3 @@ def suppress_flash_attn_warning():
     )
     with contextlib.redirect_stdout(filtered):
         yield
-
-
-def prefer_onnxruntime_gpu() -> bool:
-    """Prefer ORT CUDAExecutionProvider when available, even if CPU is requested."""
-    try:
-        import onnxruntime as ort
-    except Exception:
-        return False
-    if getattr(ort, "_fqtts_patched", False):
-        return True
-    try:
-        providers = ort.get_available_providers()
-    except Exception:
-        providers = []
-    if "CUDAExecutionProvider" not in providers:
-        return False
-
-    orig_session = ort.InferenceSession
-
-    def _wrapped(*args, **kwargs):
-        req = kwargs.get("providers")
-        if req:
-            if isinstance(req, str):
-                req_list = [req]
-            else:
-                req_list = list(req)
-            if all(p == "CPUExecutionProvider" for p in req_list):
-                kwargs["providers"] = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-        return orig_session(*args, **kwargs)
-
-    ort.InferenceSession = _wrapped
-    ort._fqtts_patched = True
-    return True
