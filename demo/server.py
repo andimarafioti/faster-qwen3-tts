@@ -53,11 +53,14 @@ AVAILABLE_MODELS = [
 ]
 
 BASE_DIR = Path(__file__).resolve().parent
-PRESET_TRANSCRIPTS = BASE_DIR / "samples" / "parity" / "icl_transcripts.txt"
+# Assets that need to be downloaded at runtime go to a writable directory.
+# /app is read-only in HF Spaces; fall back to /tmp.
+_ASSET_DIR = Path(os.environ.get("ASSET_DIR", "/tmp/faster-qwen3-tts-assets"))
+PRESET_TRANSCRIPTS = _ASSET_DIR / "samples" / "parity" / "icl_transcripts.txt"
 PRESET_REFS = [
-    ("ref_audio_3", BASE_DIR / "ref_audio_3.wav", "Clone 1"),
-    ("ref_audio_2", BASE_DIR / "ref_audio_2.wav", "Clone 2"),
-    ("ref_audio", BASE_DIR / "ref_audio.wav", "Clone 3"),
+    ("ref_audio_3", _ASSET_DIR / "ref_audio_3.wav", "Clone 1"),
+    ("ref_audio_2", _ASSET_DIR / "ref_audio_2.wav", "Clone 2"),
+    ("ref_audio", _ASSET_DIR / "ref_audio.wav", "Clone 3"),
 ]
 
 _GITHUB_RAW = "https://raw.githubusercontent.com/andimarafioti/faster-qwen3-tts/main"
@@ -72,6 +75,7 @@ _TRANSCRIPT_REMOTE = f"{_GITHUB_RAW}/samples/parity/icl_transcripts.txt"
 def _fetch_preset_assets() -> None:
     """Download preset wav files and transcripts from GitHub if not present locally."""
     import urllib.request
+    _ASSET_DIR.mkdir(parents=True, exist_ok=True)
     PRESET_TRANSCRIPTS.parent.mkdir(parents=True, exist_ok=True)
     if not PRESET_TRANSCRIPTS.exists():
         try:
