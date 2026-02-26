@@ -301,6 +301,19 @@ body {
 .mic-btn.rec { border-color: var(--red); color: var(--red); animation: blink 1s infinite; }
 .mic-btn svg { width: 14px; height: 14px; }
 
+.preset-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0 2px; }
+.preset-btn {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--dim);
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.preset-btn.active { border-color: var(--accent); color: var(--accent); }
+.preset-btn:hover { border-color: var(--accent); color: var(--accent); }
+
 .rec-time {
   font-size: 11px; color: var(--red);
   font-family: 'SF Mono', 'Fira Code', monospace;
@@ -677,6 +690,7 @@ body {
           <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6,3 20,12 6,21"/></svg>
         </button>
       </div>
+      <div class="preset-row" id="presetRow"></div>
       <!-- Advanced: transcript -->
       <div id="advTranscript" style="display:none">
         <div class="clone-hint">Advanced cloning uses the transcript of the reference clip for higher accuracy. Upload or record to auto-transcribe.</div>
@@ -845,6 +859,8 @@ let genMode  = 'stream';
 let xvecOnly = true;
 let busy     = false;
 let refFile  = null;
+let presetRefId = null;
+let presetRefs = [];
 let loadedModel  = null;
 let loadingModel = null;
 let dlBlob   = null;
@@ -925,6 +941,60 @@ function setXvec(v) {
   $('advTranscript').style.display = v ? 'none' : '';
 }
 
+function renderPresetRefs(list) {
+  presetRefs = list || [];
+  const row = $('presetRow');
+  if (!row) return;
+  row.innerHTML = '';
+  presetRefs.forEach(p => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'preset-btn';
+    b.textContent = p.label || p.id;
+    b.dataset.id = p.id;
+    b.onclick = () => selectPresetRef(p.id);
+    row.appendChild(b);
+  });
+  updatePresetButtons();
+}
+
+function updatePresetButtons() {
+  const row = $('presetRow');
+  if (!row) return;
+  row.querySelectorAll('.preset-btn').forEach(btn => {
+    if (btn.dataset.id === presetRefId) btn.classList.add('active');
+    else btn.classList.remove('active');
+  });
+}
+
+function clearPresetSelection() {
+  presetRefId = null;
+  updatePresetButtons();
+}
+
+async function selectPresetRef(id) {
+  try {
+    const d = await fetch(`/preset_ref/${id}`).then(r => r.json());
+    const bytes = Uint8Array.from(atob(d.audio_b64), c => c.charCodeAt(0));
+    const blob = new Blob([bytes], { type: 'audio/wav' });
+    const file = new File([blob], d.filename || `${id}.wav`, { type: 'audio/wav' });
+
+    presetRefId = id;
+    refFile = null; // avoid uploading when preset is selected
+    $('refLabel').textContent = d.label || d.filename || 'Reference audio';
+    $('refChip').classList.add('has');
+    const prev = $('recPreview');
+    if (prev.src) URL.revokeObjectURL(prev.src);
+    prev.src = URL.createObjectURL(file);
+    prev.style.display = 'block';
+    $('refTextIn').value = d.ref_text || '';
+    autoGrow($('refTextIn'));
+    updatePresetButtons();
+  } catch {
+    showMsg('err', 'Failed to load preset audio.');
+  }
+}
+
 // ── Auto-transcription ─────────────────────────────────────────────────────────
 async function transcribeRef() {
   if (!refFile) return;
@@ -960,6 +1030,7 @@ async function fetchStatus() {
       for (const o of sel.options) if (o.value === d.model) { o.selected = true; break; }
     }
     populateSpeakers(d.speakers || []);
+    renderPresetRefs(d.preset_refs || []);
     setPill(d.loaded ? 'loaded' : 'off', d.loaded ? 'ready' : 'not loaded');
   } catch { setPill('off', 'offline'); }
 }
@@ -1153,6 +1224,7 @@ async function loadMics() {
 // ── Reference audio ───────────────────────────────────────────────────────────
 function pickRef(input) { const f = input.files[0]; if (f) setRef(f); }
 function setRef(f) {
+  clearPresetSelection();
   refFile = f;
   $('refLabel').textContent = f.name;
   $('refChip').classList.add('has');
@@ -1447,7 +1519,10 @@ async function generate(mode) {
     showMsg('warn', 'Voice clone needs a Base model.',
       'Qwen/Qwen3-TTS-12Hz-0.6B-Base', mode); return;
   }
-  if (mode === 'voice_clone' && !refFile) { showMsg('err', 'Add reference audio first.'); return; }
+  if (mode === 'voice_clone' && !refFile && !presetRefId) {
+    showMsg('err', 'Add reference audio first.');
+    return;
+  }
   if (mode === 'custom' && !$('speakerId').value) { showMsg('err', 'Select a speaker first.'); return; }
   hideMsg();
 
@@ -1471,7 +1546,11 @@ async function generate(mode) {
   fd.append('repetition_penalty', $('repSl').value);
 
   if (mode === 'voice_clone') {
-    fd.append('ref_audio',  refFile);
+    if (presetRefId) {
+      fd.append('ref_preset', presetRefId);
+    } else if (refFile) {
+      fd.append('ref_audio',  refFile);
+    }
     fd.append('xvec_only',  xvecOnly ? 'true' : 'false');
     if (!xvecOnly) fd.append('ref_text', $('refTextIn').value);
   } else if (mode === 'custom') {
