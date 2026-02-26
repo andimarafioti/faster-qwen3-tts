@@ -6,8 +6,6 @@ Real-time Qwen3-TTS inference using CUDA graph capture. No Flash Attention, no v
 
 Requires: Python 3.10+, NVIDIA GPU with CUDA.
 
-### Install (PyPI)
-
 ```bash
 pip install faster-qwen3-tts
 ```
@@ -29,7 +27,7 @@ ref_text = (
 
 # Streaming — yields audio chunks during generation
 for audio_chunk, sr, timing in model.generate_voice_clone_streaming(
-    text="Hello world!", language="English",
+    text="What do you mean that I'm not real?", language="English",
     ref_audio=ref_audio, ref_text=ref_text,
     chunk_size=8,  # 8 steps ≈ 667ms of audio per chunk
 ):
@@ -49,7 +47,7 @@ Voice cloning (reference audio):
 ```bash
 faster-qwen3-tts clone \
   --model Qwen/Qwen3-TTS-12Hz-1.7B-Base \
-  --text "Hello world!" \
+  --text "What do you mean that I'm not real?" \
   --language English \
   --ref-audio ref_audio.wav \
   --ref-text "I'm confused why some people have super short timelines, yet at the same time are bullish on scaling up reinforcement learning atop LLMs. If we're actually close to a human-like learner, then this whole approach of training on verifiable outcomes is doomed." \
@@ -63,7 +61,7 @@ faster-qwen3-tts custom --model Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice --list-spea
 faster-qwen3-tts custom \
   --model Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice \
   --speaker aiden \
-  --text "Hello!" \
+  --text "What do you mean that I'm not real?" \
   --language English \
   --output out.wav
 ```
@@ -85,7 +83,7 @@ Streaming (prints RTF after write):
 faster-qwen3-tts custom \
   --model Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice \
   --speaker aiden \
-  --text "Hello!" \
+  --text "What do you mean that I'm not real?" \
   --language English \
   --output out.wav \
   --streaming
@@ -108,11 +106,11 @@ A minimal web UI that streams audio in real time and shows TTFA and RTF live:
 
 ```bash
 pip install -e ".[demo]"
-python demo/server.py --model Qwen/Qwen3-TTS-12Hz-0.6B-Base
+python demo/server.py
 # open http://localhost:7860
 ```
 
-Features: voice clone (upload any WAV), voice design (1.7B-VoiceDesign model), streaming/non-streaming toggle, adjustable chunk size, live TTFA/RTF metrics, WAV download.
+Features: voice clone (upload any WAV or use your microphone), voice design (1.7B-VoiceDesign model), streaming/non-streaming toggle, adjustable chunk size, live TTFA/RTF metrics, WAV download.
 
 ## Results
 
@@ -140,7 +138,7 @@ Benchmarks include tokenization + inference (apples-to-apples with baseline). RT
 
 **GPU architecture notes:** RTX 4090 (2.5 GHz clocks) outperforms H100 (1.8 GHz) for single-stream workloads. H100's lower baseline (RTF 0.59 vs 4090's 0.82) reflects design optimization for batch processing rather than single-stream inference.
 
-### Benchmark a specific model
+### Benchmark your hardware
 
 Benchmarks run from source. You only need [uv](https://docs.astral.sh/uv/) and `./setup.sh`:
 
@@ -148,12 +146,7 @@ Benchmarks run from source. You only need [uv](https://docs.astral.sh/uv/) and `
 git clone https://github.com/andimarafioti/faster-qwen3-tts
 cd faster-qwen3-tts
 ./setup.sh
-```
-
-```bash
-./benchmark.sh 0.6B
-./benchmark.sh 1.7B
-./benchmark.sh both   # default
+./benchmark.sh # or ./benchmark.sh 0.6B or ./benchmark.sh 1.7B for a single model
 ```
 
 Results are saved as `bench_results_<GPU_NAME>.json` and audio samples as `sample_0.6B.wav` / `sample_1.7B.wav`.
@@ -175,7 +168,7 @@ CUDA graphs support streaming output — audio chunks are yielded during generat
 
 Smaller chunks = lower latency but more decode overhead. `chunk_size=2` is the smallest that stays real-time on Jetson.
 
-**Model mode parity:** In hot-path (post CUDA-graph capture) runs, the different model modes are effectively the same speed. Use `benchmarks/compare_modes.py` to reproduce. Example on 0.6B, `chunk_size=8`:
+**Model seed:** All the different model modes are effectively the same speed. The first time you clone a voice, it takes longer, but later it's cached. Use `benchmarks/compare_modes.py` to reproduce. Example on 0.6B, `chunk_size=8`:
 
 | Mode | TTFA (ms) | RTF | ms/step |
 | ---- | --------- | --- | ------- |
@@ -196,7 +189,7 @@ The CUDA graphs are unchanged — both predictor and talker graphs are replayed 
 | Mode | `xvec_only` | Notes |
 |---|---|---|
 | Simple (x-vector) | `True` (default) | Speaker embedding only — shorter prefill, clean language switching, no `ref_text` needed |
-| Advanced (ICL) | `False` | Full reference audio in context — requires accurate `ref_text`, may produce a brief artifact at the start |
+| Advanced (ICL) | `False` | Full reference audio in context — requires accurate `ref_text`, may produce a brief artifact at the start since it literally continues the sentence `ref_wav` you use |
 
 Simple mode is the default and generally produces clean results. Advanced (ICL) mode can more closely match the reference timbre but requires an accurate transcript and sometimes has a rough start on the first word.
 
@@ -204,10 +197,10 @@ Simple mode is the default and generally produces clean results. Advanced (ICL) 
 
 The 12 Hz codec uses a causal `chunked_decode`: each frame is reconstructed using prior frames as acoustic context. In ICL mode the reference audio codec tokens are prepended to the generated tokens before decoding, then the reference portion is trimmed from the output. Without this, the codec decoder starts cold with no voice context — the model generates the right tokens but they get reconstructed in the wrong voice. This is handled automatically.
 
-### Non-streaming vs streaming quality
+### Text input streaming vs Non-streaming quality
 
+The original Qwen3TTS implementation supports two mode of generation. It either takes the full input text and prepares the utterance, or it feeds the text progressively. This is the `non_streaming_mode` parameter in the generation methods. The name is maintained from the Qwen3TTS implementation, but I understand it might bring some headaches since here we also have general audio output streaming.
 `generate_voice_clone` defaults to `non_streaming_mode=True` to put the **full target text** into the prefill before any audio is generated. This improves prosody/consistency for non‑streaming use cases.
-
 `generate_voice_clone_streaming` always uses `non_streaming_mode=False` — text is fed token‑by‑token during decode, which is the correct tradeoff for streaming since the full sentence isn't known in advance.
 
 **Performance impact (RTX 4090, 1.7B, ICL, chunk_size=8):** TTFA is unchanged (≈159ms ± 1ms), and RTF is effectively the same (nsm=False: 4.87 ± 0.01, nsm=True: 4.85 ± 0.01).
