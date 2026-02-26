@@ -51,13 +51,39 @@ AVAILABLE_MODELS = [
     "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
 ]
 
-BASE_DIR = Path(__file__).resolve().parents[1]
+BASE_DIR = Path(__file__).resolve().parent
 PRESET_TRANSCRIPTS = BASE_DIR / "samples" / "parity" / "icl_transcripts.txt"
 PRESET_REFS = [
     ("ref_audio_3", BASE_DIR / "ref_audio_3.wav", "Clone 1"),
     ("ref_audio_2", BASE_DIR / "ref_audio_2.wav", "Clone 2"),
     ("ref_audio", BASE_DIR / "ref_audio.wav", "Clone 3"),
 ]
+
+_GITHUB_RAW = "https://raw.githubusercontent.com/andimarafioti/faster-qwen3-tts/main"
+_PRESET_REMOTE = {
+    "ref_audio":   f"{_GITHUB_RAW}/ref_audio.wav",
+    "ref_audio_2": f"{_GITHUB_RAW}/ref_audio_2.wav",
+    "ref_audio_3": f"{_GITHUB_RAW}/ref_audio_3.wav",
+}
+_TRANSCRIPT_REMOTE = f"{_GITHUB_RAW}/samples/parity/icl_transcripts.txt"
+
+
+def _fetch_preset_assets() -> None:
+    """Download preset wav files and transcripts from GitHub if not present locally."""
+    import urllib.request
+    PRESET_TRANSCRIPTS.parent.mkdir(parents=True, exist_ok=True)
+    if not PRESET_TRANSCRIPTS.exists():
+        try:
+            urllib.request.urlretrieve(_TRANSCRIPT_REMOTE, PRESET_TRANSCRIPTS)
+        except Exception as e:
+            print(f"Warning: could not fetch transcripts: {e}")
+    for key, path, _ in PRESET_REFS:
+        if not path.exists() and key in _PRESET_REMOTE:
+            try:
+                urllib.request.urlretrieve(_PRESET_REMOTE[key], path)
+                print(f"Downloaded {path.name}")
+            except Exception as e:
+                print(f"Warning: could not fetch {key}: {e}")
 
 _preset_refs: dict[str, dict] = {}
 
@@ -163,6 +189,7 @@ def _get_cached_ref_path(content: bytes) -> str:
 
 # ─── Routes ───────────────────────────────────────────────────────────────────
 
+_fetch_preset_assets()
 _load_preset_refs()
 
 @app.get("/")
