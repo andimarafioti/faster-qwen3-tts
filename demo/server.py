@@ -152,6 +152,8 @@ _loading = False
 _ref_cache: dict[str, str] = {}
 _ref_cache_lock = threading.Lock()
 _parakeet = None
+_generation_lock = asyncio.Lock()
+_generation_waiters: int = 0  # requests waiting for or holding the generation lock
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -240,6 +242,7 @@ async def get_status():
             {"id": p["id"], "label": p["label"], "ref_text": p["ref_text"]}
             for p in _preset_refs.values()
         ],
+        "queue_depth": _generation_waiters,
     }
 
 
@@ -448,11 +451,22 @@ async def generate_stream(
             if tmp_path and os.path.exists(tmp_path) and not tmp_is_cached:
                 os.unlink(tmp_path)
 
-    thread = threading.Thread(target=run_generation, daemon=True)
-    thread.start()
-
     async def sse():
+        global _generation_waiters
+        lock_acquired = False
+        _generation_waiters += 1
+        people_ahead = _generation_waiters - 1 + (1 if _generation_lock.locked() else 0)
         try:
+            if people_ahead > 0:
+                yield f"data: {json.dumps({'type': 'queued', 'position': people_ahead})}\n\n"
+
+            await _generation_lock.acquire()
+            lock_acquired = True
+            _generation_waiters -= 1
+
+            thread = threading.Thread(target=run_generation, daemon=True)
+            thread.start()
+
             while True:
                 msg = await queue.get()
                 if msg is None:
@@ -460,6 +474,11 @@ async def generate_stream(
                 yield f"data: {msg}\n\n"
         except asyncio.CancelledError:
             pass
+        finally:
+            if lock_acquired:
+                _generation_lock.release()
+            else:
+                _generation_waiters -= 1
 
     return StreamingResponse(
         sse(),
@@ -545,7 +564,13 @@ async def generate_non_streaming(
         dur = len(audio) / sr
         return audio, sr, elapsed, dur
 
+    global _generation_waiters
+    _generation_waiters += 1
+    lock_acquired = False
     try:
+        await _generation_lock.acquire()
+        lock_acquired = True
+        _generation_waiters -= 1
         audio, sr, elapsed, dur = await asyncio.to_thread(run)
         rtf = dur / elapsed if elapsed > 0 else 0.0
         return JSONResponse({
@@ -558,6 +583,10 @@ async def generate_non_streaming(
             },
         })
     finally:
+        if lock_acquired:
+            _generation_lock.release()
+        else:
+            _generation_waiters -= 1
         if tmp_path and os.path.exists(tmp_path) and not tmp_is_cached:
             os.unlink(tmp_path)
 
