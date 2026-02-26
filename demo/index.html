@@ -301,7 +301,7 @@ body {
 .mic-btn.rec { border-color: var(--red); color: var(--red); animation: blink 1s infinite; }
 .mic-btn svg { width: 14px; height: 14px; }
 
-.preset-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0 2px; }
+.preset-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .preset-btn {
   background: transparent;
   border: 1px solid var(--line);
@@ -689,8 +689,8 @@ body {
         <button class="play-btn" onclick="generate('voice_clone')" title="Generate">
           <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6,3 20,12 6,21"/></svg>
         </button>
+        <div class="preset-row" id="presetRow"></div>
       </div>
-      <div class="preset-row" id="presetRow"></div>
       <!-- Advanced: transcript -->
       <div id="advTranscript" style="display:none">
         <div class="clone-hint">Advanced cloning uses the transcript of the reference clip for higher accuracy. Upload or record to auto-transcribe.</div>
