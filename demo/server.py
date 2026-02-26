@@ -44,13 +44,20 @@ except ImportError:
 from nano_parakeet import from_pretrained as _parakeet_from_pretrained
 
 
-AVAILABLE_MODELS = [
+_ALL_MODELS = [
     "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
     "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
     "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
     "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
     "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
 ]
+
+_active_models_env = os.environ.get("ACTIVE_MODELS", "")
+if _active_models_env:
+    _allowed = {m.strip() for m in _active_models_env.split(",") if m.strip()}
+    AVAILABLE_MODELS = [m for m in _ALL_MODELS if m in _allowed]
+else:
+    AVAILABLE_MODELS = list(_ALL_MODELS)
 
 BASE_DIR = Path(__file__).resolve().parent
 # Assets that need to be downloaded at runtime go to a writable directory.
@@ -325,7 +332,6 @@ async def generate_stream(
     if not _active_model_name or _active_model_name not in _model_cache:
         raise HTTPException(status_code=400, detail="Model not loaded. Click 'Load' first.")
 
-    model = _model_cache[_active_model_name]
     tmp_path = None
     tmp_is_cached = False
 
@@ -345,6 +351,13 @@ async def generate_stream(
 
     def run_generation():
         try:
+            # Resolve the model after the generation lock is held so we always
+            # use the currently active model, not a stale reference captured
+            # before a concurrent /load request changed the active model.
+            model = _model_cache.get(_active_model_name)
+            if model is None:
+                raise RuntimeError("No model loaded. Please load a model first.")
+
             t0 = time.perf_counter()
             total_audio_s = 0.0
             voice_clone_ms = 0.0
@@ -522,7 +535,6 @@ async def generate_non_streaming(
     if not _active_model_name or _active_model_name not in _model_cache:
         raise HTTPException(status_code=400, detail="Model not loaded. Click 'Load' first.")
 
-    model = _model_cache[_active_model_name]
     tmp_path = None
     tmp_is_cached = False
 
@@ -538,6 +550,10 @@ async def generate_non_streaming(
         tmp_is_cached = True
 
     def run():
+        # Resolve the model after the generation lock is held.
+        model = _model_cache.get(_active_model_name)
+        if model is None:
+            raise RuntimeError("No model loaded. Please load a model first.")
         t0 = time.perf_counter()
         if mode == "voice_clone":
             audio_list, sr = model.generate_voice_clone(

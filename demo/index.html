@@ -772,13 +772,7 @@ body {
     <div class="s-section">Model</div>
     <div class="s-row">
       <label>Model</label>
-      <select id="modelSel">
-        <option value="Qwen/Qwen3-TTS-12Hz-0.6B-Base">0.6B Base</option>
-        <option value="Qwen/Qwen3-TTS-12Hz-1.7B-Base">1.7B Base</option>
-        <option value="Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice">0.6B CustomVoice</option>
-        <option value="Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice" selected>1.7B CustomVoice</option>
-        <option value="Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign">1.7B VoiceDesign</option>
-      </select>
+      <select id="modelSel"></select>
       <button class="s-btn" id="loadBtn" onclick="loadModel()">Load</button>
     </div>
 
@@ -906,8 +900,11 @@ window.addEventListener('load', async () => {
   initTheme();
   autoGrow($('voiceInstr'));
   await fetchStatus();
-  if (!loadedModel) {
-    $('modelSel').value = 'Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice';
+  if (!loadedModel && availableModels.length > 0) {
+    // Prefer CustomVoice as default (richer demo), fall back to first available
+    const preferred = availableModels.find(m => m.includes('CustomVoice'))
+      || availableModels[0];
+    $('modelSel').value = preferred;
     loadModel();
   }
   loadMics();
@@ -1036,11 +1033,11 @@ async function transcribeRef() {
 async function fetchStatus() {
   try {
     const d = await fetch('/status').then(r => r.json());
+    applyAvailableModels(d.available_models || []);
     if (d.loaded && d.model) {
       // Only trust loadedModel when the server confirms it's actually loaded
       loadedModel = d.model;
-      const sel = $('modelSel');
-      for (const o of sel.options) if (o.value === d.model) { o.selected = true; break; }
+      $('modelSel').value = d.model;
     }
     populateSpeakers(d.speakers || []);
     renderPresetRefs(d.preset_refs || []);
@@ -1100,7 +1097,7 @@ function updateModeRows() {
 }
 
 // ── Arcade mode loader ─────────────────────────────────────────────────────────
-const MODE_MODELS = {
+const ALL_MODE_MODELS = {
   voice_clone: [
     { id: 'Qwen/Qwen3-TTS-12Hz-0.6B-Base',         name: '0.6B Base',         sub: 'Fastest · RTF ~4×' },
     { id: 'Qwen/Qwen3-TTS-12Hz-1.7B-Base',         name: '1.7B Base',         sub: 'Higher quality · RTF ~3.5×' },
@@ -1113,9 +1110,46 @@ const MODE_MODELS = {
     { id: 'Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign',  name: '1.7B VoiceDesign',  sub: 'Describe any voice' },
   ],
 };
+// Filtered at runtime by available_models from /status
+let MODE_MODELS = ALL_MODE_MODELS;
 const MODE_LABELS = { voice_clone: 'Clone', custom: 'Custom', voice_design: 'Voice Design' };
 let loaderMode = null;
 let loaderSelectedModel = null;
+let availableModels = [];
+
+function applyAvailableModels(available) {
+  availableModels = available || [];
+  const avail = new Set(availableModels);
+
+  // Rebuild model selector options
+  const sel = $('modelSel');
+  const prev = sel.value;
+  sel.innerHTML = '';
+  for (const [mode, models] of Object.entries(ALL_MODE_MODELS)) {
+    for (const m of models) {
+      if (!avail.has(m.id)) continue;
+      const opt = document.createElement('option');
+      opt.value = m.id;
+      opt.textContent = m.name;
+      sel.appendChild(opt);
+    }
+  }
+  // Restore selection if still available, else pick first
+  if (avail.has(prev)) sel.value = prev;
+  else if (sel.options.length > 0) sel.value = sel.options[0].value;
+
+  // Filter MODE_MODELS to available only
+  MODE_MODELS = {};
+  for (const [mode, models] of Object.entries(ALL_MODE_MODELS)) {
+    MODE_MODELS[mode] = models.filter(m => avail.has(m.id));
+  }
+
+  // Hide mode rows that have no available models; show those that do
+  const modeRows = { voice_clone: 'rowClone', custom: 'rowChar', voice_design: 'rowCustom' };
+  for (const [mode, rowId] of Object.entries(modeRows)) {
+    $(rowId).style.display = MODE_MODELS[mode].length > 0 ? '' : 'none';
+  }
+}
 
 function onModeRowClick(mode) {
   const rowMap = { voice_clone: 'rowClone', custom: 'rowChar', voice_design: 'rowCustom' };

@@ -154,6 +154,11 @@ class TalkerGraph:
         for li in range(self.num_layers):
             k, v = past_key_values[li]  # each [1, kv_heads, seq_len, head_dim]
             seq_len = k.shape[2]
+            if seq_len > self.max_seq_len:
+                raise RuntimeError(
+                    f"Input is too long: prefill has {seq_len} tokens but max_seq_len={self.max_seq_len}. "
+                    "Use shorter text or shorter reference audio."
+                )
             cache_pos = torch.arange(seq_len, device=self.device)
             self.static_cache.update(k, v, li, {"cache_position": cache_pos})
         return seq_len

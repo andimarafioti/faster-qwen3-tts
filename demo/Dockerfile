@@ -3,6 +3,7 @@ FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu22.04
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 ENV MODEL_CACHE_SIZE=5
+ENV ACTIVE_MODELS=Qwen/Qwen3-TTS-12Hz-1.7B-Base
 ENV HOME=/tmp
 ENV TORCHINDUCTOR_CACHE_DIR=/tmp/torch_inductor
 
