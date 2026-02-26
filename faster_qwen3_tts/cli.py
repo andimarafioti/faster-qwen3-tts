@@ -320,7 +320,20 @@ def build_parser():
         sp.add_argument("--repetition-penalty", type=float, default=1.05)
         sp.add_argument("--greedy", action="store_true", help="Disable sampling")
         sp.add_argument("--streaming", action="store_true", help="Use streaming generation")
-        sp.add_argument("--non-streaming-mode", action="store_true", help="Prefill full text for non-streaming quality")
+        nsm_group = sp.add_mutually_exclusive_group()
+        nsm_group.add_argument(
+            "--non-streaming-mode",
+            dest="non_streaming_mode",
+            action="store_true",
+            help="Prefill full text for non-streaming quality",
+        )
+        nsm_group.add_argument(
+            "--no-non-streaming-mode",
+            dest="non_streaming_mode",
+            action="store_false",
+            help="Disable full-text prefill (match upstream non-streaming layout)",
+        )
+        sp.set_defaults(non_streaming_mode=True)
         sp.add_argument("--chunk-size", type=int, default=8, help="Streaming chunk size")
 
     sp = sub.add_parser("clone", help="Voice cloning (reference audio)")
@@ -351,7 +364,20 @@ def build_parser():
     sp.add_argument("--speaker", help="Speaker ID (custom)")
     sp.add_argument("--instruct", default="", help="Instruction (custom/design)")
     sp.add_argument("--streaming", action="store_true", help="Use streaming generation")
-    sp.add_argument("--non-streaming-mode", action="store_true", help="Prefill full text for non-streaming quality")
+    nsm_group = sp.add_mutually_exclusive_group()
+    nsm_group.add_argument(
+        "--non-streaming-mode",
+        dest="non_streaming_mode",
+        action="store_true",
+        help="Prefill full text for non-streaming quality",
+    )
+    nsm_group.add_argument(
+        "--no-non-streaming-mode",
+        dest="non_streaming_mode",
+        action="store_false",
+        help="Disable full-text prefill (match upstream non-streaming layout)",
+    )
+    sp.set_defaults(non_streaming_mode=True)
     sp.add_argument("--chunk-size", type=int, default=8, help="Streaming chunk size")
     sp.add_argument("--max-new-tokens", type=int, default=2048)
     sp.add_argument("--temperature", type=float, default=0.9)
