@@ -51,6 +51,92 @@ AVAILABLE_MODELS = [
     "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
 ]
 
+BASE_DIR = Path(__file__).resolve().parent
+PRESET_TRANSCRIPTS = BASE_DIR / "samples" / "parity" / "icl_transcripts.txt"
+PRESET_REFS = [
+    ("ref_audio_3", BASE_DIR / "ref_audio_3.wav", "Clone 1"),
+    ("ref_audio_2", BASE_DIR / "ref_audio_2.wav", "Clone 2"),
+    ("ref_audio", BASE_DIR / "ref_audio.wav", "Clone 3"),
+]
+
+_GITHUB_RAW = "https://raw.githubusercontent.com/andimarafioti/faster-qwen3-tts/main"
+_PRESET_REMOTE = {
+    "ref_audio":   f"{_GITHUB_RAW}/ref_audio.wav",
+    "ref_audio_2": f"{_GITHUB_RAW}/ref_audio_2.wav",
+    "ref_audio_3": f"{_GITHUB_RAW}/ref_audio_3.wav",
+}
+_TRANSCRIPT_REMOTE = f"{_GITHUB_RAW}/samples/parity/icl_transcripts.txt"
+
+
+def _fetch_preset_assets() -> None:
+    """Download preset wav files and transcripts from GitHub if not present locally."""
+    import urllib.request
+    PRESET_TRANSCRIPTS.parent.mkdir(parents=True, exist_ok=True)
+    if not PRESET_TRANSCRIPTS.exists():
+        try:
+            urllib.request.urlretrieve(_TRANSCRIPT_REMOTE, PRESET_TRANSCRIPTS)
+        except Exception as e:
+            print(f"Warning: could not fetch transcripts: {e}")
+    for key, path, _ in PRESET_REFS:
+        if not path.exists() and key in _PRESET_REMOTE:
+            try:
+                urllib.request.urlretrieve(_PRESET_REMOTE[key], path)
+                print(f"Downloaded {path.name}")
+            except Exception as e:
+                print(f"Warning: could not fetch {key}: {e}")
+
+_preset_refs: dict[str, dict] = {}
+
+
+def _load_preset_transcripts() -> dict[str, str]:
+    if not PRESET_TRANSCRIPTS.exists():
+        return {}
+    transcripts = {}
+    for line in PRESET_TRANSCRIPTS.read_text(encoding="utf-8").splitlines():
+        if ":" not in line:
+            continue
+        key_part, text = line.split(":", 1)
+        key = key_part.split("(")[0].strip()
+        transcripts[key] = text.strip()
+    return transcripts
+
+
+def _load_preset_refs() -> None:
+    transcripts = _load_preset_transcripts()
+    for key, path, label in PRESET_REFS:
+        if not path.exists():
+            continue
+        content = path.read_bytes()
+        cached_path = _get_cached_ref_path(content)
+        _preset_refs[key] = {
+            "id": key,
+            "label": label,
+            "filename": path.name,
+            "path": cached_path,
+            "ref_text": transcripts.get(key, ""),
+            "audio_b64": base64.b64encode(content).decode(),
+        }
+
+
+def _prime_preset_voice_cache(model: FasterQwen3TTS) -> None:
+    if not _preset_refs:
+        return
+    for preset in _preset_refs.values():
+        ref_path = preset["path"]
+        ref_text = preset["ref_text"]
+        for xvec_only in (True, False):
+            try:
+                model._prepare_generation(
+                    text="Hello.",
+                    ref_audio=ref_path,
+                    ref_text=ref_text,
+                    language="English",
+                    xvec_only=xvec_only,
+                    non_streaming_mode=True,
+                )
+            except Exception:
+                continue
+
 app = FastAPI(title="Faster Qwen3-TTS Demo")
 app.add_middleware(
     CORSMiddleware,
@@ -103,6 +189,9 @@ def _get_cached_ref_path(content: bytes) -> str:
 
 # ─── Routes ───────────────────────────────────────────────────────────────────
 
+_fetch_preset_assets()
+_load_preset_refs()
+
 @app.get("/")
 async def root():
     return FileResponse(Path(__file__).parent / "index.html")
@@ -147,6 +236,24 @@ async def get_status():
         "model_type": model_type,
         "speakers": speakers,
         "transcription_available": _parakeet is not None,
+        "preset_refs": [
+            {"id": p["id"], "label": p["label"], "ref_text": p["ref_text"]}
+            for p in _preset_refs.values()
+        ],
+    }
+
+
+@app.get("/preset_ref/{preset_id}")
+async def get_preset_ref(preset_id: str):
+    preset = _preset_refs.get(preset_id)
+    if not preset:
+        raise HTTPException(status_code=404, detail="Preset not found")
+    return {
+        "id": preset["id"],
+        "label": preset["label"],
+        "filename": preset["filename"],
+        "ref_text": preset["ref_text"],
+        "audio_b64": preset["audio_b64"],
     }
 
 
@@ -172,6 +279,7 @@ async def load_model(model_id: str = Form(...)):
                 new_model._warmup(prefill_len=100)
                 _model = new_model
                 _model_name = model_id
+                _prime_preset_voice_cache(new_model)
                 print("CUDA graphs captured — model ready.")
         finally:
             _loading = False
@@ -193,6 +301,7 @@ async def generate_stream(
     temperature: float = Form(0.9),
     top_k: int = Form(50),
     repetition_penalty: float = Form(1.05),
+    ref_preset: str = Form(""),
     ref_audio: UploadFile = File(None),
 ):
     if _model is None:
@@ -202,7 +311,13 @@ async def generate_stream(
     tmp_path = None
     tmp_is_cached = False
 
-    if ref_audio and ref_audio.filename:
+    if ref_preset and ref_preset in _preset_refs:
+        preset = _preset_refs[ref_preset]
+        tmp_path = preset["path"]
+        tmp_is_cached = True
+        if not ref_text:
+            ref_text = preset["ref_text"]
+    elif ref_audio and ref_audio.filename:
         content = await ref_audio.read()
         tmp_path = _get_cached_ref_path(content)
         tmp_is_cached = True
@@ -367,6 +482,7 @@ async def generate_non_streaming(
     temperature: float = Form(0.9),
     top_k: int = Form(50),
     repetition_penalty: float = Form(1.05),
+    ref_preset: str = Form(""),
     ref_audio: UploadFile = File(None),
 ):
     if _model is None:
@@ -376,7 +492,13 @@ async def generate_non_streaming(
     tmp_path = None
     tmp_is_cached = False
 
-    if ref_audio and ref_audio.filename:
+    if ref_preset and ref_preset in _preset_refs:
+        preset = _preset_refs[ref_preset]
+        tmp_path = preset["path"]
+        tmp_is_cached = True
+        if not ref_text:
+            ref_text = preset["ref_text"]
+    elif ref_audio and ref_audio.filename:
         content = await ref_audio.read()
         tmp_path = _get_cached_ref_path(content)
         tmp_is_cached = True
@@ -446,8 +568,8 @@ def main():
     parser = argparse.ArgumentParser(description="Faster Qwen3-TTS Demo Server")
     parser.add_argument(
         "--model",
-        default="Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
-        help="Model to preload at startup (default: 1.7B-CustomVoice)",
+        default="Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+        help="Model to preload at startup (default: 1.7B-Base)",
     )
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", 7860)))
     parser.add_argument("--host", default="0.0.0.0")
@@ -469,6 +591,7 @@ def main():
         _model_name = args.model
         print("Capturing CUDA graphs…")
         _model._warmup(prefill_len=100)
+        _prime_preset_voice_cache(_model)
         print("TTS model ready.")
 
         print("Loading transcription model (nano-parakeet)…")
