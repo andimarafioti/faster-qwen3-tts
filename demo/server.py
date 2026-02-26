@@ -54,9 +54,9 @@ AVAILABLE_MODELS = [
 BASE_DIR = Path(__file__).resolve().parents[1]
 PRESET_TRANSCRIPTS = BASE_DIR / "samples" / "parity" / "icl_transcripts.txt"
 PRESET_REFS = [
-    ("ref_audio", BASE_DIR / "ref_audio.wav", "Clone 1"),
+    ("ref_audio_3", BASE_DIR / "ref_audio_3.wav", "Clone 1"),
     ("ref_audio_2", BASE_DIR / "ref_audio_2.wav", "Clone 2"),
-    ("ref_audio_3", BASE_DIR / "ref_audio_3.wav", "Clone 3"),
+    ("ref_audio", BASE_DIR / "ref_audio.wav", "Clone 3"),
 ]
 
 _preset_refs: dict[str, dict] = {}

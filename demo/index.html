@@ -301,18 +301,29 @@ body {
 .mic-btn.rec { border-color: var(--red); color: var(--red); animation: blink 1s infinite; }
 .mic-btn svg { width: 14px; height: 14px; }
 
-.preset-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.preset-btn {
-  background: transparent;
-  border: 1px solid var(--line);
-  color: var(--dim);
-  padding: 6px 10px;
-  border-radius: 999px;
-  font-size: 12px;
-  cursor: pointer;
+.preset-row {
+  display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+  margin-top: 8px;
 }
-.preset-btn.active { border-color: var(--accent); color: var(--accent); }
-.preset-btn:hover { border-color: var(--accent); color: var(--accent); }
+.preset-row:empty { display: none; }
+.preset-row::before {
+  content: 'Try:';
+  font-size: 11px; color: var(--dim);
+  text-transform: uppercase; letter-spacing: 0.06em;
+  flex-shrink: 0; align-self: center;
+}
+.preset-btn {
+  background: var(--surface2);
+  border: 1px solid var(--border2);
+  color: var(--text2);
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 11px; letter-spacing: 0.02em;
+  cursor: pointer; transition: all 0.15s;
+  flex-shrink: 0;
+}
+.preset-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
+.preset-btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
 
 .rec-time {
   font-size: 11px; color: var(--red);
@@ -643,7 +654,49 @@ body {
   <!-- Main content -->
   <div class="main">
     <div class="text-wrap">
-      <textarea id="textIn" placeholder="Enter text to synthesize...">Hello! This is faster Qwen3-TTS running with CUDA graph capture. Notice how the audio starts playing almost immediately.</textarea>
+      <textarea id="textIn" placeholder="Enter text to synthesize...">Against the odds, the wild lobster has found a new vessel for its voice. And with it, the possibility to realise its full potential.</textarea>
+    </div>
+
+    <!-- Clone -->
+    <div class="mode-row" id="rowClone" onclick="onModeRowClick('voice_clone')">
+      <div class="label">Clone — match a voice from a reference clip<span class="switch-tag">LOAD ▶</span></div>
+      <!-- Simple / Advanced toggle -->
+      <div class="clone-toggle-row">
+        <div class="toggle">
+          <div class="tog" data-x="1" onclick="setXvec(true)">Simple</div>
+          <div class="tog on" data-x="0" onclick="setXvec(false)">Advanced</div>
+        </div>
+      </div>
+      <!-- Reference audio + action buttons -->
+      <div class="row">
+        <label class="ref-chip" id="refChip">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
+          <span id="refLabel">Reference audio</span>
+          <input type="file" id="refInput" accept=".wav,.mp3,.flac,.ogg" onchange="pickRef(this)">
+        </label>
+        <button class="mic-btn" id="micBtn" onclick="toggleRec()" title="Record from microphone">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+        </button>
+        <span class="rec-time" id="recTime"></span>
+        <span class="rec-status" id="recStatus"></span>
+        <button class="play-btn" onclick="generate('voice_clone')" title="Generate">
+          <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6,3 20,12 6,21"/></svg>
+        </button>
+      </div>
+      <div class="preset-row" id="presetRow"></div>
+      <!-- Advanced: transcript -->
+      <div id="advTranscript">
+        <div class="clone-hint">Advanced cloning uses the transcript of the reference clip for higher accuracy. Upload or record to auto-transcribe.</div>
+        <div class="instr-wrap">
+          <textarea id="refTextIn" class="voice-in" rows="2"
+            placeholder="Upload or record audio to auto-transcribe…"
+            oninput="autoGrow(this)"></textarea>
+        </div>
+      </div>
+      <!-- Level meter (shown during recording) -->
+      <div class="rec-bar-wrap" id="recBarWrap"><div class="rec-bar" id="recBar"></div></div>
+      <!-- Preview of last recording -->
+      <audio id="recPreview" class="rec-preview" controls></audio>
     </div>
 
     <!-- Custom (built-in speakers) -->
@@ -662,48 +715,6 @@ body {
           placeholder="Voice style instructions (optional)…"
           oninput="autoGrow(this)"></textarea>
       </div>
-    </div>
-
-    <!-- Clone -->
-    <div class="mode-row" id="rowClone" onclick="onModeRowClick('voice_clone')">
-      <div class="label">Clone — match a voice from a reference clip<span class="switch-tag">LOAD ▶</span></div>
-      <!-- Simple / Advanced toggle -->
-      <div class="clone-toggle-row">
-        <div class="toggle">
-          <div class="tog on" data-x="1" onclick="setXvec(true)">Simple</div>
-          <div class="tog" data-x="0" onclick="setXvec(false)">Advanced</div>
-        </div>
-      </div>
-      <!-- Reference audio + action buttons -->
-      <div class="row">
-        <label class="ref-chip" id="refChip">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
-          <span id="refLabel">Reference audio</span>
-          <input type="file" id="refInput" accept=".wav,.mp3,.flac,.ogg" onchange="pickRef(this)">
-        </label>
-        <button class="mic-btn" id="micBtn" onclick="toggleRec()" title="Record from microphone">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
-        </button>
-        <span class="rec-time" id="recTime"></span>
-        <span class="rec-status" id="recStatus"></span>
-        <button class="play-btn" onclick="generate('voice_clone')" title="Generate">
-          <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6,3 20,12 6,21"/></svg>
-        </button>
-        <div class="preset-row" id="presetRow"></div>
-      </div>
-      <!-- Advanced: transcript -->
-      <div id="advTranscript" style="display:none">
-        <div class="clone-hint">Advanced cloning uses the transcript of the reference clip for higher accuracy. Upload or record to auto-transcribe.</div>
-        <div class="instr-wrap">
-          <textarea id="refTextIn" class="voice-in" rows="2"
-            placeholder="Upload or record audio to auto-transcribe…"
-            oninput="autoGrow(this)"></textarea>
-        </div>
-      </div>
-      <!-- Level meter (shown during recording) -->
-      <div class="rec-bar-wrap" id="recBarWrap"><div class="rec-bar" id="recBar"></div></div>
-      <!-- Preview of last recording -->
-      <audio id="recPreview" class="rec-preview" controls></audio>
     </div>
 
     <!-- Voice Design -->
@@ -856,7 +867,7 @@ function setPlayBtns(disabled) {
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let genMode  = 'stream';
-let xvecOnly = true;
+let xvecOnly = false;
 let busy     = false;
 let refFile  = null;
 let presetRefId = null;
@@ -956,6 +967,7 @@ function renderPresetRefs(list) {
     row.appendChild(b);
   });
   updatePresetButtons();
+  if (presetRefs.length > 0 && !presetRefId) selectPresetRef(presetRefs[0].id);
 }
 
 function updatePresetButtons() {
