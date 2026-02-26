@@ -210,6 +210,10 @@ def parity_generate_streaming(
 
     Yields (codec_chunk, timing_info) tuples every chunk_size steps.
     """
+    # NOTE: This function intentionally mirrors fast_generate_streaming. The core
+    # decode loop is duplicated so we can swap CUDA graphs/static cache for the
+    # dynamic-cache path while keeping sampling/chunking identical. If you edit
+    # the fast path, check parity_generate_streaming for matching changes.
     eos_id = config.codec_eos_token_id
     vocab_size = config.vocab_size
     device = talker_input_embeds.device
