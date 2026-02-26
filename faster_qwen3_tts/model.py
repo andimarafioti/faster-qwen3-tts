@@ -649,6 +649,7 @@ class FasterQwen3TTS:
         repetition_penalty: float = 1.05,
         chunk_size: int = 12,
         xvec_only: bool = True,
+        non_streaming_mode: bool = True,
         append_silence: bool = True,
         parity_mode: bool = False,
     ) -> Generator[Tuple[np.ndarray, int, dict], None, None]:
@@ -674,6 +675,8 @@ class FasterQwen3TTS:
             xvec_only: When True (default), use only the speaker embedding for voice cloning.
                 This prevents phoneme bleed-through from the reference and allows clean
                 language switching. Set to False for full ICL mode (reference audio in context).
+            non_streaming_mode: When True (default), prefill the full target text before
+                streaming decode. Set to False to feed text token-by-token during decode.
             parity_mode: When True, disables CUDA graphs and uses dynamic cache streaming.
 
         Yields:
@@ -687,6 +690,7 @@ class FasterQwen3TTS:
             ref_text,
             language=language,
             xvec_only=xvec_only,
+            non_streaming_mode=non_streaming_mode,
             append_silence=append_silence,
         )
 
