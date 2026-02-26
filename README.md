@@ -201,7 +201,7 @@ The 12 Hz codec uses a causal `chunked_decode`: each frame is reconstructed usin
 
 The original Qwen3TTS implementation supports two mode of generation. It either takes the full input text and prepares the utterance, or it feeds the text progressively. This is the `non_streaming_mode` parameter in the generation methods. The name is maintained from the Qwen3TTS implementation, but I understand it might bring some headaches since here we also have general audio output streaming.
 `generate_voice_clone` defaults to `non_streaming_mode=True` to put the **full target text** into the prefill before any audio is generated. This improves prosody/consistency for non‑streaming use cases.
-`generate_voice_clone_streaming` always uses `non_streaming_mode=False` — text is fed token‑by‑token during decode, which is the correct tradeoff for streaming since the full sentence isn't known in advance.
+`generate_voice_clone_streaming` also defaults to `non_streaming_mode=True`, which pre-fills the full target text before streaming decode. Set it to `False` to match the upstream step‑by‑step text feeding behavior.
 
 **Performance impact (RTX 4090, 1.7B, ICL, chunk_size=8):** TTFA is unchanged (≈159ms ± 1ms), and RTF is effectively the same (nsm=False: 4.87 ± 0.01, nsm=True: 4.85 ± 0.01).
 

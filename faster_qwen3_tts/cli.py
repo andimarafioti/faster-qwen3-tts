@@ -60,6 +60,7 @@ def cmd_clone(args):
             do_sample=not args.greedy,
             repetition_penalty=args.repetition_penalty,
             xvec_only=args.xvec_only,
+            non_streaming_mode=args.non_streaming_mode,
         )
         audio, sr = _stream_to_audio(gen)
         total_time = time.perf_counter() - start
@@ -224,6 +225,7 @@ def cmd_serve(args):
                     do_sample=not args.greedy,
                     repetition_penalty=args.repetition_penalty,
                     xvec_only=False,
+                    non_streaming_mode=args.non_streaming_mode,
                 )
                 audio, sr = _stream_to_audio(gen)
             else:
