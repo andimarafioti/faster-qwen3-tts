@@ -44,7 +44,7 @@ except ImportError:
 from nano_parakeet import from_pretrained as _parakeet_from_pretrained
 
 
-AVAILABLE_MODELS = [
+_ALL_MODELS = [
     "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
     "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
     "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
@@ -52,12 +52,22 @@ AVAILABLE_MODELS = [
     "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
 ]
 
+_active_models_env = os.environ.get("ACTIVE_MODELS", "")
+if _active_models_env:
+    _allowed = {m.strip() for m in _active_models_env.split(",") if m.strip()}
+    AVAILABLE_MODELS = [m for m in _ALL_MODELS if m in _allowed]
+else:
+    AVAILABLE_MODELS = list(_ALL_MODELS)
+
 BASE_DIR = Path(__file__).resolve().parent
-PRESET_TRANSCRIPTS = BASE_DIR / "samples" / "parity" / "icl_transcripts.txt"
+# Assets that need to be downloaded at runtime go to a writable directory.
+# /app is read-only in HF Spaces; fall back to /tmp.
+_ASSET_DIR = Path(os.environ.get("ASSET_DIR", "/tmp/faster-qwen3-tts-assets"))
+PRESET_TRANSCRIPTS = _ASSET_DIR / "samples" / "parity" / "icl_transcripts.txt"
 PRESET_REFS = [
-    ("ref_audio_3", BASE_DIR / "ref_audio_3.wav", "Clone 1"),
-    ("ref_audio_2", BASE_DIR / "ref_audio_2.wav", "Clone 2"),
-    ("ref_audio", BASE_DIR / "ref_audio.wav", "Clone 3"),
+    ("ref_audio_3", _ASSET_DIR / "ref_audio_3.wav", "Clone 1"),
+    ("ref_audio_2", _ASSET_DIR / "ref_audio_2.wav", "Clone 2"),
+    ("ref_audio", _ASSET_DIR / "ref_audio.wav", "Clone 3"),
 ]
 
 _GITHUB_RAW = "https://raw.githubusercontent.com/andimarafioti/faster-qwen3-tts/main"
@@ -72,6 +82,7 @@ _TRANSCRIPT_REMOTE = f"{_GITHUB_RAW}/samples/parity/icl_transcripts.txt"
 def _fetch_preset_assets() -> None:
     """Download preset wav files and transcripts from GitHub if not present locally."""
     import urllib.request
+    _ASSET_DIR.mkdir(parents=True, exist_ok=True)
     PRESET_TRANSCRIPTS.parent.mkdir(parents=True, exist_ok=True)
     if not PRESET_TRANSCRIPTS.exists():
         try:
@@ -321,7 +332,6 @@ async def generate_stream(
     if not _active_model_name or _active_model_name not in _model_cache:
         raise HTTPException(status_code=400, detail="Model not loaded. Click 'Load' first.")
 
-    model = _model_cache[_active_model_name]
     tmp_path = None
     tmp_is_cached = False
 
@@ -341,6 +351,13 @@ async def generate_stream(
 
     def run_generation():
         try:
+            # Resolve the model after the generation lock is held so we always
+            # use the currently active model, not a stale reference captured
+            # before a concurrent /load request changed the active model.
+            model = _model_cache.get(_active_model_name)
+            if model is None:
+                raise RuntimeError("No model loaded. Please load a model first.")
+
             t0 = time.perf_counter()
             total_audio_s = 0.0
             voice_clone_ms = 0.0
@@ -518,7 +535,6 @@ async def generate_non_streaming(
     if not _active_model_name or _active_model_name not in _model_cache:
         raise HTTPException(status_code=400, detail="Model not loaded. Click 'Load' first.")
 
-    model = _model_cache[_active_model_name]
     tmp_path = None
     tmp_is_cached = False
 
@@ -534,6 +550,10 @@ async def generate_non_streaming(
         tmp_is_cached = True
 
     def run():
+        # Resolve the model after the generation lock is held.
+        model = _model_cache.get(_active_model_name)
+        if model is None:
+            raise RuntimeError("No model loaded. Please load a model first.")
         t0 = time.perf_counter()
         if mode == "voice_clone":
             audio_list, sr = model.generate_voice_clone(
