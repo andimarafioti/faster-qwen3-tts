@@ -78,6 +78,7 @@ def cmd_clone(args):
             do_sample=not args.greedy,
             repetition_penalty=args.repetition_penalty,
             xvec_only=args.xvec_only,
+            non_streaming_mode=args.non_streaming_mode,
         )
         audio = audio_list[0]
         total_time = time.perf_counter() - start
@@ -237,6 +238,7 @@ def cmd_serve(args):
                     do_sample=not args.greedy,
                     repetition_penalty=args.repetition_penalty,
                     xvec_only=False,
+                    non_streaming_mode=args.non_streaming_mode,
                 )
                 audio = audio_list[0]
         elif args.mode == "custom":
@@ -318,6 +320,7 @@ def build_parser():
         sp.add_argument("--repetition-penalty", type=float, default=1.05)
         sp.add_argument("--greedy", action="store_true", help="Disable sampling")
         sp.add_argument("--streaming", action="store_true", help="Use streaming generation")
+        sp.add_argument("--non-streaming-mode", action="store_true", help="Prefill full text for non-streaming quality")
         sp.add_argument("--chunk-size", type=int, default=8, help="Streaming chunk size")
 
     sp = sub.add_parser("clone", help="Voice cloning (reference audio)")
@@ -348,6 +351,7 @@ def build_parser():
     sp.add_argument("--speaker", help="Speaker ID (custom)")
     sp.add_argument("--instruct", default="", help="Instruction (custom/design)")
     sp.add_argument("--streaming", action="store_true", help="Use streaming generation")
+    sp.add_argument("--non-streaming-mode", action="store_true", help="Prefill full text for non-streaming quality")
     sp.add_argument("--chunk-size", type=int, default=8, help="Streaming chunk size")
     sp.add_argument("--max-new-tokens", type=int, default=2048)
     sp.add_argument("--temperature", type=float, default=0.9)
