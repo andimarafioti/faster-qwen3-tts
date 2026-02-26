@@ -4,7 +4,7 @@ Real-time Qwen3-TTS inference using CUDA graph capture. No Flash Attention, no v
 
 ## Install
 
-Requires: Python 3.10+, NVIDIA GPU with CUDA, [uv](https://docs.astral.sh/uv/).
+Requires: Python 3.10+, NVIDIA GPU with CUDA. For benchmarks, you only need [uv](https://docs.astral.sh/uv/) and `./setup.sh`.
 
 ### Install (PyPI)
 
