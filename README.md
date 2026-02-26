@@ -4,22 +4,12 @@ Real-time Qwen3-TTS inference using CUDA graph capture. No Flash Attention, no v
 
 ## Install
 
-Requires: Python 3.10+, NVIDIA GPU with CUDA. For benchmarks, you only need [uv](https://docs.astral.sh/uv/) and `./setup.sh`.
+Requires: Python 3.10+, NVIDIA GPU with CUDA.
 
 ### Install (PyPI)
 
 ```bash
 pip install faster-qwen3-tts
-```
-
-Note: This installs the `qwen-tts` PyPI package (`>=0.1.1`).
-
-### Install from source
-
-```bash
-git clone https://github.com/andimarafioti/faster-qwen3-tts
-cd faster-qwen3-tts
-./setup.sh       # creates venv with uv, installs deps, downloads models
 ```
 
 ## Quick Start
@@ -30,11 +20,17 @@ cd faster-qwen3-tts
 from faster_qwen3_tts import FasterQwen3TTS
 
 model = FasterQwen3TTS.from_pretrained("Qwen/Qwen3-TTS-12Hz-0.6B-Base")
+ref_audio = "ref_audio.wav"
+ref_text = (
+    "I'm confused why some people have super short timelines, yet at the same time are bullish on scaling up "
+    "reinforcement learning atop LLMs. If we're actually close to a human-like learner, then this whole approach "
+    "of training on verifiable outcomes is doomed."
+)
 
 # Streaming — yields audio chunks during generation
 for audio_chunk, sr, timing in model.generate_voice_clone_streaming(
     text="Hello world!", language="English",
-    ref_audio="ref.wav", ref_text="...",
+    ref_audio=ref_audio, ref_text=ref_text,
     chunk_size=8,  # 8 steps ≈ 667ms of audio per chunk
 ):
     play(audio_chunk, sr)  # process/send each chunk immediately
@@ -42,7 +38,7 @@ for audio_chunk, sr, timing in model.generate_voice_clone_streaming(
 # Non-streaming — returns all audio at once
 audio_list, sr = model.generate_voice_clone(
     text="Hello world!", language="English",
-    ref_audio="ref.wav", ref_text="...",
+    ref_audio=ref_audio, ref_text=ref_text,
 )
 ```
 
@@ -55,8 +51,8 @@ faster-qwen3-tts clone \
   --model Qwen/Qwen3-TTS-12Hz-1.7B-Base \
   --text "Hello world!" \
   --language English \
-  --ref-audio ref.wav \
-  --ref-text "Reference transcript" \
+  --ref-audio ref_audio.wav \
+  --ref-text "I'm confused why some people have super short timelines, yet at the same time are bullish on scaling up reinforcement learning atop LLMs. If we're actually close to a human-like learner, then this whole approach of training on verifiable outcomes is doomed." \
   --output out.wav
 ```
 
@@ -145,6 +141,14 @@ Benchmarks include tokenization + inference (apples-to-apples with baseline). RT
 **GPU architecture notes:** RTX 4090 (2.5 GHz clocks) outperforms H100 (1.8 GHz) for single-stream workloads. H100's lower baseline (RTF 0.59 vs 4090's 0.82) reflects design optimization for batch processing rather than single-stream inference.
 
 ### Benchmark a specific model
+
+Benchmarks run from source. You only need [uv](https://docs.astral.sh/uv/) and `./setup.sh`:
+
+```bash
+git clone https://github.com/andimarafioti/faster-qwen3-tts
+cd faster-qwen3-tts
+./setup.sh
+```
 
 ```bash
 ./benchmark.sh 0.6B
