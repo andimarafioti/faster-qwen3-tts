@@ -113,6 +113,44 @@ We provide side‑by‑side audio samples to compare **Qwen3TTS** (dynamic cache
 <audio controls src="samples/parity/icl_ref_audio_3_gen2_static.wav"></audio>
 <audio controls src="samples/parity/icl_ref_audio_3_gen2_dynamic.wav"></audio>
 
+### non_streaming_mode Comparison (ICL)
+
+We provide side‑by‑side samples comparing **non_streaming_mode=False** vs **True** for ICL voice cloning.
+All samples use the **1.7B** model with `xvec_only=False`.
+
+- `samples/non_streaming_mode/README.md` describes prompts, settings, and filenames
+- `samples/non_streaming_mode/*.wav` contain 3 references × 2 prompts × {nsm_false,nsm_true}
+
+**ICL (ref_audio.wav) – Prompt 1**
+
+<audio controls src="samples/non_streaming_mode/icl_ref_audio_gen1_nsm_false.wav"></audio>
+<audio controls src="samples/non_streaming_mode/icl_ref_audio_gen1_nsm_true.wav"></audio>
+
+**ICL (ref_audio.wav) – Prompt 2**
+
+<audio controls src="samples/non_streaming_mode/icl_ref_audio_gen2_nsm_false.wav"></audio>
+<audio controls src="samples/non_streaming_mode/icl_ref_audio_gen2_nsm_true.wav"></audio>
+
+**ICL (ref_audio_2.wav) – Prompt 1**
+
+<audio controls src="samples/non_streaming_mode/icl_ref_audio_2_gen1_nsm_false.wav"></audio>
+<audio controls src="samples/non_streaming_mode/icl_ref_audio_2_gen1_nsm_true.wav"></audio>
+
+**ICL (ref_audio_2.wav) – Prompt 2**
+
+<audio controls src="samples/non_streaming_mode/icl_ref_audio_2_gen2_nsm_false.wav"></audio>
+<audio controls src="samples/non_streaming_mode/icl_ref_audio_2_gen2_nsm_true.wav"></audio>
+
+**ICL (ref_audio_3.wav) – Prompt 1**
+
+<audio controls src="samples/non_streaming_mode/icl_ref_audio_3_gen1_nsm_false.wav"></audio>
+<audio controls src="samples/non_streaming_mode/icl_ref_audio_3_gen1_nsm_true.wav"></audio>
+
+**ICL (ref_audio_3.wav) – Prompt 2**
+
+<audio controls src="samples/non_streaming_mode/icl_ref_audio_3_gen2_nsm_false.wav"></audio>
+<audio controls src="samples/non_streaming_mode/icl_ref_audio_3_gen2_nsm_true.wav"></audio>
+
 ## Demo UI
 
 A minimal web UI that streams audio in real time and shows TTFA and RTF live:
