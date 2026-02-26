@@ -14,7 +14,6 @@ Run: python benchmarks/parakeet_coexistence.py
 import os
 import sys
 import time
-import gc
 import numpy as np
 import torch
 
@@ -39,7 +38,6 @@ def vram_gb():
 
 def run_tts_bench(model, n_runs=5, max_new_tokens=128, label=""):
     """Run TTS n_runs times, return mean ms/step and RTF."""
-    step_times = []
     rtfs = []
     for i in range(n_runs):
         torch.cuda.synchronize()
@@ -81,8 +79,6 @@ def run_tts_bench(model, n_runs=5, max_new_tokens=128, label=""):
 
 def run_tts_step_bench(model, n_runs=5, max_new_tokens=128, label=""):
     """Benchmark using the generate timing dict (more precise step timing)."""
-    from faster_qwen3_tts.generate import fast_generate
-    step_ms_list = []
     rtfs = []
     for i in range(n_runs):
         torch.cuda.synchronize()

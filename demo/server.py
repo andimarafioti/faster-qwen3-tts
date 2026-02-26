@@ -213,7 +213,6 @@ async def generate_stream(
     def run_generation():
         try:
             t0 = time.perf_counter()
-            first_chunk_t = None
             total_audio_s = 0.0
             voice_clone_ms = 0.0
 

@@ -211,7 +211,6 @@ def parity_generate_streaming(
     Yields (codec_chunk, timing_info) tuples every chunk_size steps.
     """
     eos_id = config.codec_eos_token_id
-    num_code_groups = config.num_code_groups
     vocab_size = config.vocab_size
     device = talker_input_embeds.device
 
@@ -220,11 +219,6 @@ def parity_generate_streaming(
     for i in range(suppress_start, vocab_size):
         if i != eos_id:
             suppress_mask[i] = True
-
-    predictor = talker.code_predictor
-    talker_codec_embed = talker.get_input_embeddings()
-    talker_codec_head = talker.codec_head
-    predictor_codec_embeds = predictor.get_input_embeddings()
 
     # === PREFILL ===
     t_start = time.time()

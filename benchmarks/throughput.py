@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Benchmark throughput: CUDA graphs using the FasterQwen3TTS wrapper."""
-import torch
-import time
+import json
 import os
+import subprocess
+import time
+
+import torch
 import numpy as np
 import soundfile as sf
 from faster_qwen3_tts import FasterQwen3TTS
@@ -160,14 +163,12 @@ except Exception as e:
     print(f"Audio save failed: {e}")
 
 # Save results as JSON
-import json
-import subprocess
 gpu_name = "Unknown"
 try:
     out = subprocess.check_output(['nvidia-smi', '--query-gpu=name', '--format=csv,noheader'],
                                   stderr=subprocess.DEVNULL, text=True)
     gpu_name = out.strip().split('\n')[0].replace(' ', '_')
-except:
+except Exception:
     pass
 
 bench_data = {
@@ -192,7 +193,7 @@ with open(json_path, 'r+' if os.path.exists(json_path) else 'w') as f:
         f.seek(0)
         try:
             data = json.load(f)
-        except:
+        except Exception:
             data = {}
     else:
         data = {}
