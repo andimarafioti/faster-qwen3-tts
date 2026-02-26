@@ -890,7 +890,7 @@ const defaultSpeakers = [
 ];
 
 // Web Audio
-let actx = null, sproc = null, pcmQueue = [], rawPcmParts = [], rawPcmSr = 24000;
+let actx = null, pcmQueue = [], rawPcmParts = [], rawPcmSr = 24000;
 let chunkQ = Promise.resolve();
 let clientT0 = 0, firstChunkAt = null, firstAudioAt = null, lastBufS = 0, firstServerWall = null;
 
@@ -1425,7 +1425,9 @@ function bufToWav(buffer) {
   return new Blob([ab], { type: 'audio/wav' });
 }
 
-// ── Web Audio: gapless streaming via ScriptProcessor ─────────────────────────
+// ── Web Audio: gapless streaming via AudioBufferSourceNode scheduling ─────────
+let nextPlayTime = 0;  // AudioContext time for next scheduled chunk
+
 async function warmAudio() {
   if (actx) return;
   try { await initAudio(24000); } catch {}
@@ -1436,31 +1438,16 @@ async function initAudio(sr) {
   pcmQueue = []; rawPcmParts = [];
   chunkQ = Promise.resolve(); dlBlob = null;
   firstChunkAt = null; firstAudioAt = null; lastBufS = 0;
+  nextPlayTime = 0;
 
   if (actx) {
     if (actx.state === 'suspended') await actx.resume();
+    nextPlayTime = actx.currentTime;
     return;
   }
-  actx  = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: rawPcmSr });
-  sproc = actx.createScriptProcessor(256, 0, 1);
-  sproc.onaudioprocess = e => {
-    const out = e.outputBuffer.getChannelData(0);
-    let i = 0, wrote = false;
-    while (i < out.length) {
-      if (!pcmQueue.length) { out.fill(0, i); break; }
-      const seg  = pcmQueue[0];
-      const take = Math.min(out.length - i, seg.data.length - seg.pos);
-      out.set(seg.data.subarray(seg.pos, seg.pos + take), i);
-      seg.pos += take; i += take; wrote = true;
-      if (seg.pos >= seg.data.length) pcmQueue.shift();
-    }
-    if (wrote && firstAudioAt == null) {
-      firstAudioAt = performance.now();
-      pushClientMetrics();
-    }
-  };
+  actx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: rawPcmSr });
   if (actx.state === 'suspended') await actx.resume();
-  sproc.connect(actx.destination);
+  nextPlayTime = actx.currentTime;
 }
 
 function parseWav(bytes) {
@@ -1489,9 +1476,28 @@ function enqueueChunk(b64) {
     const p     = parseWav(bytes);
     if (!p) return;
     rawPcmParts.push(p.rawPcm);
-    pcmQueue.push({ data: p.pcm, pos: 0 });
+
+    // Schedule chunk for gapless playback via AudioBufferSourceNode
+    const buf = actx.createBuffer(1, p.pcm.length, rawPcmSr);
+    buf.getChannelData(0).set(p.pcm);
+    const src = actx.createBufferSource();
+    src.buffer = buf;
+    src.connect(actx.destination);
+
+    const now = actx.currentTime;
+    if (nextPlayTime < now) nextPlayTime = now;
+    src.start(nextPlayTime);
+
+    if (firstAudioAt == null) {
+      // Mark when first audio will actually be heard
+      const delayMs = Math.max(0, (nextPlayTime - now) * 1000);
+      setTimeout(() => { firstAudioAt = performance.now(); pushClientMetrics(); }, delayMs);
+    }
+
+    nextPlayTime += buf.duration;
+
     if (firstChunkAt == null) firstChunkAt = performance.now();
-    lastBufS = pcmQueue.reduce((s, seg) => s + (seg.data.length - seg.pos), 0) / rawPcmSr;
+    lastBufS = Math.max(0, nextPlayTime - actx.currentTime);
     pushClientMetrics();
   });
 }
