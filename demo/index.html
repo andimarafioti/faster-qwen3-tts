@@ -1123,6 +1123,7 @@ async function loadMics() {
     const devs   = await navigator.mediaDevices.enumerateDevices();
     const inputs = devs.filter(d => d.kind === 'audioinput');
     const sel    = $('micSel');
+    const prevSelection = recDeviceId || sel.value;
     sel.innerHTML = '';
     let defaultId = null;
     inputs.forEach((d, i) => {
@@ -1136,10 +1137,15 @@ async function loadMics() {
       }
     });
     sel.onchange = () => { recDeviceId = sel.value; };
-    if (defaultId) {
-      recDeviceId = defaultId; sel.value = defaultId;
+    if (prevSelection && inputs.some(d => d.deviceId === prevSelection)) {
+      recDeviceId = prevSelection;
+      sel.value = prevSelection;
+    } else if (defaultId) {
+      recDeviceId = defaultId;
+      sel.value = defaultId;
     } else if (inputs.length) {
       recDeviceId = inputs[0].deviceId;
+      sel.value = inputs[0].deviceId;
     }
   } catch {}
 }
