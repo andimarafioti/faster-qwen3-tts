@@ -123,6 +123,7 @@ Benchmarks include tokenization + inference (apples-to-apples with baseline). RT
 | Jetson AGX Orin 64GB | 0.179 | 3,641ms | 1.307 | 597ms | 7.3x / 6.1x |
 | DGX Spark (GB10) | 1.17 | 567ms | 2.56 | 280ms | 2.2x / 2.0x |
 | RTX 4090 | 0.82 | 800ms | **4.78** | **156ms** | 5.8x / 5.1x |
+| RTX 4060 (Windows) | 0.23 | 2,697ms | **2.26** | **413ms** | 9.8x / 6.5x |
 | H100 80GB HBM3 | 0.435 | 1,474ms | **3.884** | **228ms** | 8.9x / 6.5x |
 
 ### 1.7B Model
@@ -132,6 +133,7 @@ Benchmarks include tokenization + inference (apples-to-apples with baseline). RT
 | Jetson AGX Orin 64GB | 0.183 | 3,573ms | 1.089 | 693ms | 6.0x / 5.2x |
 | DGX Spark (GB10) | 1.01 | 661ms | 1.87 | 400ms | 1.9x / 1.7x |
 | RTX 4090 | 0.82 | 850ms | **4.22** | **174ms** | 5.1x / 4.9x |
+| RTX 4060 (Windows) | 0.23 | 2,905ms | **1.83** | **460ms** | 7.9x / 6.3x |
 | H100 80GB HBM3 | 0.439 | 1,525ms | **3.304** | **241ms** | 7.5x / 6.3x |
 
 **Note:** Baseline TTFA values are **streaming TTFA** from the community `Qwen3-TTS-streaming` fork (which adds streaming) or from our **dynamic-cache parity streaming** path (no CUDA graphs) where available. The official `Qwen3-TTS` repo does **not** currently support streaming, so without a streaming baseline TTFA would be **time-to-full-audio**. CUDA graphs uses `generate_voice_clone_streaming(chunk_size=8)` for TTFA. Both include text tokenization for fair comparison. Speedup shows throughput / TTFA improvement. The streaming fork reports additional speedups that appear tied to `torch.compile`; we couldn’t reproduce those on Jetson-class devices where `torch.compile` isn’t available.
@@ -142,11 +144,22 @@ Benchmarks include tokenization + inference (apples-to-apples with baseline). RT
 
 Benchmarks run from source. You only need [uv](https://docs.astral.sh/uv/) and `./setup.sh`:
 
+**Linux / macOS / WSL:**
+
 ```bash
 git clone https://github.com/andimarafioti/faster-qwen3-tts
 cd faster-qwen3-tts
 ./setup.sh
 ./benchmark.sh # or ./benchmark.sh 0.6B or ./benchmark.sh 1.7B for a single model
+```
+
+**Windows (Native):**
+
+```cmd
+git clone https://github.com/andimarafioti/faster-qwen3-tts
+cd faster-qwen3-tts
+setup_windows.bat
+benchmark_windows.bat   # or benchmark_windows.bat 0.6B / 1.7B / both
 ```
 
 Results are saved as `bench_results_<GPU_NAME>.json` and audio samples as `sample_0.6B.wav` / `sample_1.7B.wav`.
@@ -334,7 +347,6 @@ QWEN_TTS_MODEL=Qwen/Qwen3-TTS-12Hz-0.6B-Base
 QWEN_TTS_CUSTOM_MODEL=Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice
 QWEN_TTS_VOICE_DESIGN_MODEL=Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign
 ```
-
 ## How It Works
 
 Qwen3-TTS runs two autoregressive transformers per decode step:
