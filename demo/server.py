@@ -167,10 +167,16 @@ _parakeet = None
 _generation_lock = asyncio.Lock()
 _generation_waiters: int = 0  # requests waiting for or holding the generation lock
 
-# Guard against inputs so long that the prefill exceeds the static KV cache capacity
-# (max_seq_len=2048).  At ~3-4 chars/token for English the overhead of system/ref
-# tokens leaves room for roughly 1000 chars before we approach the limit.
+# Guard against inputs that would overflow the static KV cache (max_seq_len=2048).
+# At ~3-4 chars/token for English the overhead of system/ref tokens leaves room
+# for roughly 1000 chars before we approach the limit.
 MAX_TEXT_CHARS = 1000
+# ~10 MB covers 1 minute of 44.1 kHz stereo 16-bit WAV.
+MAX_AUDIO_BYTES = 10 * 1024 * 1024
+_AUDIO_TOO_LARGE_MSG = (
+    "Audio file too large ({size_mb:.1f} MB). "
+    "Voice cloning works best with short clips under 1 minute — please upload a shorter recording."
+)
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -223,6 +229,11 @@ async def transcribe_audio(audio: UploadFile = File(...)):
         raise HTTPException(status_code=503, detail="Transcription model not loaded")
 
     content = await audio.read()
+    if len(content) > MAX_AUDIO_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=_AUDIO_TOO_LARGE_MSG.format(size_mb=len(content) / 1024 / 1024),
+        )
 
     def run():
         wav, sr = sf.read(io.BytesIO(content), dtype="float32", always_2d=False)
@@ -353,6 +364,11 @@ async def generate_stream(
             ref_text = preset["ref_text"]
     elif ref_audio and ref_audio.filename:
         content = await ref_audio.read()
+        if len(content) > MAX_AUDIO_BYTES:
+            raise HTTPException(
+                status_code=400,
+                detail=_AUDIO_TOO_LARGE_MSG.format(size_mb=len(content) / 1024 / 1024),
+            )
         tmp_path = _get_cached_ref_path(content)
         tmp_is_cached = True
 
@@ -561,6 +577,11 @@ async def generate_non_streaming(
             ref_text = preset["ref_text"]
     elif ref_audio and ref_audio.filename:
         content = await ref_audio.read()
+        if len(content) > MAX_AUDIO_BYTES:
+            raise HTTPException(
+                status_code=400,
+                detail=_AUDIO_TOO_LARGE_MSG.format(size_mb=len(content) / 1024 / 1024),
+            )
         tmp_path = _get_cached_ref_path(content)
         tmp_is_cached = True
 
