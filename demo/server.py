@@ -167,6 +167,11 @@ _parakeet = None
 _generation_lock = asyncio.Lock()
 _generation_waiters: int = 0  # requests waiting for or holding the generation lock
 
+# Guard against inputs so long that the prefill exceeds the static KV cache capacity
+# (max_seq_len=2048).  At ~3-4 chars/token for English the overhead of system/ref
+# tokens leaves room for roughly 1000 chars before we approach the limit.
+MAX_TEXT_CHARS = 1000
+
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -331,6 +336,11 @@ async def generate_stream(
 ):
     if not _active_model_name or _active_model_name not in _model_cache:
         raise HTTPException(status_code=400, detail="Model not loaded. Click 'Load' first.")
+    if len(text) > MAX_TEXT_CHARS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Text too long ({len(text)} chars). Maximum is {MAX_TEXT_CHARS} characters.",
+        )
 
     tmp_path = None
     tmp_is_cached = False
@@ -534,6 +544,11 @@ async def generate_non_streaming(
 ):
     if not _active_model_name or _active_model_name not in _model_cache:
         raise HTTPException(status_code=400, detail="Model not loaded. Click 'Load' first.")
+    if len(text) > MAX_TEXT_CHARS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Text too long ({len(text)} chars). Maximum is {MAX_TEXT_CHARS} characters.",
+        )
 
     tmp_path = None
     tmp_is_cached = False
