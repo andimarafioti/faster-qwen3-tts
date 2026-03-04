@@ -27,6 +27,10 @@ class TalkerGraph:
     def __init__(self, talker_model, talker_config, device='cuda', dtype=torch.bfloat16,
                  max_seq_len=512):
         self.device = device
+        device_index = torch.device(device).index
+        device_index = device_index if device_index is not None else torch.cuda.current_device()
+        self.device_index = device_index
+
         self.dtype = dtype
         self.max_seq_len = max_seq_len
         self.hidden_size = talker_config.hidden_size
@@ -123,17 +127,19 @@ class TalkerGraph:
         torch.cuda.synchronize()
 
         print("Capturing CUDA graph for talker decode...")
-        self.graph = torch.cuda.CUDAGraph()
 
-        s = torch.cuda.Stream()
-        s.wait_stream(torch.cuda.current_stream())
-        with torch.cuda.stream(s):
-            # Warmup in capture stream
-            self._decode_step()
-            torch.cuda.synchronize()
+        with torch.cuda.device(self.device_index):
+            self.graph = torch.cuda.CUDAGraph()
 
-            with torch.cuda.graph(self.graph):
+            s = torch.cuda.Stream()
+            s.wait_stream(torch.cuda.current_stream())
+            with torch.cuda.stream(s):
+                # Warmup in capture stream
                 self._decode_step()
+                torch.cuda.synchronize()
+
+                with torch.cuda.graph(self.graph):
+                    self._decode_step()
 
         torch.cuda.current_stream().wait_stream(s)
         torch.cuda.synchronize()
