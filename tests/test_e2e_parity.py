@@ -14,15 +14,19 @@ MODEL_ID = os.environ.get("QWEN_TTS_MODEL", "Qwen/Qwen3-TTS-12Hz-0.6B-Base")
 CUSTOM_MODEL_ID = os.environ.get("QWEN_TTS_CUSTOM_MODEL", "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice")
 VOICE_DESIGN_MODEL_ID = os.environ.get("QWEN_TTS_VOICE_DESIGN_MODEL", "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign")
 
-# The test phrase "Short parity test." has a natural EOS at ~84 tokens in xvec mode.
-# 256 gives ample headroom without being wastefully slow.
+# The test phrase "Short parity test." has a natural EOS at ~84 tokens in xvec mode
+# and ~16 tokens in ICL mode (with correct ref_text). 256 gives ample headroom.
 _MAX_NEW_TOKENS = 256
 
-# ICL mode conditions on the reference audio codec tokens, which can cause the model
-# to generate significantly longer sequences than xvec mode for the same text.
-# Use a small budget here so both paths always hit the limit — we then compare only
-# the shared prefix (see _assert_icl_codes_match).
-_ICL_PARITY_BUDGET = 32
+# Correct transcript for ref_audio.wav (from demo/samples/parity/icl_transcripts.txt).
+# ICL voice cloning aligns (text tokens ↔ codec frames) position-by-position.
+# A mismatched transcript produces wrong alignment and the model loops indefinitely.
+_ICL_REF_TEXT = (
+    "I'm confused why some people have super short timelines, yet at the same time "
+    "are bullish on scaling up reinforcement learning atop LLMs. If we're actually "
+    "close to a human-like learner, then this whole approach of training on verifiable "
+    "outcomes is doomed."
+)
 
 
 def _seed_all(seed: int = 0) -> None:
@@ -447,18 +451,19 @@ def test_voice_clone_token_parity_xvec_only(parity_fixture_fp32):
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for parity test.")
 def test_voice_clone_icl_prefix_parity_fast_path(parity_fixture_fp32):
-    """ICL fast path (CUDA graph + StaticCache) prefix matches upstream in float32.
+    """ICL fast path (CUDA graph + StaticCache) matches upstream in float32.
 
-    ICL mode conditions on the reference audio codec tokens.  For this ref_audio the
-    natural EOS is well beyond _MAX_NEW_TOKENS, so both paths always hit _ICL_PARITY_BUDGET.
-    HF generate injects a fake EOS as the last token (pad_token_id=eos_token_id) and
-    upstream post-processing strips it, giving budget-1 tokens.  The fast path returns
-    exactly budget tokens (all legitimate).  We assert the shared prefix matches and
-    that lengths differ by at most 1.
+    ICL voice cloning requires ref_text to match the spoken content exactly — a
+    mismatched transcript breaks the text↔codec alignment and the model loops
+    indefinitely.  We use _ICL_REF_TEXT (the actual transcript of ref_audio.wav)
+    and load audio via _load_ref_audio_with_silence (adds 0.5 s trailing silence,
+    same as the production pipeline) so the model terminates naturally at ~16 tokens.
 
-    This replaces the bfloat16 version that only checked step-0, because Orin's
-    integrated Ampere bfloat16 arithmetic flipped the argmax there.  In float32 the
-    first _ICL_PARITY_BUDGET-1 steps match token-for-token across all tested hardware.
+    In float32 with TF32 disabled the fast and upstream paths produce the same
+    tokens on all tested hardware.  A length difference of ≤1 is tolerated because
+    HF generate injects a fake EOS token when the budget is exhausted and
+    upstream post-processing strips it; with natural termination this does not
+    arise in practice but we keep the tolerance for robustness.
     """
     from faster_qwen3_tts.generate import fast_generate
 
@@ -466,16 +471,17 @@ def test_voice_clone_icl_prefix_parity_fast_path(parity_fixture_fp32):
     base, fast = f["base"], f["fast"]
 
     ref_audio = "ref_audio.wav"
-    ref_text = "A short reference transcript."
     text = "Short parity test."
 
     with torch.inference_mode():
+        ref_audio_input = fast._load_ref_audio_with_silence(ref_audio)
         prompt_items = base.create_voice_clone_prompt(
-            ref_audio=ref_audio,
-            ref_text=ref_text,
+            ref_audio=ref_audio_input,
+            ref_text=_ICL_REF_TEXT,
             x_vector_only_mode=False,
         )
         vcp = base._prompt_items_to_voice_clone_prompt(prompt_items)
+        ref_text = prompt_items[0].ref_text
 
         input_ids_base = base._tokenize_texts([base._build_assistant_text(text)])
         input_ids_fast = fast.model._tokenize_texts([fast.model._build_assistant_text(text)])
@@ -488,7 +494,7 @@ def test_voice_clone_icl_prefix_parity_fast_path(parity_fixture_fp32):
             voice_clone_prompt=vcp,
             languages=["English"],
             speakers=None,
-            non_streaming_mode=False,
+            non_streaming_mode=True,
         )
 
     if not fast._warmed_up:
@@ -498,6 +504,7 @@ def test_voice_clone_icl_prefix_parity_fast_path(parity_fixture_fp32):
         fast.predictor_graph.temperature = 1.0
         fast._warmup(tie.shape[1])
 
+    fast.model.model.talker.rope_deltas = None
     fast_codes, _ = fast_generate(
         talker=fast.model.model.talker,
         talker_input_embeds=tie,
@@ -507,7 +514,7 @@ def test_voice_clone_icl_prefix_parity_fast_path(parity_fixture_fp32):
         config=fast.model.model.config.talker_config,
         predictor_graph=fast.predictor_graph,
         talker_graph=fast.talker_graph,
-        max_new_tokens=_ICL_PARITY_BUDGET,
+        max_new_tokens=_MAX_NEW_TOKENS,
         min_new_tokens=0,
         do_sample=False,
         top_k=0,
@@ -521,13 +528,13 @@ def test_voice_clone_icl_prefix_parity_fast_path(parity_fixture_fp32):
         ref_ids=ref_ids,
         voice_clone_prompt=vcp,
         languages=["English"],
-        non_streaming_mode=False,
+        non_streaming_mode=True,
         do_sample=False,
         top_k=0,
         top_p=1.0,
         temperature=1.0,
         repetition_penalty=1.0,
-        max_new_tokens=_ICL_PARITY_BUDGET,
+        max_new_tokens=_MAX_NEW_TOKENS,
         min_new_tokens=0,
         subtalker_dosample=False,
         subtalker_top_k=0,
@@ -594,22 +601,22 @@ def test_voice_clone_icl_bf16_generates_valid_tokens(parity_fixture):
     from faster_qwen3_tts.generate import fast_generate
 
     _seed_all(0)
-    base = parity_fixture["base"]
     fast = parity_fixture["fast"]
 
     ref_audio = "ref_audio.wav"
-    ref_text = "A short reference transcript."
     text = "Short parity test."
 
     with torch.inference_mode():
-        prompt_items = base.create_voice_clone_prompt(
-            ref_audio=ref_audio,
-            ref_text=ref_text,
+        ref_audio_input = fast._load_ref_audio_with_silence(ref_audio)
+        prompt_items = fast.model.create_voice_clone_prompt(
+            ref_audio=ref_audio_input,
+            ref_text=_ICL_REF_TEXT,
             x_vector_only_mode=False,
         )
-        vcp = base._prompt_items_to_voice_clone_prompt(prompt_items)
+        vcp = fast.model._prompt_items_to_voice_clone_prompt(prompt_items)
+        ref_text = prompt_items[0].ref_text
         input_ids_fast = fast.model._tokenize_texts([fast.model._build_assistant_text(text)])
-        ref_ids = [base._tokenize_texts([base._build_ref_text(ref_text)])[0]]
+        ref_ids = [fast.model._tokenize_texts([fast.model._build_ref_text(ref_text)])[0]]
         tie, tam, tth, tpe = fast._build_talker_inputs_local(
             m=fast.model.model,
             input_ids=input_ids_fast,
@@ -617,11 +624,12 @@ def test_voice_clone_icl_bf16_generates_valid_tokens(parity_fixture):
             voice_clone_prompt=vcp,
             languages=["English"],
             speakers=None,
-            non_streaming_mode=False,
+            non_streaming_mode=True,
         )
 
     config = fast.model.model.config.talker_config
 
+    fast.model.model.talker.rope_deltas = None
     fast_codes, _ = fast_generate(
         talker=fast.model.model.talker,
         talker_input_embeds=tie,
@@ -640,10 +648,8 @@ def test_voice_clone_icl_bf16_generates_valid_tokens(parity_fixture):
         repetition_penalty=1.0,
     )
 
-    # ICL output length depends on the reference audio duration and can exceed
-    # _MAX_NEW_TOKENS legitimately — skip the natural-EOS termination check.
     _assert_codec_output_valid(fast_codes, config, _MAX_NEW_TOKENS, label="icl/bf16",
-                               check_natural_eos=False)
+                               check_natural_eos=True)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required.")
@@ -946,19 +952,20 @@ def test_voice_clone_icl_full_parity_dynamic_cache(parity_fixture):
     _seed_all(0)
 
     ref_audio = "ref_audio.wav"
-    ref_text = "A short reference transcript."
     text = "Short parity test."
 
     base = parity_fixture["base"]
     fast = parity_fixture["fast"]
 
     with torch.inference_mode():
+        ref_audio_input = fast._load_ref_audio_with_silence(ref_audio)
         prompt_items = base.create_voice_clone_prompt(
-            ref_audio=ref_audio,
-            ref_text=ref_text,
+            ref_audio=ref_audio_input,
+            ref_text=_ICL_REF_TEXT,
             x_vector_only_mode=False,
         )
         vcp = base._prompt_items_to_voice_clone_prompt(prompt_items)
+        ref_text = prompt_items[0].ref_text
 
         input_ids_base = base._tokenize_texts([base._build_assistant_text(text)])
         input_ids_fast = fast.model._tokenize_texts([fast.model._build_assistant_text(text)])
@@ -971,7 +978,7 @@ def test_voice_clone_icl_full_parity_dynamic_cache(parity_fixture):
             voice_clone_prompt=vcp,
             languages=["English"],
             speakers=None,
-            non_streaming_mode=False,
+            non_streaming_mode=True,
         )
 
     if not fast._warmed_up:
@@ -981,6 +988,7 @@ def test_voice_clone_icl_full_parity_dynamic_cache(parity_fixture):
         fast.predictor_graph.temperature = 1.0
         fast._warmup(tie.shape[1])
 
+    fast.model.model.talker.rope_deltas = None
     fast_codes, _ = fast_generate(
         talker=fast.model.model.talker,
         talker_input_embeds=tie,
@@ -1009,7 +1017,7 @@ def test_voice_clone_icl_full_parity_dynamic_cache(parity_fixture):
         ref_ids=ref_ids,
         voice_clone_prompt=vcp,
         languages=["English"],
-        non_streaming_mode=False,
+        non_streaming_mode=True,
         do_sample=False,
         top_k=0,
         top_p=1.0,
@@ -1041,12 +1049,11 @@ def test_icl_build_talker_inputs_outside_inference_mode(parity_fixture):
     fast = parity_fixture["fast"]
 
     ref_audio = "ref_audio.wav"
-    ref_text = "A short reference transcript."
     text = "Short parity test."
 
     prompt_items = base.create_voice_clone_prompt(
         ref_audio=ref_audio,
-        ref_text=ref_text,
+        ref_text=_ICL_REF_TEXT,
         x_vector_only_mode=False,
     )
     vcp = base._prompt_items_to_voice_clone_prompt(prompt_items)
@@ -1054,6 +1061,7 @@ def test_icl_build_talker_inputs_outside_inference_mode(parity_fixture):
         "pre-condition: ref_code must be an inference tensor for this test to be meaningful"
     )
 
+    ref_text = prompt_items[0].ref_text
     input_ids = fast.model._tokenize_texts([fast.model._build_assistant_text(text)])
     ref_ids = [base._tokenize_texts([base._build_ref_text(ref_text)])[0]]
 
