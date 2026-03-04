@@ -62,7 +62,7 @@ class FasterQwen3TTS:
             model_name: Model path or HuggingFace Hub ID
             device: Device to use ("cuda" or "cpu")
             dtype: Data type for inference
-            attn_implementation: Attention implementation ("sdpa" recommended; use "eager" on Jetson/ROCM)
+            attn_implementation: Attention implementation ("sdpa" or "flash_attention_2")
             max_seq_len: Maximum sequence length for static cache
             
         Returns:
