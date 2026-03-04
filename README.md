@@ -131,7 +131,7 @@ curl http://localhost:8000/v1/audio/speech \
     --output speech.wav
 ```
 
-Multiple named voices can be configured via a JSON file (`--voices voices.json`). WAV and PCM formats stream chunks as they are generated; MP3 requires `pydub`.
+To expose multiple voices, pass a JSON file mapping names to reference audio configs — each `voice` value in a request will be routed to the matching entry (`--voices voices.json`). WAV and PCM formats stream chunks as they are generated; MP3 requires `pydub`.
 
 ## Results
 
