@@ -112,6 +112,26 @@ python demo/server.py
 
 Features: voice clone (upload any WAV or use your microphone), voice design (1.7B-VoiceDesign model), streaming/non-streaming toggle, adjustable chunk size, live TTFA/RTF metrics, WAV download.
 
+### OpenAI-compatible API server
+
+`examples/openai_server.py` exposes a `POST /v1/audio/speech` endpoint that follows the OpenAI TTS API contract, so it works out of the box with OpenWebUI, llama-swap, and any other OpenAI-compatible client.
+
+```bash
+pip install "faster-qwen3-tts[demo]"
+python examples/openai_server.py \
+    --ref-audio voice.wav --ref-text "transcript" \
+    --language English --port 8000
+```
+
+```bash
+curl http://localhost:8000/v1/audio/speech \
+    -H "Content-Type: application/json" \
+    -d '{"model": "tts-1", "input": "Hello world.", "voice": "alloy", "response_format": "wav"}' \
+    --output speech.wav
+```
+
+Multiple named voices can be configured via a JSON file (`--voices voices.json`). WAV and PCM formats stream chunks as they are generated; MP3 requires `pydub`.
+
 ## Results
 
 Benchmarks include tokenization + inference (apples-to-apples with baseline). RTF > 1.0 = faster than real-time. TTFA measured as time to first playable audio chunk using streaming (chunk_size=8).
