@@ -663,8 +663,8 @@ body {
       <!-- Simple / Advanced toggle -->
       <div class="clone-toggle-row">
         <div class="toggle">
-          <div class="tog" data-x="1" onclick="setXvec(true)">Simple</div>
-          <div class="tog on" data-x="0" onclick="setXvec(false)">Advanced</div>
+          <div class="tog on" data-x="1" onclick="setXvec(true)">Simple</div>
+          <div class="tog" data-x="0" onclick="setXvec(false)">Advanced</div>
         </div>
       </div>
       <!-- Reference audio + action buttons -->
@@ -862,7 +862,7 @@ function setPlayBtns(disabled) {
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let genMode  = 'stream';
-let xvecOnly = false;
+let xvecOnly = true;
 let busy     = false;
 let refFile  = null;
 let presetRefId = null;
@@ -893,7 +893,7 @@ let recStream = null, recCtx = null, recSource = null, recProc = null;
 let recGain = null, recAnalyser = null, recMeterRaf = null, recMeterBuf = null;
 let recChunks = [], recActive = false, recDeviceId = null;
 let recPeak = 0, recHasSignal = false, recSignalTs = null, recSignalCount = 0;
-const REC_SR = 16000;
+const REC_SR = 24000;
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 window.addEventListener('load', async () => {
@@ -991,6 +991,7 @@ async function selectPresetRef(id) {
 
     presetRefId = id;
     refFile = null; // avoid uploading when preset is selected
+    setXvec(false); // presets have verified transcripts — use ICL mode
     $('refLabel').textContent = d.label || d.filename || 'Reference audio';
     $('refChip').classList.add('has');
     const prev = $('recPreview');
@@ -1273,6 +1274,7 @@ function pickRef(input) { const f = input.files[0]; if (f) setRef(f); }
 function setRef(f) {
   clearPresetSelection();
   refFile = f;
+  setXvec(true); // user audio has no verified transcript — default to Simple (xvec) mode
   $('refLabel').textContent = f.name;
   $('refChip').classList.add('has');
   const prev = $('recPreview');
@@ -1405,7 +1407,7 @@ async function stopRec() {
     prev.src = URL.createObjectURL(rawWav);
     prev.style.display = 'block';
 
-    // Resample to 16kHz in the background for server use
+    // Resample to 24kHz for server use (codec's native rate; transcription server handles 16kHz resampling)
     let out = buf;
     if (buf.sampleRate !== REC_SR) {
       const len    = Math.ceil(buf.duration * REC_SR);
@@ -1415,6 +1417,7 @@ async function stopRec() {
       out = await offCtx.startRendering();
     }
     const wav = bufToWav(out);
+    clearPresetSelection();
     refFile = new File([wav], 'recorded.wav', { type: 'audio/wav' });
     $('refLabel').textContent = 'recorded.wav';
     $('refChip').classList.add('has');
