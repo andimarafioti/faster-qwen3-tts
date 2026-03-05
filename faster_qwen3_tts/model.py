@@ -186,6 +186,7 @@ class FasterQwen3TTS:
         xvec_only: bool = True,
         non_streaming_mode: bool = False,
         append_silence: bool = True,
+        voice_clone_prompt: dict = None,
     ):
         """Prepare inputs for generation (shared by streaming and non-streaming).
 
@@ -194,12 +195,37 @@ class FasterQwen3TTS:
                 cloning instead of the full ICL acoustic prompt. This prevents the model from
                 continuing the reference audio's last phoneme and allows natural language switching.
                 When False, the full reference audio codec tokens are included in context (ICL mode).
+            voice_clone_prompt: Optional precomputed voice clone prompt dict (as saved by
+                torch.save from create_voice_clone_prompt). When provided, ref_audio and
+                ref_text are ignored and no embedding extraction is performed.
         """
         input_texts = [self.model._build_assistant_text(text)]
         input_ids = self.model._tokenize_texts(input_texts)
 
-        cache_key = (str(ref_audio), ref_text, xvec_only, append_silence)
-        if cache_key in self._voice_prompt_cache:
+        if voice_clone_prompt is not None:
+            vcp = voice_clone_prompt
+            # Derive xvec_only from the preset so the caller doesn't have to pass it
+            # explicitly and risk a mismatch (e.g. ICL preset + xvec_only=True would
+            # silently drop the ref codes and degrade quality).
+            xvec_only = bool(vcp.get("x_vector_only_mode", [True])[0])
+            if not xvec_only:
+                # ICL mode: the preset must include pre-tokenized ref_ids — these are
+                # used by generate_icl_prompt as an alignment anchor between the
+                # reference audio codes and the target text at every inference call.
+                stored_ref_ids = vcp.get("ref_ids")
+                if not stored_ref_ids or stored_ref_ids[0] is None:
+                    raise ValueError(
+                        "ICL-mode voice_clone_prompt must include a 'ref_ids' key with "
+                        "pre-tokenized reference text. Re-save the preset with ref_ids."
+                    )
+                ref_ids = [stored_ref_ids[0]]
+            else:
+                ref_ids = [None] * len(input_ids)
+        elif not ref_audio:
+            raise ValueError(
+                "ref_audio is required unless voice_clone_prompt is provided"
+            )
+        elif (cache_key := (str(ref_audio), ref_text, xvec_only, append_silence)) in self._voice_prompt_cache:
             vcp, ref_ids = self._voice_prompt_cache[cache_key]
         elif xvec_only:
             prompt_items = self.model.create_voice_clone_prompt(
@@ -254,9 +280,13 @@ class FasterQwen3TTS:
         config = m.config.talker_config
         talker.rope_deltas = None
 
-        # For ICL mode: return ref_codes so the decoder can use them as acoustic context
+        # For ICL mode: return ref_codes so the decoder can use them as acoustic context.
+        # When using a precomputed voice_clone_prompt we skip this — the ratio-based cut
+        # used to strip the reference portion from the decoded audio is imprecise and
+        # causes the reference speech to bleed into the start of the output.
+        # The talker still receives full ICL context via ref_code in the prompt.
         ref_codes = None
-        if not xvec_only and vcp.get("ref_code") and vcp["ref_code"][0] is not None:
+        if voice_clone_prompt is None and not xvec_only and vcp.get("ref_code") and vcp["ref_code"][0] is not None:
             ref_codes = vcp["ref_code"][0]
 
         return m, talker, config, tie, tam, tth, tpe, ref_codes
@@ -527,8 +557,8 @@ class FasterQwen3TTS:
         self,
         text: str,
         language: str,
-        ref_audio: Union[str, Path],
-        ref_text: str,
+        ref_audio: Union[str, Path] = "",
+        ref_text: str = "",
         max_new_tokens: int = 2048,
         min_new_tokens: int = 2,
         temperature: float = 0.9,
@@ -539,6 +569,7 @@ class FasterQwen3TTS:
         xvec_only: bool = True,
         non_streaming_mode: bool = True,
         append_silence: bool = True,
+        voice_clone_prompt: dict = None,
     ) -> Tuple[list, int]:
         """
         Generate speech with voice cloning using reference audio.
@@ -546,8 +577,8 @@ class FasterQwen3TTS:
         Args:
             text: Text to synthesize
             language: Target language
-            ref_audio: Path to reference audio file
-            ref_text: Transcription of reference audio
+            ref_audio: Path to reference audio file (ignored when voice_clone_prompt is set)
+            ref_text: Transcription of reference audio (ignored when voice_clone_prompt is set)
             max_new_tokens: Maximum tokens to generate
             min_new_tokens: Minimum tokens before EOS is allowed
             temperature: Sampling temperature
@@ -559,6 +590,8 @@ class FasterQwen3TTS:
                 This prevents phoneme bleed-through from the reference and allows clean
                 language switching. Set to False for full ICL mode (reference audio in context).
             non_streaming_mode: Match upstream non-streaming prompt layout. Default True for better non-streaming quality.
+            voice_clone_prompt: Optional precomputed voice clone prompt dict (from torch.save).
+                When provided, ref_audio/ref_text are ignored.
 
         Returns:
             Tuple of ([audio_waveform], sample_rate)
@@ -573,6 +606,7 @@ class FasterQwen3TTS:
             xvec_only=xvec_only,
             non_streaming_mode=non_streaming_mode,
             append_silence=append_silence,
+            voice_clone_prompt=voice_clone_prompt,
         )
 
         codec_ids, timing = fast_generate(
@@ -638,8 +672,8 @@ class FasterQwen3TTS:
         self,
         text: str,
         language: str,
-        ref_audio: Union[str, Path],
-        ref_text: str,
+        ref_audio: Union[str, Path] = "",
+        ref_text: str = "",
         max_new_tokens: int = 2048,
         min_new_tokens: int = 2,
         temperature: float = 0.9,
@@ -652,6 +686,7 @@ class FasterQwen3TTS:
         non_streaming_mode: bool = True,
         append_silence: bool = True,
         parity_mode: bool = False,
+        voice_clone_prompt: dict = None,
     ) -> Generator[Tuple[np.ndarray, int, dict], None, None]:
         """
         Stream voice-cloned speech generation, yielding audio chunks.
@@ -662,8 +697,8 @@ class FasterQwen3TTS:
         Args:
             text: Text to synthesize
             language: Target language
-            ref_audio: Path to reference audio file
-            ref_text: Transcription of reference audio
+            ref_audio: Path to reference audio file (ignored when voice_clone_prompt is set)
+            ref_text: Transcription of reference audio (ignored when voice_clone_prompt is set)
             max_new_tokens: Maximum tokens to generate
             min_new_tokens: Minimum tokens before EOS is allowed
             temperature: Sampling temperature
@@ -678,6 +713,8 @@ class FasterQwen3TTS:
             non_streaming_mode: When True (default), prefill the full target text before
                 streaming decode. Set to False to feed text token-by-token during decode.
             parity_mode: When True, disables CUDA graphs and uses dynamic cache streaming.
+            voice_clone_prompt: Optional precomputed voice clone prompt dict (from torch.save).
+                When provided, ref_audio/ref_text are ignored.
 
         Yields:
             Tuple of (audio_chunk_numpy, sample_rate, timing_dict)
@@ -692,6 +729,7 @@ class FasterQwen3TTS:
             xvec_only=xvec_only,
             non_streaming_mode=non_streaming_mode,
             append_silence=append_silence,
+            voice_clone_prompt=voice_clone_prompt,
         )
 
         speech_tokenizer = m.speech_tokenizer
