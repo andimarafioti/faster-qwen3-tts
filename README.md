@@ -420,8 +420,19 @@ import torch
 from faster_qwen3_tts import FasterQwen3TTS
 
 model = FasterQwen3TTS.from_pretrained("Qwen/Qwen3-TTS-12Hz-1.7B-Base")
-# `speaker.pt` is produced by:
-# python examples/extract_speaker.py --ref_audio voice.wav --output speaker.pt
+
+# 1) Compute spk_emb once from reference audio
+prompt_items = model.model.create_voice_clone_prompt(
+    ref_audio="voice.wav",
+    ref_text="",
+    x_vector_only_mode=True,
+)
+spk_emb = prompt_items[0].ref_spk_embedding
+
+# 2) Save for reuse across restarts
+torch.save(spk_emb.detach().cpu(), "speaker.pt")
+
+# 3) Load and pass it to voice_clone_prompt
 spk_emb = torch.load("speaker.pt", weights_only=True).to(model.device)
 
 voice_clone_prompt = {
@@ -441,9 +452,8 @@ audio_list, sr = model.generate_voice_clone(
 ```
 
 When `voice_clone_prompt` is provided, prompt extraction from `ref_audio` is skipped.
-If you prefer creating `spk_emb` in code (instead of loading `speaker.pt`), use:
-`prompt_items = model.model.create_voice_clone_prompt(ref_audio="voice.wav", ref_text="", x_vector_only_mode=True)`
-then `spk_emb = prompt_items[0].ref_spk_embedding`.
+`x_vector_only_mode` and `icl_mode` are explicit mode flags used by Qwen's prompt builder.
+Exactly one should be `True`: for a saved speaker embedding use `x_vector_only_mode=True` and `icl_mode=False`.
 
 ## License
 
