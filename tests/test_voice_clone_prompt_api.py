@@ -40,10 +40,7 @@ def _build_dummy_model():
 
 def _xvec_prompt():
     return {
-        "ref_code": [None],
         "ref_spk_embedding": [torch.zeros(1, 4, dtype=torch.float32)],
-        "x_vector_only_mode": [True],
-        "icl_mode": [False],
     }
 
 
@@ -70,7 +67,7 @@ def test_prepare_generation_uses_precomputed_xvec_prompt_without_prompt_extracti
 
 def test_prepare_generation_rejects_missing_voice_clone_prompt_keys():
     model = _build_dummy_model()
-    bad_prompt = {"ref_code": [None]}
+    bad_prompt = {}
 
     with pytest.raises(ValueError, match="missing required keys"):
         model._prepare_generation(
@@ -82,16 +79,12 @@ def test_prepare_generation_rejects_missing_voice_clone_prompt_keys():
         )
 
 
-def test_prepare_generation_icl_prompt_requires_ref_text():
+def test_prepare_generation_rejects_icl_mode_in_precomputed_prompt():
     model = _build_dummy_model()
-    icl_prompt = {
-        "ref_code": [torch.zeros(2, 16, dtype=torch.long)],
-        "ref_spk_embedding": [torch.zeros(1, 4, dtype=torch.float32)],
-        "x_vector_only_mode": [False],
-        "icl_mode": [True],
-    }
+    icl_prompt = _xvec_prompt()
+    icl_prompt["icl_mode"] = [True]
 
-    with pytest.raises(ValueError, match="ref_text is required"):
+    with pytest.raises(ValueError, match="x_vector_only prompts only"):
         model._prepare_generation(
             text="hello",
             ref_audio="ignored.wav",
@@ -99,3 +92,15 @@ def test_prepare_generation_icl_prompt_requires_ref_text():
             language="English",
             voice_clone_prompt=icl_prompt,
         )
+
+
+def test_prepare_generation_ignores_ref_text_with_precomputed_prompt():
+    model = _build_dummy_model()
+    _m, _talker, _config, _tie, _tam, _tth, _tpe, ref_codes = model._prepare_generation(
+        text="hello",
+        ref_audio="ignored.wav",
+        ref_text="this should be ignored",
+        language="English",
+        voice_clone_prompt=_xvec_prompt(),
+    )
+    assert ref_codes is None

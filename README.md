@@ -436,24 +436,21 @@ torch.save(spk_emb.detach().cpu(), "speaker.pt")
 spk_emb = torch.load("speaker.pt", weights_only=True).to(model.device)
 
 voice_clone_prompt = {
-    "ref_code": [None],
     "ref_spk_embedding": [spk_emb],
     "x_vector_only_mode": [True],
-    "icl_mode": [False],
 }
 
 audio_list, sr = model.generate_voice_clone(
     text="Hello world!",
     language="English",
     ref_audio="ignored_when_voice_clone_prompt_is_set.wav",
-    ref_text="",
+    ref_text="ignored_when_voice_clone_prompt_is_set",
     voice_clone_prompt=voice_clone_prompt,
 )
 ```
 
-When `voice_clone_prompt` is provided, prompt extraction from `ref_audio` is skipped.
-`x_vector_only_mode` and `icl_mode` are explicit mode flags used by Qwen's prompt builder.
-Exactly one should be `True`: for a saved speaker embedding use `x_vector_only_mode=True` and `icl_mode=False`.
+When `voice_clone_prompt` is provided, prompt extraction from `ref_audio` is skipped and
+`ref_text` is ignored. Precomputed prompts currently support x-vector-only mode.
 
 ## License
 
