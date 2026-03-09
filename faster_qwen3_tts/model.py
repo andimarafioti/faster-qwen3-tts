@@ -6,7 +6,7 @@ CUDA graphs for 6-10x speedup.
 """
 import logging
 from pathlib import Path
-from typing import Generator, Optional, Tuple, Union
+from typing import Any, Dict, Generator, Optional, Tuple, Union
 
 import numpy as np
 import soundfile as sf
@@ -222,6 +222,7 @@ class FasterQwen3TTS:
         non_streaming_mode: bool = False,
         append_silence: bool = True,
         instruct: Optional[str] = None,
+        voice_clone_prompt: Optional[Dict[str, Any]] = None,
     ):
         """Prepare inputs for generation (shared by streaming and non-streaming).
 
@@ -232,6 +233,9 @@ class FasterQwen3TTS:
                 When False, the full reference audio codec tokens are included in context (ICL mode).
             instruct: Optional instruction string to guide generation style/language (e.g.
                 "请用纯正广东话朗读"). Prepended as a user turn before the assistant TTS turn.
+            voice_clone_prompt: Optional precomputed prompt dict from
+                `create_voice_clone_prompt`/`_prompt_items_to_voice_clone_prompt`.
+                When provided, `xvec_only` is ignored.
         """
         input_texts = [self.model._build_assistant_text(text)]
         input_ids = self.model._tokenize_texts(input_texts)
@@ -240,42 +244,87 @@ class FasterQwen3TTS:
         if instruct:
             instruct_ids = [self.model._tokenize_texts([self.model._build_instruct_text(instruct)])[0]]
 
-        cache_key = (str(ref_audio), ref_text, xvec_only, append_silence)
-        if cache_key in self._voice_prompt_cache:
-            vcp, ref_ids = self._voice_prompt_cache[cache_key]
-        elif xvec_only:
-            prompt_items = self.model.create_voice_clone_prompt(
-                ref_audio=str(ref_audio),
-                ref_text="",
-                x_vector_only_mode=True,
-            )
-            spk_emb = prompt_items[0].ref_spk_embedding
-            vcp = dict(
-                ref_code=[None],
-                ref_spk_embedding=[spk_emb],
-                x_vector_only_mode=[True],
-                icl_mode=[False],
-            )
-            ref_ids = [None] * len(input_ids)
-            self._voice_prompt_cache[cache_key] = (vcp, ref_ids)
-        else:
-            silence_secs = 0.5 if append_silence else 0.0
-            ref_audio_input = self._load_ref_audio_with_silence(ref_audio, silence_secs=silence_secs)
-            prompt_items = self.model.create_voice_clone_prompt(
-                ref_audio=ref_audio_input,
-                ref_text=ref_text
-            )
-            vcp = self.model._prompt_items_to_voice_clone_prompt(prompt_items)
+        using_icl_mode = False
+        if voice_clone_prompt is not None:
+            required_keys = ("ref_code", "ref_spk_embedding", "x_vector_only_mode", "icl_mode")
+            missing = [k for k in required_keys if k not in voice_clone_prompt]
+            if missing:
+                raise ValueError(
+                    f"voice_clone_prompt missing required keys: {missing}. "
+                    f"Expected keys: {list(required_keys)}"
+                )
 
-            ref_ids = []
-            rt = prompt_items[0].ref_text
-            if rt:
-                ref_texts = [self.model._build_ref_text(rt)]
-                ref_ids.append(self.model._tokenize_texts(ref_texts)[0])
+            for key in required_keys:
+                value = voice_clone_prompt[key]
+                if not isinstance(value, list) or len(value) != len(input_ids):
+                    raise ValueError(
+                        f"voice_clone_prompt[{key!r}] must be a list with length {len(input_ids)}"
+                    )
+
+            using_icl_mode = bool(voice_clone_prompt["icl_mode"][0])
+            xvec_mode = bool(voice_clone_prompt["x_vector_only_mode"][0])
+            if using_icl_mode and xvec_mode:
+                raise ValueError(
+                    "voice_clone_prompt cannot enable both icl_mode and x_vector_only_mode for the same item"
+                )
+            if not using_icl_mode and not xvec_mode:
+                raise ValueError(
+                    "voice_clone_prompt must enable one of icl_mode or x_vector_only_mode"
+                )
+            if using_icl_mode and voice_clone_prompt["ref_code"][0] is None:
+                raise ValueError(
+                    "voice_clone_prompt in ICL mode requires ref_code[0] to be a tensor"
+                )
+
+            vcp = voice_clone_prompt
+            if using_icl_mode:
+                if not ref_text:
+                    raise ValueError(
+                        "ref_text is required when voice_clone_prompt uses ICL mode."
+                    )
+                ref_texts = [self.model._build_ref_text(ref_text)]
+                ref_ids = [self.model._tokenize_texts(ref_texts)[0]]
             else:
-                ref_ids.append(None)
+                ref_ids = [None] * len(input_ids)
+        else:
+            using_icl_mode = not xvec_only
+            cache_key = (str(ref_audio), ref_text, xvec_only, append_silence)
+            if cache_key in self._voice_prompt_cache:
+                vcp, ref_ids = self._voice_prompt_cache[cache_key]
+            elif xvec_only:
+                prompt_items = self.model.create_voice_clone_prompt(
+                    ref_audio=str(ref_audio),
+                    ref_text="",
+                    x_vector_only_mode=True,
+                )
+                spk_emb = prompt_items[0].ref_spk_embedding
+                vcp = dict(
+                    ref_code=[None],
+                    ref_spk_embedding=[spk_emb],
+                    x_vector_only_mode=[True],
+                    icl_mode=[False],
+                )
+                ref_ids = [None] * len(input_ids)
+                self._voice_prompt_cache[cache_key] = (vcp, ref_ids)
+            else:
+                using_icl_mode = True
+                silence_secs = 0.5 if append_silence else 0.0
+                ref_audio_input = self._load_ref_audio_with_silence(ref_audio, silence_secs=silence_secs)
+                prompt_items = self.model.create_voice_clone_prompt(
+                    ref_audio=ref_audio_input,
+                    ref_text=ref_text
+                )
+                vcp = self.model._prompt_items_to_voice_clone_prompt(prompt_items)
 
-            self._voice_prompt_cache[cache_key] = (vcp, ref_ids)
+                ref_ids = []
+                rt = prompt_items[0].ref_text
+                if rt:
+                    ref_texts = [self.model._build_ref_text(rt)]
+                    ref_ids.append(self.model._tokenize_texts(ref_texts)[0])
+                else:
+                    ref_ids.append(None)
+
+                self._voice_prompt_cache[cache_key] = (vcp, ref_ids)
 
         m = self.model.model
 
@@ -299,7 +348,7 @@ class FasterQwen3TTS:
 
         # For ICL mode: return ref_codes so the decoder can use them as acoustic context
         ref_codes = None
-        if not xvec_only and vcp.get("ref_code") and vcp["ref_code"][0] is not None:
+        if using_icl_mode and vcp.get("ref_code") and vcp["ref_code"][0] is not None:
             ref_codes = vcp["ref_code"][0]
 
         return m, talker, config, tie, tam, tth, tpe, ref_codes
@@ -572,6 +621,7 @@ class FasterQwen3TTS:
         language: str,
         ref_audio: Union[str, Path],
         ref_text: str,
+        voice_clone_prompt: Optional[Dict[str, Any]] = None,
         max_new_tokens: int = 2048,
         min_new_tokens: int = 2,
         temperature: float = 0.9,
@@ -605,6 +655,9 @@ class FasterQwen3TTS:
             non_streaming_mode: Match upstream non-streaming prompt layout. Default True for better non-streaming quality.
             instruct: Optional instruction to guide generation style/dialect (e.g.
                 "请用纯正广东话朗读"). Prepended as a user turn before the TTS assistant turn.
+            voice_clone_prompt: Optional precomputed voice clone prompt dict. When provided,
+                `xvec_only` is ignored and prompt extraction from `ref_audio` is skipped.
+                In ICL mode (`icl_mode=True`), `ref_text` is required.
 
         Returns:
             Tuple of ([audio_waveform], sample_rate)
@@ -620,6 +673,7 @@ class FasterQwen3TTS:
             non_streaming_mode=non_streaming_mode,
             append_silence=append_silence,
             instruct=instruct,
+            voice_clone_prompt=voice_clone_prompt,
         )
 
         codec_ids, timing = fast_generate(
@@ -687,6 +741,7 @@ class FasterQwen3TTS:
         language: str,
         ref_audio: Union[str, Path],
         ref_text: str,
+        voice_clone_prompt: Optional[Dict[str, Any]] = None,
         max_new_tokens: int = 2048,
         min_new_tokens: int = 2,
         temperature: float = 0.9,
@@ -728,6 +783,9 @@ class FasterQwen3TTS:
             parity_mode: When True, disables CUDA graphs and uses dynamic cache streaming.
             instruct: Optional instruction to guide generation style/dialect (e.g.
                 "请用纯正广东话朗读"). Prepended as a user turn before the TTS assistant turn.
+            voice_clone_prompt: Optional precomputed voice clone prompt dict. When provided,
+                `xvec_only` is ignored and prompt extraction from `ref_audio` is skipped.
+                In ICL mode (`icl_mode=True`), `ref_text` is required.
 
         Yields:
             Tuple of (audio_chunk_numpy, sample_rate, timing_dict)
@@ -743,6 +801,7 @@ class FasterQwen3TTS:
             non_streaming_mode=non_streaming_mode,
             append_silence=append_silence,
             instruct=instruct,
+            voice_clone_prompt=voice_clone_prompt,
         )
 
         speech_tokenizer = m.speech_tokenizer
