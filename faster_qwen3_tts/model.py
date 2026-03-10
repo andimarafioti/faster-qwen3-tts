@@ -355,6 +355,7 @@ class FasterQwen3TTS:
         non_streaming_mode: bool = False,
         append_silence: bool = True,
         voice_clone_prompt: Optional[Dict[str, Any]] = None,
+        instruct: Optional[str] = None,
     ):
         """Prepare inputs for generation (shared by streaming and non-streaming).
 
@@ -369,9 +370,15 @@ class FasterQwen3TTS:
                 x-vector-only prompts (`ref_spk_embedding` only) and ICL prompts
                 (`ref_spk_embedding` + `ref_code` + mode flags). `ref_text` is ignored
                 for x-vector-only and required for ICL.
+            instruct: Optional instruction string to guide generation style/language (e.g.
+                "请用纯正广东话朗读"). Prepended as a user turn before the assistant TTS turn.
         """
         input_texts = [self.model._build_assistant_text(text)]
         input_ids = self.model._tokenize_texts(input_texts)
+
+        instruct_ids = [None]
+        if instruct:
+            instruct_ids = [self.model._tokenize_texts([self.model._build_instruct_text(instruct)])[0]]
 
         vcp, ref_ids, using_icl_mode = self._resolve_voice_clone_prompt(
             input_ids=input_ids,
@@ -392,6 +399,7 @@ class FasterQwen3TTS:
             languages=[language] if language is not None else ["Auto"],
             speakers=None,
             non_streaming_mode=non_streaming_mode,
+            instruct_ids=instruct_ids,
         )
 
         if not self._warmed_up:
@@ -687,6 +695,7 @@ class FasterQwen3TTS:
         xvec_only: bool = True,
         non_streaming_mode: bool = True,
         append_silence: bool = True,
+        instruct: Optional[str] = None,
     ) -> Tuple[list, int]:
         """
         Generate speech with voice cloning using reference audio.
@@ -712,6 +721,8 @@ class FasterQwen3TTS:
                 This path supports x-vector-only prompts (`ref_spk_embedding` only)
                 and ICL prompts (`ref_spk_embedding` + `ref_code` + mode flags).
                 `ref_text` is ignored for x-vector-only and required for ICL.
+            instruct: Optional instruction to guide generation style/dialect (e.g.
+                "请用纯正广东话朗读"). Prepended as a user turn before the TTS assistant turn.
 
         Returns:
             Tuple of ([audio_waveform], sample_rate)
@@ -727,6 +738,7 @@ class FasterQwen3TTS:
             non_streaming_mode=non_streaming_mode,
             append_silence=append_silence,
             voice_clone_prompt=voice_clone_prompt,
+            instruct=instruct,
         )
 
         codec_ids, timing = fast_generate(
@@ -807,6 +819,7 @@ class FasterQwen3TTS:
         non_streaming_mode: bool = True,
         append_silence: bool = True,
         parity_mode: bool = False,
+        instruct: Optional[str] = None,
     ) -> Generator[Tuple[np.ndarray, int, dict], None, None]:
         """
         Stream voice-cloned speech generation, yielding audio chunks.
@@ -838,6 +851,8 @@ class FasterQwen3TTS:
                 This path supports x-vector-only prompts (`ref_spk_embedding` only)
                 and ICL prompts (`ref_spk_embedding` + `ref_code` + mode flags).
                 `ref_text` is ignored for x-vector-only and required for ICL.
+            instruct: Optional instruction to guide generation style/dialect (e.g.
+                "请用纯正广东话朗读"). Prepended as a user turn before the TTS assistant turn.
 
         Yields:
             Tuple of (audio_chunk_numpy, sample_rate, timing_dict)
@@ -853,6 +868,7 @@ class FasterQwen3TTS:
             non_streaming_mode=non_streaming_mode,
             append_silence=append_silence,
             voice_clone_prompt=voice_clone_prompt,
+            instruct=instruct,
         )
 
         speech_tokenizer = m.speech_tokenizer
