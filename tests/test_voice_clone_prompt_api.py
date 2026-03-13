@@ -25,7 +25,12 @@ def _build_dummy_model():
         raise AssertionError("create_voice_clone_prompt should not be called when voice_clone_prompt is provided")
 
     base.create_voice_clone_prompt = _fail
-    base._prompt_items_to_voice_clone_prompt = _fail
+    base._prompt_items_to_voice_clone_prompt = lambda prompt_items: {
+        "ref_code": [item.ref_code for item in prompt_items],
+        "ref_spk_embedding": [item.ref_spk_embedding for item in prompt_items],
+        "x_vector_only_mode": [item.x_vector_only_mode for item in prompt_items],
+        "icl_mode": [item.icl_mode for item in prompt_items],
+    }
 
     model = FasterQwen3TTS(base, _dummy_graph(), _dummy_graph(), device="cpu", dtype=torch.float32)
     model._build_talker_inputs_local = lambda **_kwargs: (
@@ -49,6 +54,10 @@ def test_public_api_exposes_voice_clone_prompt_parameter():
     sig_stream = inspect.signature(FasterQwen3TTS.generate_voice_clone_streaming)
     assert "voice_clone_prompt" in sig_clone.parameters
     assert "voice_clone_prompt" in sig_stream.parameters
+    assert list(sig_clone.parameters).index("max_new_tokens") == 5
+    assert list(sig_stream.parameters).index("max_new_tokens") == 5
+    assert list(sig_clone.parameters)[-1] == "voice_clone_prompt"
+    assert list(sig_stream.parameters)[-1] == "voice_clone_prompt"
 
 
 def test_prepare_generation_uses_precomputed_xvec_prompt_without_prompt_extraction():
@@ -95,6 +104,29 @@ def test_prepare_generation_accepts_icl_prompt_with_ref_text():
         language="English",
         voice_clone_prompt=icl_prompt,
     )
+    assert ref_codes is not None
+
+
+def test_prepare_generation_accepts_upstream_prompt_items():
+    model = _build_dummy_model()
+    prompt_items = [
+        types.SimpleNamespace(
+            ref_code=torch.zeros(2, 16, dtype=torch.long),
+            ref_spk_embedding=torch.zeros(1, 4, dtype=torch.float32),
+            x_vector_only_mode=False,
+            icl_mode=True,
+            ref_text="reference text from prompt item",
+        )
+    ]
+
+    _m, _talker, _config, _tie, _tam, _tth, _tpe, ref_codes = model._prepare_generation(
+        text="hello",
+        ref_audio=None,
+        ref_text="",
+        language="English",
+        voice_clone_prompt=prompt_items,
+    )
+
     assert ref_codes is not None
 
 

@@ -413,7 +413,10 @@ The speaker embedding is a 4KB file (2048-dim bf16 vector). In `x_vector_only` m
 - **Shorter prefill**: 10 tokens vs ~80+ in full ICL clone mode
 - **No ref audio at runtime**: just the 4KB embedding file
 
-You can now pass this precomputed prompt directly to the public APIs:
+You can now pass a precomputed prompt directly to the public APIs. The wrapper
+accepts either:
+- the raw `prompt_items` list returned by `create_voice_clone_prompt(...)`
+- or the lower-level dict form produced by `_prompt_items_to_voice_clone_prompt(...)`
 
 ```python
 import torch
@@ -421,18 +424,25 @@ from faster_qwen3_tts import FasterQwen3TTS
 
 model = FasterQwen3TTS.from_pretrained("Qwen/Qwen3-TTS-12Hz-1.7B-Base")
 
-# 1) Compute spk_emb once from reference audio
+# 1) Compute prompt_items once from reference audio
 prompt_items = model.model.create_voice_clone_prompt(
     ref_audio="voice.wav",
     ref_text="",
     x_vector_only_mode=True,
 )
+
+# 2) You can pass prompt_items directly
+audio_list, sr = model.generate_voice_clone(
+    text="Hello world!",
+    language="English",
+    voice_clone_prompt=prompt_items,
+)
+
+# 3) Or save just the speaker embedding and rebuild the compact dict form
 spk_emb = prompt_items[0].ref_spk_embedding
 
-# 2) Save for reuse across restarts
 torch.save(spk_emb.detach().cpu(), "speaker.pt")
 
-# 3) Load and pass it to voice_clone_prompt
 spk_emb = torch.load("speaker.pt", weights_only=True).to(model.device)
 
 voice_clone_prompt = {
@@ -442,8 +452,6 @@ voice_clone_prompt = {
 audio_list, sr = model.generate_voice_clone(
     text="Hello world!",
     language="English",
-    ref_audio="ignored_when_voice_clone_prompt_is_set.wav",
-    ref_text="ignored_when_voice_clone_prompt_is_set",
     voice_clone_prompt=voice_clone_prompt,
 )
 ```

@@ -6,7 +6,7 @@ CUDA graphs for 6-10x speedup.
 """
 import logging
 from pathlib import Path
-from typing import Any, Dict, Generator, Optional, Tuple, Union
+from typing import Any, Dict, Generator, List, Optional, Tuple, Union
 
 import numpy as np
 import soundfile as sf
@@ -206,7 +206,7 @@ class FasterQwen3TTS:
         ref_text: str,
         xvec_only: bool,
         append_silence: bool,
-        voice_clone_prompt: Optional[Dict[str, Any]],
+        voice_clone_prompt: Optional[Union[Dict[str, Any], List[Any]]],
     ) -> Tuple[Dict[str, Any], list, bool]:
         """Resolve voice clone prompt data and return (prompt, ref_ids, using_icl_mode)."""
         if voice_clone_prompt is not None:
@@ -230,8 +230,32 @@ class FasterQwen3TTS:
         self,
         input_ids,
         ref_text: str,
-        voice_clone_prompt: Dict[str, Any],
+        voice_clone_prompt: Union[Dict[str, Any], List[Any]],
     ) -> Tuple[Dict[str, Any], list, bool]:
+        if isinstance(voice_clone_prompt, list):
+            if len(voice_clone_prompt) != len(input_ids):
+                raise ValueError(
+                    f"voice_clone_prompt must have length {len(input_ids)}, got {len(voice_clone_prompt)}"
+                )
+
+            vcp = self.model._prompt_items_to_voice_clone_prompt(voice_clone_prompt)
+            ref_ids = []
+            for item in voice_clone_prompt:
+                if bool(item.icl_mode):
+                    item_ref_text = item.ref_text if item.ref_text else ref_text
+                    if not item_ref_text:
+                        raise ValueError(
+                            "ref_text is required when voice_clone_prompt uses ICL mode."
+                        )
+                    ref_id = self.model._tokenize_texts(
+                        [self.model._build_ref_text(item_ref_text)]
+                    )[0]
+                    ref_ids.append(ref_id)
+                else:
+                    ref_ids.append(None)
+
+            return vcp, ref_ids, any(vcp["icl_mode"])
+
         required_keys = ("ref_spk_embedding",)
         missing = [k for k in required_keys if k not in voice_clone_prompt]
         if missing:
@@ -348,13 +372,13 @@ class FasterQwen3TTS:
     def _prepare_generation(
         self,
         text: str,
-        language: str,
         ref_audio: Optional[Union[str, Path]] = None,
         ref_text: str = "",
+        language: str = "English",
         xvec_only: bool = True,
         non_streaming_mode: bool = False,
         append_silence: bool = True,
-        voice_clone_prompt: Optional[Dict[str, Any]] = None,
+        voice_clone_prompt: Optional[Union[Dict[str, Any], List[Any]]] = None,
         instruct: Optional[str] = None,
     ):
         """Prepare inputs for generation (shared by streaming and non-streaming).
@@ -684,7 +708,6 @@ class FasterQwen3TTS:
         language: str,
         ref_audio: Optional[Union[str, Path]] = None,
         ref_text: str = "",
-        voice_clone_prompt: Optional[Dict[str, Any]] = None,
         max_new_tokens: int = 2048,
         min_new_tokens: int = 2,
         temperature: float = 0.9,
@@ -696,6 +719,7 @@ class FasterQwen3TTS:
         non_streaming_mode: bool = True,
         append_silence: bool = True,
         instruct: Optional[str] = None,
+        voice_clone_prompt: Optional[Union[Dict[str, Any], List[Any]]] = None,
     ) -> Tuple[list, int]:
         """
         Generate speech with voice cloning using reference audio.
@@ -806,7 +830,6 @@ class FasterQwen3TTS:
         language: str,
         ref_audio: Optional[Union[str, Path]] = None,
         ref_text: str = "",
-        voice_clone_prompt: Optional[Dict[str, Any]] = None,
         max_new_tokens: int = 2048,
         min_new_tokens: int = 2,
         temperature: float = 0.9,
@@ -820,6 +843,7 @@ class FasterQwen3TTS:
         append_silence: bool = True,
         parity_mode: bool = False,
         instruct: Optional[str] = None,
+        voice_clone_prompt: Optional[Union[Dict[str, Any], List[Any]]] = None,
     ) -> Generator[Tuple[np.ndarray, int, dict], None, None]:
         """
         Stream voice-cloned speech generation, yielding audio chunks.
