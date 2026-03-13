@@ -1,6 +1,7 @@
 import types
 
 import pytest
+import torch
 
 from faster_qwen3_tts.model import FasterQwen3TTS
 
@@ -47,3 +48,28 @@ def test_speech_tokenizer_property_raises_when_missing():
     model = FasterQwen3TTS(base_model, _dummy_graph(), _dummy_graph())
     with pytest.raises(AttributeError, match="speech_tokenizer"):
         _ = model.speech_tokenizer
+
+
+def test_wrapper_exposes_example_decode_path():
+    seen = {}
+
+    class DummyTokenizer:
+        sample_rate = 24000
+
+        def decode(self, payload):
+            seen["payload"] = payload
+            return [torch.zeros(8)], self.sample_rate
+
+    base_model = types.SimpleNamespace(
+        model=types.SimpleNamespace(
+            speech_tokenizer=DummyTokenizer(),
+        )
+    )
+    model = FasterQwen3TTS(base_model, _dummy_graph(), _dummy_graph())
+    codec_ids = torch.tensor([1, 2, 3], dtype=torch.long)
+
+    wavs, sr = model.speech_tokenizer.decode({"audio_codes": codec_ids.unsqueeze(0)})
+
+    assert sr == 24000
+    assert len(wavs) == 1
+    assert torch.equal(seen["payload"]["audio_codes"], codec_ids.unsqueeze(0))
