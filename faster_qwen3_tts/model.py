@@ -47,13 +47,26 @@ class FasterQwen3TTS:
         self._voice_prompt_cache = {}  # Cache (ref_audio, ref_text) -> (vcp, ref_ids)
 
     @staticmethod
+    def _get_speech_tokenizer(base_model):
+        """Return the nested qwen-tts speech tokenizer when available."""
+        return getattr(getattr(base_model, "model", None), "speech_tokenizer", None)
+
+    @property
+    def speech_tokenizer(self):
+        """Expose the codec decoder on the wrapper's public surface."""
+        speech_tokenizer = self._get_speech_tokenizer(self.model)
+        if speech_tokenizer is None:
+            raise AttributeError("Underlying model does not expose a speech_tokenizer")
+        return speech_tokenizer
+
+    @staticmethod
     def _infer_sample_rate(base_model) -> int:
         """Infer output audio sample rate from qwen-tts internals."""
         # Qwen3-TTS model IDs include "12Hz", but that is codec frame-rate (tokens/s),
         # not waveform sampling rate. Generated audio is 24kHz.
         sample_rate = None
 
-        speech_tokenizer = getattr(getattr(base_model, "model", None), "speech_tokenizer", None)
+        speech_tokenizer = FasterQwen3TTS._get_speech_tokenizer(base_model)
         if speech_tokenizer is not None:
             sample_rate = getattr(speech_tokenizer, "sample_rate", None)
 
