@@ -30,12 +30,13 @@ import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 # Allow running from any directory
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 try:
-    from faster_qwen3_tts import FasterQwen3TTS
+    from faster_qwen3_tts import FasterQwen3TTS, __version__ as FASTER_QWEN3_TTS_VERSION
 except ImportError:
     print("Error: faster_qwen3_tts not found.")
     print("Install with:  pip install -e .  (from the repo root)")
@@ -156,6 +157,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
 _model_cache: OrderedDict[str, FasterQwen3TTS] = OrderedDict()
 _model_cache_max: int = int(os.environ.get("MODEL_CACHE_SIZE", "2"))
@@ -164,8 +166,12 @@ _loading = False
 _ref_cache: dict[str, str] = {}
 _ref_cache_lock = threading.Lock()
 _parakeet = None
+_parakeet_loading = False
+_parakeet_error: str | None = None
+_parakeet_lock = asyncio.Lock()
 _generation_lock = asyncio.Lock()
 _generation_waiters: int = 0  # requests waiting for or holding the generation lock
+_started_at = time.time()
 
 # Guard against inputs that would overflow the static KV cache (max_seq_len=2048).
 # At ~3-4 chars/token for English the overhead of system/ref tokens leaves room
@@ -198,6 +204,38 @@ def _concat_audio(audio_list) -> np.ndarray:
     parts = [np.array(a, dtype=np.float32).squeeze() for a in audio_list if len(a) > 0]
     return np.concatenate(parts) if parts else np.zeros(0, dtype=np.float32)
 
+
+def _load_parakeet_sync():
+    global _parakeet, _parakeet_error
+    try:
+        _parakeet = _parakeet_from_pretrained(device="cuda")
+        _parakeet_error = None
+        return _parakeet
+    except Exception as exc:
+        _parakeet_error = str(exc)
+        raise
+
+
+async def _ensure_parakeet_loaded():
+    global _parakeet_loading
+    if _parakeet is not None:
+        return _parakeet
+
+    async with _parakeet_lock:
+        if _parakeet is not None:
+            return _parakeet
+
+        _parakeet_loading = True
+        try:
+            return await asyncio.to_thread(_load_parakeet_sync)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Transcription model unavailable: {exc}",
+            ) from exc
+        finally:
+            _parakeet_loading = False
+
 def _get_cached_ref_path(content: bytes) -> str:
     digest = hashlib.sha1(content).hexdigest()
     with _ref_cache_lock:
@@ -225,8 +263,7 @@ async def root():
 @app.post("/transcribe")
 async def transcribe_audio(audio: UploadFile = File(...)):
     """Transcribe reference audio using nano-parakeet."""
-    if _parakeet is None:
-        raise HTTPException(status_code=503, detail="Transcription model not loaded")
+    parakeet = await _ensure_parakeet_loaded()
 
     content = await audio.read()
     if len(content) > MAX_AUDIO_BYTES:
@@ -242,7 +279,7 @@ async def transcribe_audio(audio: UploadFile = File(...)):
         wav_t = torch.from_numpy(wav)
         if sr != 16000:
             wav_t = torchaudio.functional.resample(wav_t.unsqueeze(0), sr, 16000).squeeze(0)
-        return _parakeet.transcribe(wav_t.cuda())
+        return parakeet.transcribe(wav_t.cuda())
 
     text = await asyncio.to_thread(run)
     return {"text": text}
@@ -263,16 +300,24 @@ async def get_status():
         "loaded": active is not None,
         "model": _active_model_name,
         "loading": _loading,
+        "service_version": FASTER_QWEN3_TTS_VERSION,
+        "started_at": _started_at,
         "available_models": AVAILABLE_MODELS,
         "model_type": model_type,
         "speakers": speakers,
         "transcription_available": _parakeet is not None,
+        "transcription_loading": _parakeet_loading,
+        "transcription_error": _parakeet_error,
+        "transcription_mode": "on_demand",
         "preset_refs": [
             {"id": p["id"], "label": p["label"], "ref_text": p["ref_text"]}
             for p in _preset_refs.values()
         ],
         "queue_depth": _generation_waiters,
         "cached_models": list(_model_cache.keys()),
+        "max_text_chars": MAX_TEXT_CHARS,
+        "max_audio_megabytes": round(MAX_AUDIO_BYTES / 1024 / 1024, 2),
+        "model_cache_size": _model_cache_max,
     }
 
 
@@ -677,7 +722,7 @@ def main():
     args = parser.parse_args()
 
     if not args.no_preload:
-        global _active_model_name, _parakeet
+        global _active_model_name
         print(f"Loading model: {args.model}")
         _startup_model = FasterQwen3TTS.from_pretrained(
             args.model,
@@ -691,11 +736,9 @@ def main():
         _prime_preset_voice_cache(_startup_model)
         print("TTS model ready.")
 
-        print("Loading transcription model (nano-parakeet)…")
-        _parakeet = _parakeet_from_pretrained(device="cuda")
-        print("Transcription model ready.")
+        print("Transcription model will load on demand when you request a transcript.")
 
-        print(f"Ready. Open http://localhost:{args.port}")
+    print(f"Ready. Open http://localhost:{args.port}")
 
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 

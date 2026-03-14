@@ -18,7 +18,14 @@ preload_from_hub:
 
 # Faster Qwen3-TTS Demo
 
-This Space hosts the demo UI for **faster-qwen3-tts** with streaming audio, TTFA/RTF metrics, voice clone, custom voices, and voice design.
+This Space hosts the operator-style demo UI for **faster-qwen3-tts** with streaming audio, TTFA/RTF metrics, voice clone, custom voices, and voice design.
+
+## Highlights
+
+- Control-room style console for model selection, queue visibility, and live run telemetry
+- Voice clone workflow with upload, preset voices, in-browser recording, and on-demand transcription
+- CustomVoice and VoiceDesign flows in the same interface, with compatible-model guidance
+- Local recent-job history so you can restore prior settings quickly while iterating
 
 ## Run locally (no Docker)
 
