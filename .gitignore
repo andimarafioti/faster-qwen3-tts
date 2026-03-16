@@ -9,6 +9,20 @@ __pycache__/
 *.pyc
 .venv/
 
+# macOS
+.DS_Store
+
+# Python virtual environments (pyenv, venv, virtualenv)
+venv/
+env/
+ENV/
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+.pyenv/
+
 # Helm
 helm/*.tgz
 
