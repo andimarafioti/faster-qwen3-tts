@@ -380,7 +380,7 @@ async def tts_stream_http(request: TTSRequest):
                 ref_audio=ref_audio,
                 ref_text=ref_text,
                 chunk_size=CHUNK_SIZE,
-                xvec_only=True,
+                xvec_only=False,
             ):
                 sample_rate = sr
 
@@ -469,7 +469,7 @@ async def tts_websocket(websocket: WebSocket):
                     ref_audio=ref_audio,
                     ref_text=ref_text,
                     chunk_size=CHUNK_SIZE,
-                    xvec_only=True,
+                    xvec_only=False,
                 ):
                     chunk_count += 1
                     pcm_data = (chunk * 32767).astype(np.int16)
@@ -535,7 +535,7 @@ async def tts_generate(request: TTSRequest):
             language=request.language,
             ref_audio=ref_audio,
             ref_text=ref_text,
-            xvec_only=True,
+            xvec_only=False,
         )
 
         generation_time = round(time.time() - start_time, 2)

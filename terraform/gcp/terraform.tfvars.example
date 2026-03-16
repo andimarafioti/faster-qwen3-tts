@@ -41,11 +41,10 @@ gar_helm_registry = ""  # e.g., "oci://us-docker.pkg.dev/your-project/helm/faste
 docker_registry = ""  # e.g., "us-docker.pkg.dev/your-project/dockerimg/faster-qwen3-tts"
 
 # Docker Image Tag (optional - leave empty to use values.yaml default)
-# Default: 1.0.0
-docker_image_tag = ""  # e.g., "1.0.1"
+docker_image_tag = "1.0.1"  # e.g., "1.0.1"
 
 # Helm Chart Version (required)
-helm_chart_version = "1.0.0"
+helm_chart_version = "1.0.1"
 
 # TTS Model Configuration
 tts_model = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
