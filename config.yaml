@@ -1,0 +1,13 @@
+# Faster Qwen3 TTS API Configuration
+
+model:
+  name: "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+  device: "cuda:0"
+  dtype: "bfloat16"
+  attn_implementation: "sdpa"
+
+voices:
+  dir: "/app/voices"
+
+streaming:
+  chunk_size: 8  # Number of codec frames per chunk (8 frames ≈ 667ms of audio)

@@ -2,7 +2,20 @@ models/
 sample_*.wav
 *.wav
 !ref_audio.wav
+!voices/*.wav
+!voices/*.txt
 *.json
 __pycache__/
 *.pyc
 .venv/
+
+# Helm
+helm/*.tgz
+
+# Terraform
+*.tfstate
+*.tfstate.*
+*.tfvars
+!terraform.tfvars.example
+.terraform/
+.terraform.lock.hcl

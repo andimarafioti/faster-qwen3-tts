@@ -1,0 +1,60 @@
+# GCP Project Configuration
+gcp_project_id      = "your-gcp-project-id"
+gcp_credentials_file = "/path/to/your/gcp-credentials.json"
+gcp_region          = "us-central1"
+gcp_zone            = "us-central1-a"
+
+# Project Configuration
+project_name = "faster-qwen3-tts-api"
+
+# Compute Instance Configuration
+machine_type = "g2-standard-4"  # L4 GPU instance
+gpu_type     = "nvidia-l4"
+gpu_count    = 1
+
+# Image Configuration (Deep Learning VM with CUDA 12.8)
+image_family   = "deeplearning-platform-release/common-cu128-ubuntu-2404-nvidia-570"
+boot_disk_size = 100
+
+# Network Configuration
+allowed_ssh_cidr_blocks = ["0.0.0.0/0"]  # WARNING: Restrict this in production!
+
+# SSH Configuration
+ssh_username     = "ubuntu"
+public_key_path  = "~/.ssh/id_rsa.pub"
+private_key_path = "~/.ssh/id_rsa"
+
+# Service Account Configuration
+service_account_email = "your-service-account@your-project.iam.gserviceaccount.com"
+
+# Google Artifact Registry Configuration
+gar_service_account_key_path = "/path/to/gar-service-account-key.json"
+
+# Google Artifact Registry - Helm Chart Repository (optional - leave empty to use values.yaml default)
+# Default: oci://us-docker.pkg.dev/qarlproductionregistries/helm/faster-qwen3-tts
+# Format: Full OCI path including chart name
+gar_helm_registry = ""  # e.g., "oci://us-docker.pkg.dev/your-project/helm/faster-qwen3-tts"
+
+# Google Artifact Registry - Docker Image Repository (optional - leave empty to use values.yaml default)
+# Default: us-docker.pkg.dev/qarlproductionregistries/dockerimg/faster-qwen3-tts
+# Format: Full path including image name (no oci:// prefix)
+docker_registry = ""  # e.g., "us-docker.pkg.dev/your-project/dockerimg/faster-qwen3-tts"
+
+# Docker Image Tag (optional - leave empty to use values.yaml default)
+# Default: 1.0.0
+docker_image_tag = ""  # e.g., "1.0.1"
+
+# Helm Chart Version (required)
+helm_chart_version = "1.0.0"
+
+# TTS Model Configuration
+tts_model = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+
+# Streaming Configuration
+chunk_size = 8  # Number of codec frames per chunk (8 frames ≈ 667ms of audio)
+
+# HuggingFace Token (optional, for gated models)
+huggingface_token = ""  # Leave empty if not needed
+
+# Reservation Configuration
+use_reservation = false  # Set to true to use ANY_RESERVATION for reserved instances

@@ -1,0 +1,66 @@
+# values.yaml - Faster Qwen3 TTS Configuration
+
+image:
+  repository: us-docker.pkg.dev/qarlproductionregistries/dockerimg/faster-qwen3-tts
+  tag: "1.0.1"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets:
+  - name: gar-docker-reg-secret
+
+# Service configuration
+service:
+  type: NodePort
+  port: 8000
+  nodePort: 30800
+
+# GPU resources (0 = bypass K8s GPU scheduling, use NVIDIA runtime directly)
+resources:
+  limits:
+    nvidia.com/gpu: 0
+  requests:
+    nvidia.com/gpu: 0
+
+# Model configuration
+model:
+  # HuggingFace model name
+  name: "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+
+  # Streaming parameters
+  # chunk_size: Number of codec frames per chunk (8 frames ≈ 667ms of audio)
+  chunkSize: 8
+
+  # Device configuration
+  device: "cuda:0"
+  dtype: "bfloat16"
+  attnImplementation: "sdpa"
+
+# Environment variables
+envVars:
+  NVIDIA_VISIBLE_DEVICES: "all"
+  NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
+
+# Health check configuration
+healthCheck:
+  initialDelaySeconds: 120  # 2 minutes - CUDA graphs capture on first use
+  readinessInitialDelaySeconds: 120
+  periodSeconds: 30
+  timeoutSeconds: 10
+  failureThreshold: 30  # 30 * 30s = 15 min max wait for first cold start
+
+# Shared memory size (for PyTorch operations)
+shmSize: "4Gi"
+
+# Persistent volume for model cache
+persistence:
+  enabled: true
+  size: "20Gi"  # Qwen3 TTS models are larger
+  storageClass: "local-path"
+  accessMode: "ReadWriteOnce"
+
+# HuggingFace token configuration
+hfToken:
+  # Secret name containing the HF token (leave empty to disable)
+  secretName: ""
+  # Key within the secret (defaults to "HF_TOKEN" if not specified)
+  secretKey: "HF_TOKEN"

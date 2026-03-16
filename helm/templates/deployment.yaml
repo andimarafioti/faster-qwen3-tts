@@ -1,0 +1,141 @@
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: faster-qwen3-tts-models
+spec:
+  accessModes:
+    - {{ .Values.persistence.accessMode }}
+  storageClassName: {{ .Values.persistence.storageClass }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size }}
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: faster-qwen3-tts
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: faster-qwen3-tts
+  template:
+    metadata:
+      labels:
+        app: faster-qwen3-tts
+    spec:
+      # Image pull secrets for Google Artifact Registry
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      # Init containers
+      initContainers:
+      # GPU verification
+      - name: gpu-check
+        image: nvidia/cuda:12.4.1-base-ubuntu22.04
+        command:
+          - /bin/bash
+          - -c
+          - "nvidia-smi && echo 'GPU verification successful'"
+        env:
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: {{ .Values.envVars.NVIDIA_VISIBLE_DEVICES | quote }}
+        - name: NVIDIA_DRIVER_CAPABILITIES
+          value: {{ .Values.envVars.NVIDIA_DRIVER_CAPABILITIES | quote }}
+        resources:
+          {{- toYaml .Values.resources | nindent 10 }}
+
+      # Main faster-qwen3-tts container
+      containers:
+      - name: faster-qwen3-tts
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+
+        ports:
+        - containerPort: 8000
+          name: http
+
+        # Environment variables
+        env:
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: {{ .Values.envVars.NVIDIA_VISIBLE_DEVICES | quote }}
+        - name: NVIDIA_DRIVER_CAPABILITIES
+          value: {{ .Values.envVars.NVIDIA_DRIVER_CAPABILITIES | quote }}
+        - name: MODEL_NAME
+          value: {{ .Values.model.name | quote }}
+        - name: DEVICE
+          value: {{ .Values.model.device | quote }}
+        - name: DTYPE
+          value: {{ .Values.model.dtype | quote }}
+        - name: ATTN_IMPLEMENTATION
+          value: {{ .Values.model.attnImplementation | quote }}
+        - name: CHUNK_SIZE
+          value: {{ .Values.model.chunkSize | quote }}
+        {{- if .Values.hfToken.secretName }}
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.hfToken.secretName }}
+              key: {{ .Values.hfToken.secretKey | default "HF_TOKEN" }}
+        {{- end }}
+
+        # Resource limits
+        resources:
+          {{- toYaml .Values.resources | nindent 10 }}
+
+        # Health check probes
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: {{ .Values.healthCheck.initialDelaySeconds }}
+          periodSeconds: {{ .Values.healthCheck.periodSeconds }}
+          timeoutSeconds: {{ .Values.healthCheck.timeoutSeconds }}
+          failureThreshold: {{ .Values.healthCheck.failureThreshold }}
+
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: {{ .Values.healthCheck.readinessInitialDelaySeconds | default 120 }}
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        # Volume mounts
+        volumeMounts:
+        - name: dshm
+          mountPath: /dev/shm
+        - name: models
+          mountPath: /root/.cache/huggingface
+
+      # Volumes
+      volumes:
+      - name: dshm
+        emptyDir:
+          medium: Memory
+          sizeLimit: {{ .Values.shmSize }}
+      - name: models
+        persistentVolumeClaim:
+          claimName: faster-qwen3-tts-models
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: faster-qwen3-tts
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    app: faster-qwen3-tts
+  ports:
+  - name: http
+    port: {{ .Values.service.port }}
+    targetPort: 8000
+    {{- if eq .Values.service.type "NodePort" }}
+    nodePort: {{ .Values.service.nodePort }}
+    {{- end }}
