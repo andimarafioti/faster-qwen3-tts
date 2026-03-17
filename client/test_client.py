@@ -2,14 +2,18 @@
 """
 Faster Qwen3 TTS Test Client
 
-Unified client for testing both streaming (WebSocket) and non-streaming (HTTP POST) endpoints.
+Unified client for testing streaming (WebSocket), HTTP stream (/tts/stream), and non-streaming (HTTP POST) endpoints.
 Supports sentence, paragraph, and whole-document splitting modes.
 Optionally saves output as WAV files and plays audio.
 
 Usage:
-    # Streaming mode (default)
+    # Streaming mode (default, WebSocket)
     python client/test_client.py <SERVER_IP> "Your text to synthesize." --voice my_voice
     python client/test_client.py <SERVER_IP> --file document.txt --mode paragraph --voice my_voice
+
+    # HTTP stream mode (/tts/stream, raw float32 PCM)
+    python client/test_client.py <SERVER_IP> "Your text here." --voice my_voice --http-stream
+    python client/test_client.py <SERVER_IP> --file doc.txt --voice my_voice --http-stream --output-dir output/
 
     # Non-streaming mode
     python client/test_client.py <SERVER_IP> "Your text here." --voice my_voice --no-streaming
@@ -225,8 +229,7 @@ async def stream_segment_tts(
                     ttfa = (first_audio_time - send_time) * 1000
                     print(f"  [{recv_timestamp}] ← First audio chunk received (TTFA: {ttfa:.0f}ms)")
 
-                audio_data = np.array(data["data"], dtype=np.int16)
-                audio_float = audio_data.astype(np.float32) / 32767.0
+                audio_float = np.array(data["data"], dtype=np.float32)
                 audio_chunks.append(audio_float)
 
             elif data["type"] == "end":
@@ -414,6 +417,146 @@ async def run_streaming_mode(
         print(f"\n✗ Unexpected error: {e}")
     finally:
         audio_player.stop()
+
+
+# ============================================================
+# HTTP Stream Mode (/tts/stream)
+# ============================================================
+
+def run_http_stream_mode(
+    server_ip: str,
+    text: str,
+    port: int = 30800,
+    language: str = "English",
+    voice: Optional[str] = None,
+    uid: Optional[str] = None,
+    mode: str = "sentence",
+    output_dir: Optional[str] = None,
+    play_audio: bool = True,
+    delay: float = 0,
+    resume: bool = False,
+):
+    """Stream text to TTS server using HTTP /tts/stream (raw float32 PCM bytes)."""
+    segments = SPLIT_MODES[mode](text)
+
+    if not segments:
+        print("Error: No segments found in input text")
+        return
+
+    wav_dir = None
+    if output_dir:
+        wav_dir = os.path.join(output_dir, "wav")
+        os.makedirs(wav_dir, exist_ok=True)
+
+    url = f"http://{server_ip}:{port}/tts/stream"
+
+    print(f"\n{'='*70}")
+    print(f"Faster Qwen3 TTS HTTP Stream Client")
+    print(f"{'='*70}")
+    print(f"Server:    {server_ip}:{port}")
+    print(f"Endpoint:  /tts/stream")
+    print(f"Mode:      {mode}")
+    print(f"Segments:  {len(segments)}")
+    print(f"Language:  {language}")
+    print(f"Voice:     {voice or '(default)'}")
+    if wav_dir:
+        print(f"Output:    {wav_dir}/")
+    print(f"{'='*70}\n")
+
+    audio_player = AudioPlayer()
+    session = requests.Session()
+    skipped_resume = 0
+    segment_metrics = []
+
+    for i, segment in enumerate(segments, 1):
+        if resume and wav_dir:
+            wav_path = os.path.join(wav_dir, f"{i:04d}.wav")
+            if os.path.exists(wav_path):
+                skipped_resume += 1
+                continue
+
+        if i > 1 and delay > 0:
+            time.sleep(delay)
+
+        print(f"[Segment {i}/{len(segments)}]")
+        send_timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        print(f"  [{send_timestamp}] → Sending: '{segment[:60]}{'...' if len(segment) > 60 else ''}'")
+
+        payload = {"text": segment, "language": language}
+        if voice is not None:
+            payload["voice"] = voice
+        if uid is not None:
+            payload["uid"] = uid
+
+        send_time = time.time()
+        first_chunk_time = None
+        pcm_chunks = []
+
+        try:
+            with session.post(url, json=payload, stream=True, timeout=300) as resp:
+                if resp.status_code != 200:
+                    print(f"  Error {resp.status_code}: {resp.text}")
+                    print()
+                    continue
+
+                sample_rate = int(resp.headers.get("X-Sample-Rate", 24000))
+                audio_player.sample_rate = sample_rate
+
+                for chunk in resp.iter_content(chunk_size=4096):
+                    if chunk:
+                        if first_chunk_time is None:
+                            first_chunk_time = time.time()
+                            ttfa = (first_chunk_time - send_time) * 1000
+                            recv_timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                            print(f"  [{recv_timestamp}] ← First chunk (TTFA: {ttfa:.0f}ms)")
+                        pcm_chunks.append(chunk)
+
+        except (requests.ConnectionError, requests.Timeout) as e:
+            print(f"  Error: {e}")
+            print()
+            continue
+
+        recv_time = time.time()
+        total_elapsed = (recv_time - send_time) * 1000
+        ttfa_ms = (first_chunk_time - send_time) * 1000 if first_chunk_time else 0
+
+        recv_timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        print(f"  [{recv_timestamp}] ✓ Done. TTFA={ttfa_ms:.0f}ms, Total={total_elapsed:.0f}ms")
+
+        audio = np.frombuffer(b"".join(pcm_chunks), dtype=np.float32) if pcm_chunks else np.array([], dtype=np.float32)
+        audio_duration = len(audio) / sample_rate
+
+        metrics = {
+            "text": segment,
+            "ttfa_ms": ttfa_ms,
+            "total_elapsed_ms": total_elapsed,
+            "audio_duration": audio_duration,
+        }
+        segment_metrics.append(metrics)
+
+        if wav_dir and len(audio) > 0:
+            wav_path = os.path.join(wav_dir, f"{i:04d}.wav")
+            create_wav_file(audio, sample_rate, wav_path)
+            print(f"  Saved: {wav_path}")
+
+        if play_audio and len(audio) > 0:
+            audio_player.play_segment(audio, i, recv_time)
+
+        print()
+
+    print(f"{'='*70}")
+    print(f"Summary:")
+    print(f"  Total segments: {len(segments)}")
+    if skipped_resume:
+        print(f"  Resumed (skipped): {skipped_resume}")
+    if segment_metrics:
+        avg_ttfa = sum(m["ttfa_ms"] for m in segment_metrics) / len(segment_metrics)
+        avg_elapsed = sum(m["total_elapsed_ms"] for m in segment_metrics) / len(segment_metrics)
+        print(f"  Average TTFA: {avg_ttfa:.0f}ms")
+        print(f"  Average latency: {avg_elapsed:.0f}ms")
+    if wav_dir:
+        print(f"  WAV files: {wav_dir}/")
+    print(f"{'='*70}\n")
 
 
 # ============================================================
@@ -685,6 +828,12 @@ Examples:
         help="Use non-streaming mode (HTTP POST) instead of streaming (WebSocket)"
     )
 
+    parser.add_argument(
+        "--http-stream",
+        action="store_true",
+        help="Use HTTP /tts/stream endpoint instead of WebSocket"
+    )
+
     args = parser.parse_args()
 
     if not args.text and not args.file:
@@ -737,8 +886,23 @@ Examples:
                 delay=args.delay,
                 resume=args.resume,
             )
+        elif args.http_stream:
+            # HTTP stream mode
+            run_http_stream_mode(
+                server_ip=args.server_ip,
+                text=text,
+                port=args.port,
+                language=args.language,
+                voice=args.voice,
+                uid=args.uid,
+                mode=mode,
+                output_dir=args.output_dir,
+                play_audio=play_audio,
+                delay=args.delay,
+                resume=args.resume,
+            )
         else:
-            # Streaming mode
+            # Streaming mode (WebSocket)
             asyncio.run(run_streaming_mode(
                 server_ip=args.server_ip,
                 text=text,

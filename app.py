@@ -14,8 +14,8 @@ import numpy as np
 import os
 import logging
 import time
-import io
-import struct
+# import io
+# import struct
 import json
 from typing import Optional, AsyncIterator
 from config import DEVICE, DTYPE, MODEL_NAME, ATTN_IMPLEMENTATION, VOICES_DIR, CHUNK_SIZE, VOICE_CACHE_BUCKET, VOICE_CACHE_PREFIX
@@ -148,28 +148,28 @@ def fetch_voice_from_gcs(voice_name: str, uid: Optional[str] = None) -> bool:
         return False
 
 
-def create_wav_header(sample_rate: int, num_channels: int = 1, bits_per_sample: int = 16):
-    """Create WAV file header for streaming."""
-    byte_rate = sample_rate * num_channels * bits_per_sample // 8
-    block_align = num_channels * bits_per_sample // 8
-    data_size = 0  # Placeholder for streaming
+# def create_wav_header(sample_rate: int, num_channels: int = 1, bits_per_sample: int = 16):
+#     """Create WAV file header for streaming."""
+#     byte_rate = sample_rate * num_channels * bits_per_sample // 8
+#     block_align = num_channels * bits_per_sample // 8
+#     data_size = 0  # Placeholder for streaming
 
-    header = io.BytesIO()
-    header.write(b'RIFF')
-    header.write(struct.pack('<I', data_size + 36))
-    header.write(b'WAVE')
-    header.write(b'fmt ')
-    header.write(struct.pack('<I', 16))
-    header.write(struct.pack('<H', 1))
-    header.write(struct.pack('<H', num_channels))
-    header.write(struct.pack('<I', sample_rate))
-    header.write(struct.pack('<I', byte_rate))
-    header.write(struct.pack('<H', block_align))
-    header.write(struct.pack('<H', bits_per_sample))
-    header.write(b'data')
-    header.write(struct.pack('<I', data_size))
+#     header = io.BytesIO()
+#     header.write(b'RIFF')
+#     header.write(struct.pack('<I', data_size + 36))
+#     header.write(b'WAVE')
+#     header.write(b'fmt ')
+#     header.write(struct.pack('<I', 16))
+#     header.write(struct.pack('<H', 1))
+#     header.write(struct.pack('<H', num_channels))
+#     header.write(struct.pack('<I', sample_rate))
+#     header.write(struct.pack('<I', byte_rate))
+#     header.write(struct.pack('<H', block_align))
+#     header.write(struct.pack('<H', bits_per_sample))
+#     header.write(b'data')
+#     header.write(struct.pack('<I', data_size))
 
-    return header.getvalue()
+#     return header.getvalue()
 
 
 LANGUAGE_CODE_MAP = {
@@ -424,7 +424,7 @@ async def upload_voice(
 
 @app.post("/tts/stream")
 async def tts_stream_http(request: TTSRequest):
-    """HTTP streaming endpoint that returns audio as a streaming WAV file."""
+    """HTTP streaming endpoint that returns audio as raw PCM float32 bytes."""
     if model is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
 
@@ -446,11 +446,8 @@ async def tts_stream_http(request: TTSRequest):
     logging.info(f"HTTP Stream: text='{request.text[:50]}...', language={request.language}, voice={voice_name}")
 
     async def generate_audio() -> AsyncIterator[bytes]:
-        """Generate audio chunks and yield as bytes."""
+        """Generate audio chunks and yield as raw PCM float32 bytes."""
         try:
-            sample_rate = 24000
-            header_sent = False
-
             for chunk, sr, timing in model.generate_voice_clone_streaming(
                 text=request.text,
                 language=request.language,
@@ -459,14 +456,10 @@ async def tts_stream_http(request: TTSRequest):
                 chunk_size=CHUNK_SIZE,
                 xvec_only=False,
             ):
-                sample_rate = sr
 
-                if not header_sent:
-                    yield create_wav_header(sample_rate)
-                    header_sent = True
-
-                pcm_data = (chunk * 32767).astype(np.int16)
-                yield pcm_data.tobytes()
+                pcm = np.nan_to_num(chunk.astype(np.float32), nan=0.0, posinf=1.0, neginf=-1.0)
+                pcm = np.clip(pcm, -1.0, 1.0)
+                yield pcm.tobytes()
 
             logging.info(f"HTTP streaming complete")
 
@@ -476,10 +469,11 @@ async def tts_stream_http(request: TTSRequest):
 
     return StreamingResponse(
         generate_audio(),
-        media_type="audio/wav",
+        media_type="application/octet-stream",
         headers={
-            "Content-Disposition": f"attachment; filename=tts_output.wav",
             "X-Sample-Rate": "24000",
+            "X-Channels": "1",
+            "X-Format": "float32",
         }
     )
 
@@ -536,6 +530,7 @@ async def tts_websocket(websocket: WebSocket):
                 "sample_rate": 24000,
                 "chunk_size": CHUNK_SIZE,
                 "voice": voice_name,
+                "format": "float32",
             })
 
             # Generate and stream audio
@@ -552,7 +547,8 @@ async def tts_websocket(websocket: WebSocket):
                     xvec_only=False,
                 ):
                     chunk_count += 1
-                    pcm_data = (chunk * 32767).astype(np.int16)
+                    pcm_data = np.nan_to_num(chunk.astype(np.float32), nan=0.0, posinf=1.0, neginf=-1.0)
+                    pcm_data = np.clip(pcm_data, -1.0, 1.0)
 
                     await websocket.send_json({
                         "type": "audio",
