@@ -42,8 +42,8 @@ envVars:
 
 # Health check configuration
 healthCheck:
-  initialDelaySeconds: 120  # 2 minutes - CUDA graphs capture on first use
-  readinessInitialDelaySeconds: 120
+  initialDelaySeconds: 60  # 1 minute - CUDA graphs capture on first use
+  readinessInitialDelaySeconds: 60
   periodSeconds: 30
   timeoutSeconds: 10
   failureThreshold: 30  # 30 * 30s = 15 min max wait for first cold start
@@ -55,7 +55,7 @@ shmSize: "4Gi"
 persistence:
   enabled: true
   size: "20Gi"  # Qwen3 TTS models are larger
-  storageClass: "local-path"
+  storageClass: "mdx-local-path"
   accessMode: "ReadWriteOnce"
 
 # HuggingFace token configuration
