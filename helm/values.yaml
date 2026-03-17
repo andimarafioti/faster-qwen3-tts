@@ -42,8 +42,8 @@ envVars:
 
 # Health check configuration
 healthCheck:
-  initialDelaySeconds: 60  # 1 minute - CUDA graphs capture on first use
-  readinessInitialDelaySeconds: 60
+  initialDelaySeconds: 45  # 45 seconds - CUDA graphs capture on first use
+  readinessInitialDelaySeconds: 45
   periodSeconds: 30
   timeoutSeconds: 10
   failureThreshold: 30  # 30 * 30s = 15 min max wait for first cold start
