@@ -3,7 +3,7 @@
 This repo now includes a dedicated deployment path for Hugging Face Inference Endpoints:
 
 - [`Dockerfile.hf`](../Dockerfile.hf): custom GPU container that serves [`examples/openai_server.py`](../examples/openai_server.py) on port `80`
-- [`examples/create_hf_endpoint.py`](../examples/create_hf_endpoint.py): helper to create an endpoint with aggressive `pendingRequests` autoscaling
+- [`examples/create_hf_endpoint.py`](../examples/create_hf_endpoint.py): helper to create an endpoint with sensible replica bounds and container env wiring
 
 ## 1. Build and publish the image
 
@@ -56,19 +56,16 @@ python3 examples/create_hf_endpoint.py \
   --instance-size x1 \
   --min-replica 1 \
   --max-replica 6 \
-  --scaling-threshold 1.0 \
   --voices voices.json \
   --wait
 ```
 
-Defaults are intentionally aggressive:
+Defaults are intentionally simple:
 
-- autoscaling metric: `pendingRequests`
-- threshold: `1.0`
 - minimum replicas: `1`
 - maximum replicas: `6`
 
-That means HF can scale out as soon as requests start piling up behind a busy replica.
+The current public `huggingface_hub` Python API exposes replica bounds (`min_replica`, `max_replica`) but not the lower-level autoscaling metric/threshold knobs shown in the HF UI. If you want `pendingRequests`-based threshold tuning, create the endpoint with the helper first and then adjust that policy in the Hugging Face UI.
 
 ## Queueing behavior on one replica
 
@@ -86,6 +83,8 @@ Environment variables:
 - `QWEN_TTS_REF_AUDIO`, `QWEN_TTS_REF_TEXT`, `QWEN_TTS_LANGUAGE`: single-voice mode
 - `QWEN_TTS_MAX_PENDING`: total active + queued requests per replica
 - `QWEN_TTS_CHUNK_SIZE`: default streaming chunk size
+
+Tested with `huggingface_hub>=0.36.2`.
 
 ## Operational notes
 

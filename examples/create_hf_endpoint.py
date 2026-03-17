@@ -5,7 +5,7 @@ Create a Hugging Face Inference Endpoint for faster-qwen3-tts.
 This helper assumes:
 - the model repository selected for the endpoint is mounted at /repository
 - the custom container image was built from Dockerfile.hf
-- autoscaling should react aggressively to pending requests
+- autoscaling replica bounds are configured via the public huggingface_hub API
 """
 
 import argparse
@@ -61,12 +61,6 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-replica", type=int, default=1, help="Minimum replica count")
     parser.add_argument("--max-replica", type=int, default=6, help="Maximum replica count")
     parser.add_argument(
-        "--scaling-threshold",
-        type=float,
-        default=1.0,
-        help="Aggressive pendingRequests threshold; 1.0 scales out as soon as one request is waiting",
-    )
-    parser.add_argument(
         "--scale-to-zero-timeout",
         type=int,
         help="Idle minutes before scaling to zero; omit to keep one warm replica",
@@ -104,8 +98,6 @@ def main() -> None:
         revision=args.revision,
         min_replica=args.min_replica,
         max_replica=args.max_replica,
-        scaling_metric="pendingRequests",
-        scaling_threshold=args.scaling_threshold,
         scale_to_zero_timeout=args.scale_to_zero_timeout,
         type=args.type,
         custom_image={
@@ -128,7 +120,6 @@ def main() -> None:
                 "image": args.image,
                 "min_replica": args.min_replica,
                 "max_replica": args.max_replica,
-                "scaling_threshold": args.scaling_threshold,
             },
             indent=2,
         )
