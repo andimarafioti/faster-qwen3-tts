@@ -17,6 +17,8 @@ kind: Deployment
 metadata:
   name: faster-qwen3-tts
 spec:
+  strategy:
+    type: Recreate
   replicas: 1
   selector:
     matchLabels:
