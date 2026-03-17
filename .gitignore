@@ -25,6 +25,16 @@ build/
 
 # Helm
 helm/*.tgz
+*.tgz
+
+# Output
+output/
+
+# Clone voices
+clone_voices/
+
+# Test scripts
+run_parallel_test.sh
 
 # Terraform
 *.tfstate

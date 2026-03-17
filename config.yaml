@@ -8,6 +8,9 @@ model:
 
 voices:
   dir: "/app/voices"
+  gcs:
+    bucket: "qarl-studio-bucket"   # GCS bucket name (leave empty to disable)
+    prefix: "voices"   # Prefix/path within the bucket
 
 streaming:
   chunk_size: 8  # Number of codec frames per chunk (8 frames ≈ 667ms of audio)

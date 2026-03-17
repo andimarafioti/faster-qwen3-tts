@@ -47,3 +47,7 @@ ATTN_IMPLEMENTATION = MODEL_CONFIG.get("attn_implementation", "sdpa")
 VOICES_DIR = VOICES_CONFIG.get("dir", "/app/voices")
 
 CHUNK_SIZE = STREAMING_CONFIG.get("chunk_size", 8)
+
+GCS_CONFIG = VOICES_CONFIG.get("gcs", {})
+VOICE_CACHE_BUCKET = os.environ.get("VOICE_CACHE_BUCKET", GCS_CONFIG.get("bucket", ""))
+VOICE_CACHE_PREFIX = os.environ.get("VOICE_CACHE_PREFIX", GCS_CONFIG.get("prefix", ""))

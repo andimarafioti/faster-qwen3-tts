@@ -18,7 +18,7 @@ import io
 import struct
 import json
 from typing import Optional, AsyncIterator
-from config import DEVICE, DTYPE, MODEL_NAME, ATTN_IMPLEMENTATION, VOICES_DIR, CHUNK_SIZE
+from config import DEVICE, DTYPE, MODEL_NAME, ATTN_IMPLEMENTATION, VOICES_DIR, CHUNK_SIZE, VOICE_CACHE_BUCKET, VOICE_CACHE_PREFIX
 
 # Configure logging
 logging.basicConfig(
@@ -106,6 +106,48 @@ def discover_voices(voices_dir: str) -> dict:
     return voice_map
 
 
+def fetch_voice_from_gcs(voice_name: str, uid: Optional[str] = None) -> bool:
+    """Download a voice from GCS and load it into the voices dict.
+
+    Returns True if the voice was successfully fetched and loaded.
+    """
+    global voices
+    if not VOICE_CACHE_BUCKET or not VOICE_CACHE_PREFIX:
+        return False
+
+    try:
+        from google.cloud import storage as gcs
+        gcs_client = gcs.Client()
+        bucket = gcs_client.bucket(VOICE_CACHE_BUCKET)
+        gcs_prefix = f"{VOICE_CACHE_PREFIX}/{uid}" if uid else VOICE_CACHE_PREFIX
+
+        wav_blob = bucket.blob(f"{gcs_prefix}/{voice_name}.wav")
+        txt_blob = bucket.blob(f"{gcs_prefix}/{voice_name}.txt")
+
+        if not wav_blob.exists() or not txt_blob.exists():
+            return False
+
+        voice_dir = os.path.join(VOICES_DIR, uid) if uid else VOICES_DIR
+        os.makedirs(voice_dir, exist_ok=True)
+
+        wav_path = os.path.join(voice_dir, f"{voice_name}.wav")
+        txt_path = os.path.join(voice_dir, f"{voice_name}.txt")
+
+        wav_blob.download_to_filename(wav_path)
+        txt_blob.download_to_filename(txt_path)
+
+        with open(txt_path, 'r', encoding='utf-8') as f:
+            ref_text = f.read().strip()
+
+        cache_key = f"{uid}/{voice_name}" if uid else voice_name
+        voices[cache_key] = (wav_path, ref_text)
+        logging.info(f"Fetched voice '{cache_key}' from GCS")
+        return True
+    except Exception as e:
+        logging.warning(f"Failed to fetch voice '{voice_name}' from GCS: {e}")
+        return False
+
+
 def create_wav_header(sample_rate: int, num_channels: int = 1, bits_per_sample: int = 16):
     """Create WAV file header for streaming."""
     byte_rate = sample_rate * num_channels * bits_per_sample // 8
@@ -175,6 +217,10 @@ async def lifespan(app: FastAPI):
     logging.info(f"Attention: {ATTN_IMPLEMENTATION}")
     logging.info("=" * 80)
 
+    # Download voices from GCS if configured
+    from init_voices import init_voices
+    init_voices()
+
     from faster_qwen3_tts import FasterQwen3TTS
 
     start = time.time()
@@ -234,18 +280,35 @@ async def health():
 
 @app.get("/voices")
 async def list_voices(uid: Optional[str] = None):
-    """List available voices."""
-    # List all currently loaded voices
+    """List available voices. Checks GCS for user voices if configured."""
+    # List all currently loaded system voices
     system_voices = [k for k in voices.keys() if "/" not in k]
 
     user_voices = []
     if uid:
+        # Check local memory first
         user_prefix = f"{uid}/"
-        user_voices = [
-            {"id": k.replace(user_prefix, ""), "duration": 0.0}
+        local_voices = {
+            k.replace(user_prefix, "")
             for k in voices.keys() if k.startswith(user_prefix)
-        ]
-        user_voices.sort(key=lambda x: x["id"])
+        }
+
+        # Check GCS for additional user voices
+        if VOICE_CACHE_BUCKET and VOICE_CACHE_PREFIX:
+            try:
+                from google.cloud import storage as gcs
+                gcs_client = gcs.Client()
+                bucket = gcs_client.bucket(VOICE_CACHE_BUCKET)
+                gcs_prefix = f"{VOICE_CACHE_PREFIX}/{uid}/"
+                blobs = bucket.list_blobs(prefix=gcs_prefix)
+                for blob in blobs:
+                    if blob.name.endswith('.wav'):
+                        name = os.path.splitext(os.path.basename(blob.name))[0]
+                        local_voices.add(name)
+            except Exception as e:
+                logging.warning(f"Failed to list GCS voices for uid={uid}: {e}")
+
+        user_voices = [{"id": name, "loaded": f"{uid}/{name}" in voices} for name in sorted(local_voices)]
 
     return {
         "system_voices": sorted(system_voices),
@@ -329,6 +392,19 @@ async def upload_voice(
         # Add to voices dictionary
         voices[cache_key] = (wav_path, ref_text)
 
+        # Upload to GCS if configured
+        if VOICE_CACHE_BUCKET and VOICE_CACHE_PREFIX:
+            try:
+                from google.cloud import storage as gcs
+                gcs_client = gcs.Client()
+                bucket = gcs_client.bucket(VOICE_CACHE_BUCKET)
+                gcs_prefix = f"{VOICE_CACHE_PREFIX}/{uid}" if uid else VOICE_CACHE_PREFIX
+                bucket.blob(f"{gcs_prefix}/{voice_name}.wav").upload_from_filename(wav_path)
+                bucket.blob(f"{gcs_prefix}/{voice_name}.txt").upload_from_filename(txt_path)
+                logging.info(f"Uploaded voice '{voice_name}' to gs://{VOICE_CACHE_BUCKET}/{gcs_prefix}/")
+            except Exception as e:
+                logging.warning(f"GCS upload failed for voice '{voice_name}': {e}")
+
         load_time = time.time() - start_time
 
         return {
@@ -359,10 +435,11 @@ async def tts_stream_http(request: TTSRequest):
             raise HTTPException(status_code=503, detail="No voices available")
         voice_name = list(voices.keys())[0]
 
-    # Check uid-specific voice first
+    # Check uid-specific voice first, then fallback to system voice, then try GCS
     cache_key = f"{request.uid}/{voice_name}" if request.uid else voice_name
     if cache_key not in voices and voice_name not in voices:
-        raise HTTPException(status_code=404, detail=f"Voice '{voice_name}' not found")
+        if not fetch_voice_from_gcs(voice_name, uid=request.uid):
+            raise HTTPException(status_code=404, detail=f"Voice '{voice_name}' not found")
 
     ref_audio, ref_text = voices.get(cache_key, voices.get(voice_name))
 
@@ -439,14 +516,17 @@ async def tts_websocket(websocket: WebSocket):
                     continue
                 voice_name = list(voices.keys())[0]
 
-            if voice_name not in voices:
-                await websocket.send_json({
-                    "type": "error",
-                    "message": f"Voice '{voice_name}' not found"
-                })
-                continue
+            uid = request_data.get("uid", None)
+            cache_key = f"{uid}/{voice_name}" if uid else voice_name
+            if cache_key not in voices and voice_name not in voices:
+                if not fetch_voice_from_gcs(voice_name, uid=uid):
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": f"Voice '{voice_name}' not found"
+                    })
+                    continue
 
-            ref_audio, ref_text = voices[voice_name]
+            ref_audio, ref_text = voices.get(cache_key, voices.get(voice_name))
 
             logging.info(f"WebSocket: text='{text[:50]}...', language={language}, voice={voice_name}")
 
@@ -520,10 +600,11 @@ async def tts_generate(request: TTSRequest):
     if not request.voice:
         raise HTTPException(status_code=400, detail="Voice required")
 
-    # Check uid-specific voice first
+    # Check uid-specific voice first, then fallback to system voice, then try GCS
     cache_key = f"{request.uid}/{request.voice}" if request.uid else request.voice
     if cache_key not in voices and request.voice not in voices:
-        raise HTTPException(status_code=404, detail=f"Voice '{request.voice}' not found")
+        if not fetch_voice_from_gcs(request.voice, uid=request.uid):
+            raise HTTPException(status_code=404, detail=f"Voice '{request.voice}' not found")
 
     ref_audio, ref_text = voices.get(cache_key, voices.get(request.voice))
 

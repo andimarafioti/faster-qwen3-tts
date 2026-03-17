@@ -163,7 +163,9 @@ docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi || {
 echo "Installing k3s..."
 
 # Install k3s with Docker as container runtime and NVIDIA support
-curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--docker" sh -
+# Use short hostname as node name to avoid k8s 63-char label limit with GCP FQDNs
+K3S_NODE_NAME=$(hostname -s)
+curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--docker --node-name $K3S_NODE_NAME" sh -
 
 # Wait for k3s to be ready
 echo "Waiting for k3s to be ready..."

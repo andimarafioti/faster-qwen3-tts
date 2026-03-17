@@ -328,7 +328,7 @@ async def run_streaming_mode(
         ws_url = f"ws://{server_ip}:{port}/tts/ws"
         print(f"Connecting to {ws_url}...\n")
 
-        async with websockets.connect(ws_url) as websocket:
+        async with websockets.connect(ws_url, ping_timeout=None, ping_interval=None) as websocket:
             print("✓ Connected!\n")
 
             total_time = 0
