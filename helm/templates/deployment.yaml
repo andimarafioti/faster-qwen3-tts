@@ -84,6 +84,12 @@ spec:
               name: {{ .Values.hfToken.secretName }}
               key: {{ .Values.hfToken.secretKey | default "HF_TOKEN" }}
         {{- end }}
+        {{- if .Values.gcs.voiceCacheBucket }}
+        - name: VOICE_CACHE_BUCKET 
+          value: {{ .Values.gcs.voiceCacheBucket | quote }}
+        - name: VOICE_CACHE_PREFIX
+          value: {{ .Values.gcs.voiceCachePrefix | quote }}
+        {{- end }}
 
         # Resource limits
         resources:

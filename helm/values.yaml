@@ -2,7 +2,7 @@
 
 image:
   repository: us-docker.pkg.dev/qarlproductionregistries/dockerimg/faster-qwen3-tts
-  tag: "1.0.0"
+  tag: "1.0.2"
   pullPolicy: IfNotPresent
 
 imagePullSecrets:
@@ -42,8 +42,8 @@ envVars:
 
 # Health check configuration
 healthCheck:
-  initialDelaySeconds: 45  # 45 seconds - CUDA graphs capture on first use
-  readinessInitialDelaySeconds: 45
+  initialDelaySeconds: 30  # 30 seconds to allow container to start
+  readinessInitialDelaySeconds: 60  # 60 seconds
   periodSeconds: 30
   timeoutSeconds: 10
   failureThreshold: 30  # 30 * 30s = 15 min max wait for first cold start
@@ -64,3 +64,8 @@ hfToken:
   secretName: ""
   # Key within the secret (defaults to "HF_TOKEN" if not specified)
   secretKey: "HF_TOKEN"
+
+# GCS voice cache configuration
+gcs:
+  voiceCacheBucket: ""
+  voiceCachePrefix: ""

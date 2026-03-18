@@ -222,6 +222,19 @@ curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 |
 helm version
 
 # ============================================================
+# Install mdx-local-path StorageClass
+# ============================================================
+echo "Installing mdx-local-path StorageClass..."
+helm repo add containeroo https://charts.containeroo.ch
+helm repo update
+helm install local-path-provisioner containeroo/local-path-provisioner \
+  --namespace platform \
+  --create-namespace \
+  --set storageClass.name=mdx-local-path \
+  --set storageClass.defaultClass=true \
+  --wait --timeout=5m || true
+
+# ============================================================
 # Authenticate with Google Artifact Registry
 # ============================================================
 echo "Authenticating with Google Artifact Registry..."
