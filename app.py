@@ -148,30 +148,6 @@ def fetch_voice_from_gcs(voice_name: str, uid: Optional[str] = None) -> bool:
         return False
 
 
-# def create_wav_header(sample_rate: int, num_channels: int = 1, bits_per_sample: int = 16):
-#     """Create WAV file header for streaming."""
-#     byte_rate = sample_rate * num_channels * bits_per_sample // 8
-#     block_align = num_channels * bits_per_sample // 8
-#     data_size = 0  # Placeholder for streaming
-
-#     header = io.BytesIO()
-#     header.write(b'RIFF')
-#     header.write(struct.pack('<I', data_size + 36))
-#     header.write(b'WAVE')
-#     header.write(b'fmt ')
-#     header.write(struct.pack('<I', 16))
-#     header.write(struct.pack('<H', 1))
-#     header.write(struct.pack('<H', num_channels))
-#     header.write(struct.pack('<I', sample_rate))
-#     header.write(struct.pack('<I', byte_rate))
-#     header.write(struct.pack('<H', block_align))
-#     header.write(struct.pack('<H', bits_per_sample))
-#     header.write(b'data')
-#     header.write(struct.pack('<I', data_size))
-
-#     return header.getvalue()
-
-
 LANGUAGE_CODE_MAP = {
     "en": "English",
     "fr": "French",
