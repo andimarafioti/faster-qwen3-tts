@@ -168,6 +168,7 @@ class TTSRequest(BaseModel):
     voice_id: Optional[str] = None  # Chatterbox compatibility alias
     uid: Optional[str] = None
     denoise: Optional[bool] = False
+    request_id: Optional[str] = None
 
     def model_post_init(self, __context):
         # Map voice_id -> voice for chatterbox compatibility
@@ -448,6 +449,7 @@ async def tts_stream_http(request: TTSRequest):
             "X-Sample-Rate": "24000",
             "X-Channels": "1",
             "X-Format": "float32",
+            **({"X-Request-ID": request.request_id} if request.request_id else {}),
         }
     )
 
@@ -461,11 +463,16 @@ async def tts_websocket(websocket: WebSocket):
     try:
         while True:
             data = await websocket.receive_text()
-            request_data = json.loads(data)
+            try:
+                request = TTSRequest(**json.loads(data))
+            except Exception as e:
+                await websocket.send_json({"type": "error", "message": str(e)})
+                continue
 
-            text = request_data.get("text", "")
-            language = request_data.get("language", "English")
-            voice_name = request_data.get("voice", None)
+            text = request.text
+            language = request.language
+            voice_name = request.voice
+            request_id = request.request_id
 
             if not text:
                 await websocket.send_json({
@@ -484,7 +491,7 @@ async def tts_websocket(websocket: WebSocket):
                     continue
                 voice_name = list(voices.keys())[0]
 
-            uid = request_data.get("uid", None)
+            uid = request.uid
             cache_key = f"{uid}/{voice_name}" if uid else voice_name
             if cache_key not in voices and voice_name not in voices:
                 if not fetch_voice_from_gcs(voice_name, uid=uid):
@@ -505,12 +512,15 @@ async def tts_websocket(websocket: WebSocket):
                 "chunk_size": CHUNK_SIZE,
                 "voice": voice_name,
                 "format": "float32",
+                "request_id": request_id,
             })
 
             # Generate and stream audio
             try:
                 chunk_count = 0
                 start_time = time.time()
+                # crossfade_samples = int(0.010 * 24000)  # 10ms crossfade at chunk boundaries
+                # prev_tail = None
 
                 for chunk, sample_rate, timing in model.generate_voice_clone_streaming(
                     text=text,
@@ -523,6 +533,15 @@ async def tts_websocket(websocket: WebSocket):
                     chunk_count += 1
                     pcm_data = np.nan_to_num(chunk.astype(np.float32), nan=0.0, posinf=1.0, neginf=-1.0)
                     pcm_data = np.clip(pcm_data, -1.0, 1.0)
+
+                    # Crossfade chunk boundary to smooth vocoder discontinuities
+                    # if prev_tail is not None and len(pcm_data) >= crossfade_samples:
+                    #     fade_in = np.linspace(0.0, 1.0, crossfade_samples, dtype=np.float32)
+                    #     fade_out = 1.0 - fade_in
+                    #     pcm_data[:crossfade_samples] = (
+                    #         prev_tail * fade_out + pcm_data[:crossfade_samples] * fade_in
+                    #     )
+                    # prev_tail = pcm_data[-crossfade_samples:].copy() if len(pcm_data) >= crossfade_samples else None
 
                     await websocket.send_json({
                         "type": "audio",
@@ -537,6 +556,7 @@ async def tts_websocket(websocket: WebSocket):
                     "type": "end",
                     "total_chunks": chunk_count,
                     "total_time_seconds": total_time,
+                    "request_id": request_id,
                 })
 
                 logging.info(f"WebSocket streaming complete: {chunk_count} chunks in {total_time:.2f}s")
@@ -563,10 +583,8 @@ async def tts_generate(request: TTSRequest):
     """Non-streaming TTS endpoint."""
     if model is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
-
     if not request.text.strip():
         raise HTTPException(status_code=400, detail="Text required")
-
     if not request.voice:
         raise HTTPException(status_code=400, detail="Voice required")
 
@@ -603,6 +621,7 @@ async def tts_generate(request: TTSRequest):
             "X-Sample-Rate": str(sample_rate),
             "X-Channels": "1",
             "X-Format": "float32",
+            **({"X-Request-ID": request.request_id} if request.request_id else {}),
         }
         return Response(content=pcm_bytes, media_type="application/octet-stream", headers=headers)
 
