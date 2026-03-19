@@ -17,7 +17,7 @@ pip install faster-qwen3-tts
 ### Python
 
 ```python
-from faster_qwen3_tts import FasterQwen3TTS
+from faster_qwen3_tts import FasterQwen3TTS, StreamPlayer
 
 model = FasterQwen3TTS.from_pretrained("Qwen/Qwen3-TTS-12Hz-0.6B-Base")
 ref_audio = "ref_audio.wav"
@@ -28,12 +28,13 @@ ref_text = (
 )
 
 # Streaming — yields audio chunks during generation
-for audio_chunk, sr, timing in model.generate_voice_clone_streaming(
-    text="What do you mean that I'm not real?", language="English",
-    ref_audio=ref_audio, ref_text=ref_text,
-    chunk_size=8,  # 8 steps ≈ 667ms of audio per chunk
-):
-    play(audio_chunk, sr)  # process/send each chunk immediately
+with StreamPlayer() as play:
+    for audio_chunk, sr, timing in model.generate_voice_clone_streaming(
+        text="What do you mean that I'm not real?", language="English",
+        ref_audio=ref_audio, ref_text=ref_text,
+        chunk_size=8,  # 8 steps ≈ 667ms of audio per chunk
+    ):
+        play(audio_chunk, sr)
 
 # Non-streaming — returns all audio at once
 audio_list, sr = model.generate_voice_clone(
@@ -41,6 +42,14 @@ audio_list, sr = model.generate_voice_clone(
     ref_audio=ref_audio, ref_text=ref_text,
 )
 ```
+
+For local speaker playback, install the optional dependency first:
+
+```bash
+pip install "faster-qwen3-tts[playback]"
+```
+
+`StreamPlayer` keeps one output stream open and queues chunks into it. A one-shot player such as `sounddevice.play(audio_chunk, sr)` restarts playback per chunk and can introduce gaps. See [`examples/streaming_playback.py`](examples/streaming_playback.py) for a runnable example.
 
 ### CLI
 
@@ -79,7 +88,7 @@ faster-qwen3-tts design \
   --output out.wav
 ```
 
-Streaming (prints RTF after write):
+Streaming generation to a final WAV file (prints RTF after write):
 
 ```bash
 faster-qwen3-tts custom \
@@ -215,6 +224,8 @@ Smaller chunks = lower latency but more decode overhead. `chunk_size=2` is the s
 ### How streaming works
 
 The CUDA graphs are unchanged — both predictor and talker graphs are replayed per step. The streaming generator yields codec ID chunks every `chunk_size` steps, and the model wrapper decodes each chunk to audio using a sliding window with 25-frame left context (matching the upstream codec's `chunked_decode` pattern) to avoid boundary artifacts.
+
+The Python streaming methods are pull-based generators: they prepare the next chunk when the caller requests it. For realtime local playback, use a queue-backed player such as `StreamPlayer`; blocking after each yielded chunk prevents generation and playback from overlapping.
 
 ## Voice Cloning Quality
 

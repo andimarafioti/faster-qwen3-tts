@@ -35,6 +35,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+playback = [
+    "sounddevice",
+]
 demo = [
     "fastapi>=0.100.0",
     "uvicorn[standard]>=0.24.0",
