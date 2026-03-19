@@ -28,6 +28,10 @@ spec:
       labels:
         app: faster-qwen3-tts
     spec:
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       # Image pull secrets for Google Artifact Registry
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
