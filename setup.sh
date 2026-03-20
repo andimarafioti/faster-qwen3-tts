@@ -31,7 +31,8 @@ fi
 .venv/bin/python -c "import torch; assert torch.cuda.is_available(), 'CUDA not available'; print(f'PyTorch {torch.__version__}, CUDA {torch.version.cuda}, GPU: {torch.cuda.get_device_name(0)}')" || {
     echo ""
     echo "WARNING: CUDA not available. You may need to install a CUDA-enabled PyTorch wheel."
-    echo "  uv pip install torch --index-url https://download.pytorch.org/whl/cu124 --python .venv/bin/python"
+    echo "  uv pip install torch --index-url https://download.pytorch.org/whl/cu128 --python .venv/bin/python"
+    echo "  Note: RTX 50xx / Blackwell GPUs need CUDA 12.8 wheels (PyTorch 2.7+)."
 }
 
 # Pre-download models to HuggingFace cache

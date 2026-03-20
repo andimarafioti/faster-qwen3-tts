@@ -12,6 +12,8 @@ pip install faster-qwen3-tts
 
 **PyTorch compatibility note:** CUDA-graph capture in the fast path is not reliable on `torch<=2.5.0` for this project (capture can fail with "operation not permitted when stream is capturing"). We validated `2.5.1+` as working and set that as the minimum supported version.
 
+**Blackwell note:** RTX 50xx / Blackwell GPUs need CUDA 12.8 PyTorch wheels. If the default setup fails on those cards, install a `cu128` PyTorch build (PyTorch 2.7+).
+
 ## Quick Start
 
 ### Python
