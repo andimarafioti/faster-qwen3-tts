@@ -244,6 +244,22 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logging.warning(f"  Failed to extract embedding for '{voice_name}': {e}")
 
+    # Upload newly extracted .pt files to GCS
+    if VOICE_CACHE_BUCKET and VOICE_CACHE_PREFIX:
+        try:
+            from google.cloud import storage as gcs
+            gcs_client = gcs.Client()
+            bucket = gcs_client.bucket(VOICE_CACHE_BUCKET)
+            for voice_name, (wav_path, ref_text, pt_path) in voices.items():
+                if pt_path and os.path.exists(pt_path):
+                    blob_path = f"{VOICE_CACHE_PREFIX}/{voice_name}.pt"
+                    blob = bucket.blob(blob_path)
+                    if not blob.exists():
+                        blob.upload_from_filename(pt_path)
+                        logging.info(f"Uploaded {voice_name}.pt to GCS")
+        except Exception as e:
+            logging.warning(f"GCS upload of speaker embeddings failed: {e}")
+
     if not voices:
         logging.warning("=" * 80)
         logging.warning("WARNING: No voices loaded!")
