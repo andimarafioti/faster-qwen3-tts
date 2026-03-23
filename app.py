@@ -519,8 +519,6 @@ async def tts_websocket(websocket: WebSocket):
             try:
                 chunk_count = 0
                 start_time = time.time()
-                # crossfade_samples = int(0.010 * 24000)  # 10ms crossfade at chunk boundaries
-                # prev_tail = None
 
                 for chunk, sample_rate, timing in model.generate_voice_clone_streaming(
                     text=text,
@@ -533,15 +531,6 @@ async def tts_websocket(websocket: WebSocket):
                     chunk_count += 1
                     pcm_data = np.nan_to_num(chunk.astype(np.float32), nan=0.0, posinf=1.0, neginf=-1.0)
                     pcm_data = np.clip(pcm_data, -1.0, 1.0)
-
-                    # Crossfade chunk boundary to smooth vocoder discontinuities
-                    # if prev_tail is not None and len(pcm_data) >= crossfade_samples:
-                    #     fade_in = np.linspace(0.0, 1.0, crossfade_samples, dtype=np.float32)
-                    #     fade_out = 1.0 - fade_in
-                    #     pcm_data[:crossfade_samples] = (
-                    #         prev_tail * fade_out + pcm_data[:crossfade_samples] * fade_in
-                    #     )
-                    # prev_tail = pcm_data[-crossfade_samples:].copy() if len(pcm_data) >= crossfade_samples else None
 
                     await websocket.send_json({
                         "type": "audio",
