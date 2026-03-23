@@ -13,4 +13,4 @@ voices:
     prefix: "voices"   # Prefix/path within the bucket
 
 streaming:
-  chunk_size: 8  # Number of codec frames per chunk (8 frames ≈ 667ms of audio)
+  chunk_size: 8  # Number of codec frames per chunk (16 frames ≈ 1333ms of audio)
