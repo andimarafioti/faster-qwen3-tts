@@ -30,13 +30,14 @@ RUN pip install --no-cache-dir \
     torchaudio==2.10.0 \
     --index-url https://download.pytorch.org/whl/cu128
 
-# Install faster-qwen3-tts
-# Will use the torch 2.10.0 already installed and add qwen-tts, transformers, soundfile, etc.
-RUN pip install --no-cache-dir faster-qwen3-tts
-
 # Install API server dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Install faster-qwen3-tts 0.2.5 from local source (has voice_clone_prompt support)
+COPY pyproject.toml .
+COPY faster_qwen3_tts/ /app/faster_qwen3_tts/
+RUN pip install --no-cache-dir -e .
 
 # Copy application code
 COPY config.yaml .
