@@ -327,13 +327,13 @@ def build_parser():
             "--non-streaming-mode",
             dest="non_streaming_mode",
             action="store_true",
-            help="Prefill full text for non-streaming quality",
+            help="Prefill full text before decode",
         )
         nsm_group.add_argument(
             "--no-non-streaming-mode",
             dest="non_streaming_mode",
             action="store_false",
-            help="Disable full-text prefill (match upstream non-streaming layout)",
+            help="Use upstream step-by-step text feeding during decode",
         )
         sp.set_defaults(non_streaming_mode=True)
         sp.add_argument("--chunk-size", type=int, default=8, help="Streaming chunk size")
@@ -342,7 +342,12 @@ def build_parser():
     add_common(sp)
     sp.add_argument("--ref-audio", required=True, help="Reference audio path")
     sp.add_argument("--ref-text", required=True, help="Reference transcript")
-    sp.add_argument("--xvec-only", action="store_true", help="Use speaker embedding only")
+    sp.add_argument(
+        "--xvec-only",
+        action="store_true",
+        help="Use speaker embedding only instead of upstream-default ICL mode",
+    )
+    sp.set_defaults(non_streaming_mode=False)
     sp.set_defaults(fn=cmd_clone)
 
     sp = sub.add_parser("custom", help="CustomVoice model (speaker IDs)")
@@ -371,15 +376,15 @@ def build_parser():
         "--non-streaming-mode",
         dest="non_streaming_mode",
         action="store_true",
-        help="Prefill full text for non-streaming quality",
+        help="Prefill full text before decode",
     )
     nsm_group.add_argument(
         "--no-non-streaming-mode",
         dest="non_streaming_mode",
         action="store_false",
-        help="Disable full-text prefill (match upstream non-streaming layout)",
+        help="Use upstream step-by-step text feeding during decode",
     )
-    sp.set_defaults(non_streaming_mode=True)
+    sp.set_defaults(non_streaming_mode=False)
     sp.add_argument("--chunk-size", type=int, default=8, help="Streaming chunk size")
     sp.add_argument("--max-new-tokens", type=int, default=2048)
     sp.add_argument("--temperature", type=float, default=0.9)

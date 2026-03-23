@@ -17,6 +17,7 @@ pip install faster-qwen3-tts
 ### Python
 
 ```python
+from examples.audio import StreamPlayer  # helper from this repo's examples/
 from faster_qwen3_tts import FasterQwen3TTS
 
 model = FasterQwen3TTS.from_pretrained("Qwen/Qwen3-TTS-12Hz-0.6B-Base")
@@ -28,12 +29,16 @@ ref_text = (
 )
 
 # Streaming — yields audio chunks during generation
-for audio_chunk, sr, timing in model.generate_voice_clone_streaming(
-    text="What do you mean that I'm not real?", language="English",
-    ref_audio=ref_audio, ref_text=ref_text,
-    chunk_size=8,  # 8 steps ≈ 667ms of audio per chunk
-):
-    play(audio_chunk, sr)  # process/send each chunk immediately
+play = StreamPlayer()
+try:
+    for audio_chunk, sr, timing in model.generate_voice_clone_streaming(
+        text="What do you mean that I'm not real?", language="English",
+        ref_audio=ref_audio, ref_text=ref_text,
+        chunk_size=8,  # 8 steps ≈ 667ms of audio per chunk
+    ):
+        play(audio_chunk, sr)
+finally:
+    play.close()
 
 # Non-streaming — returns all audio at once
 audio_list, sr = model.generate_voice_clone(
@@ -41,6 +46,14 @@ audio_list, sr = model.generate_voice_clone(
     ref_audio=ref_audio, ref_text=ref_text,
 )
 ```
+
+For local speaker playback from a repo checkout with the example helper:
+
+```bash
+pip install sounddevice
+```
+
+`examples/audio.py` contains a small `StreamPlayer` helper used by [`examples/streaming_playback.py`](examples/streaming_playback.py). It keeps one output stream open and queues chunks into it. A one-shot player such as `sounddevice.play(audio_chunk, sr)` restarts playback per chunk and can introduce gaps.
 
 ### CLI
 
@@ -79,7 +92,7 @@ faster-qwen3-tts design \
   --output out.wav
 ```
 
-Streaming (prints RTF after write):
+Streaming generation to a final WAV file (prints RTF after write):
 
 ```bash
 faster-qwen3-tts custom \
@@ -216,6 +229,8 @@ Smaller chunks = lower latency but more decode overhead. `chunk_size=2` is the s
 
 The CUDA graphs are unchanged — both predictor and talker graphs are replayed per step. The streaming generator yields codec ID chunks every `chunk_size` steps, and the model wrapper decodes each chunk to audio using a sliding window with 25-frame left context (matching the upstream codec's `chunked_decode` pattern) to avoid boundary artifacts.
 
+The Python streaming methods are pull-based generators: they prepare the next chunk when the caller requests it. For realtime local playback, use a queue-backed player such as `StreamPlayer`; blocking after each yielded chunk prevents generation and playback from overlapping.
+
 ## Voice Cloning Quality
 
 ### Cloning modes
@@ -224,10 +239,10 @@ The CUDA graphs are unchanged — both predictor and talker graphs are replayed 
 
 | Mode | `xvec_only` | Notes |
 |---|---|---|
-| Simple (x-vector) | `True` (default) | Speaker embedding only — shorter prefill, clean language switching, no `ref_text` needed |
-| Advanced (ICL) | `False` | Full reference audio in context — requires accurate `ref_text`, may produce a brief artifact at the start since it literally continues the sentence `ref_wav` you use |
+| Simple (x-vector) | `True` | Speaker embedding only — shorter prefill, clean language switching, no `ref_text` needed |
+| Advanced (ICL) | `False` (default) | Full reference audio in context — requires accurate `ref_text`, may produce a brief artifact at the start since it literally continues the sentence `ref_wav` you use |
 
-Simple mode is the default and generally produces clean results. Advanced (ICL) mode can more closely match the reference timbre but requires an accurate transcript and sometimes has a rough start on the first word.
+The default now matches upstream Qwen3-TTS: ICL mode with the reference audio in context. X-vector-only mode remains available as an opt-in for cleaner language switching and shorter prefills.
 
 ### Decoder context (ICL mode)
 
@@ -236,10 +251,14 @@ The 12 Hz codec uses a causal `chunked_decode`: each frame is reconstructed usin
 ### Text input streaming vs Non-streaming quality
 
 The original Qwen3TTS implementation supports two mode of generation. It either takes the full input text and prepares the utterance, or it feeds the text progressively. This is the `non_streaming_mode` parameter in the generation methods. The name is maintained from the Qwen3TTS implementation, but I understand it might bring some headaches since here we also have general audio output streaming.
-`generate_voice_clone` defaults to `non_streaming_mode=True` to put the **full target text** into the prefill before any audio is generated. This improves prosody/consistency for non‑streaming use cases.
-`generate_voice_clone_streaming` also defaults to `non_streaming_mode=True`, which pre-fills the full target text before streaming decode. Set it to `False` to match the upstream step‑by‑step text feeding behavior.
+`generate_voice_clone` now defaults to `non_streaming_mode=False` to match upstream step-by-step text feeding during decode.
+`generate_voice_clone_streaming` also defaults to `non_streaming_mode=False`. Set either method to `True` to pre-fill the full target text before decode for the old behavior.
 
 **Performance impact (RTX 4090, 1.7B, ICL, chunk_size=8):** TTFA is unchanged (≈159ms ± 1ms), and RTF is effectively the same (nsm=False: 4.87 ± 0.01, nsm=True: 4.85 ± 0.01).
+
+### Base-model instruct
+
+`instruct` is available on Base voice cloning, but treat it as experimental when used with `xvec_only=True`. In local testing and upstream-core probing, instruction-following behaved much more predictably in ICL mode (`xvec_only=False`) than in x-vector-only mode.
 
 ### ICL Phoneme Artifact
 
@@ -413,7 +432,10 @@ The speaker embedding is a 4KB file (2048-dim bf16 vector). In `x_vector_only` m
 - **Shorter prefill**: 10 tokens vs ~80+ in full ICL clone mode
 - **No ref audio at runtime**: just the 4KB embedding file
 
-You can now pass this precomputed prompt directly to the public APIs:
+You can now pass a precomputed prompt directly to the public APIs. The wrapper
+accepts either:
+- the raw `prompt_items` list returned by `create_voice_clone_prompt(...)`
+- or the lower-level dict form produced by `_prompt_items_to_voice_clone_prompt(...)`
 
 ```python
 import torch
@@ -421,39 +443,42 @@ from faster_qwen3_tts import FasterQwen3TTS
 
 model = FasterQwen3TTS.from_pretrained("Qwen/Qwen3-TTS-12Hz-1.7B-Base")
 
-# 1) Compute spk_emb once from reference audio
+# 1) Compute prompt_items once from reference audio
 prompt_items = model.model.create_voice_clone_prompt(
     ref_audio="voice.wav",
     ref_text="",
     x_vector_only_mode=True,
 )
+
+# 2) You can pass prompt_items directly
+audio_list, sr = model.generate_voice_clone(
+    text="Hello world!",
+    language="English",
+    voice_clone_prompt=prompt_items,
+)
+
+# 3) Or save just the speaker embedding and rebuild the compact dict form
 spk_emb = prompt_items[0].ref_spk_embedding
 
-# 2) Save for reuse across restarts
 torch.save(spk_emb.detach().cpu(), "speaker.pt")
 
-# 3) Load and pass it to voice_clone_prompt
 spk_emb = torch.load("speaker.pt", weights_only=True).to(model.device)
 
 voice_clone_prompt = {
-    "ref_code": [None],
     "ref_spk_embedding": [spk_emb],
-    "x_vector_only_mode": [True],
-    "icl_mode": [False],
 }
 
 audio_list, sr = model.generate_voice_clone(
     text="Hello world!",
     language="English",
-    ref_audio="ignored_when_voice_clone_prompt_is_set.wav",
-    ref_text="",
     voice_clone_prompt=voice_clone_prompt,
 )
 ```
 
 When `voice_clone_prompt` is provided, prompt extraction from `ref_audio` is skipped.
-`x_vector_only_mode` and `icl_mode` are explicit mode flags used by Qwen's prompt builder.
-Exactly one should be `True`: for a saved speaker embedding use `x_vector_only_mode=True` and `icl_mode=False`.
+For x-vector-only prompts, `ref_text` is ignored.
+For ICL precomputed prompts, pass `x_vector_only_mode=[False]`, `icl_mode=[True]`,
+and a non-`None` `ref_code`, and keep `ref_text` populated.
 
 ## License
 
