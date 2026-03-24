@@ -228,8 +228,7 @@ def load_voice_clone_prompt(pt_path: str, ref_text: Optional[str] = None) -> dic
     return dict(
         ref_code=[None], 
         ref_spk_embedding=[spk_emb], 
-        x_vector_only_mode=[not bool(ref_text)], 
-        icl_mode=[False]
+        x_vector_only_mode=[not bool(ref_text)],
         )
 
 LANGUAGE_CODE_MAP = {
