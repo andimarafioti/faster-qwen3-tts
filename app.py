@@ -16,14 +16,63 @@ import logging
 import time
 import json
 from typing import Optional, AsyncIterator
+from opentelemetry import trace, metrics
+from opentelemetry.propagate import extract
 from config import DEVICE, DTYPE, MODEL_NAME, ATTN_IMPLEMENTATION, VOICES_DIR, CHUNK_SIZE, VOICE_CACHE_BUCKET, VOICE_CACHE_PREFIX
+from otel_setup import init_otel, current_task_id
 
-# Configure logging
+# Initialize OTel before logging.basicConfig (init_otel sets root logger level)
+shutdown_otel = init_otel()
+
+# Configure logging (no-op if init_otel already configured the root logger)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
+
+# Tracer and meter
+tracer = trace.get_tracer("tts")
+meter = metrics.get_meter("tts")
+
+# Metrics: latency histograms
+tts_ttfa = meter.create_histogram("tts.ttfa", unit="ms", description="Time to first audio chunk")
+tts_generation_duration = meter.create_histogram("tts.generation.duration", unit="ms", description="Total generation duration")
+tts_rtf = meter.create_histogram("tts.rtf", description="Real-time factor (audio_duration / generation_time)")
+tts_errors = meter.create_counter("tts.errors", description="TTS generation error count")
+gcs_download_duration = meter.create_histogram("tts.gcs.download_duration", unit="ms", description="GCS file download latency")
+
+# Metrics: GPU observable gauges
+try:
+    import pynvml
+    pynvml.nvmlInit()
+    _nvml_handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+except Exception:
+    _nvml_handle = None
+
+
+def _gpu_util_cb(_options):
+    if _nvml_handle is None:
+        return []
+    try:
+        util = pynvml.nvmlDeviceGetUtilizationRates(_nvml_handle)
+        return [metrics.Observation(util.gpu)]
+    except Exception:
+        return []
+
+
+def _gpu_mem_cb(_options):
+    if _nvml_handle is None:
+        return []
+    try:
+        mem = pynvml.nvmlDeviceGetMemoryInfo(_nvml_handle)
+        return [metrics.Observation(round(mem.used / mem.total * 100, 1))]
+    except Exception:
+        return []
+
+
+meter.create_observable_gauge("tts.gpu.utilization_percent", callbacks=[_gpu_util_cb])
+meter.create_observable_gauge("tts.gpu.memory_percent", callbacks=[_gpu_mem_cb])
 
 # Global model instance
 model = None
@@ -142,12 +191,16 @@ def fetch_voice_from_gcs(voice_name: str, uid: Optional[str] = None) -> bool:
             wav_blob = bucket.blob(f"{gcs_prefix}/{voice_name}.wav")
             if not wav_blob.exists():
                 return False
+            _t = time.monotonic()
             wav_blob.download_to_filename(wav_path)
+            gcs_download_duration.record((time.monotonic() - _t) * 1000, {"file_type": "wav"})
 
             ref_text = None
             txt_blob = bucket.blob(f"{gcs_prefix}/{voice_name}.txt")
             if txt_blob.exists():
+                _t = time.monotonic()
                 txt_blob.download_to_filename(txt_path)
+                gcs_download_duration.record((time.monotonic() - _t) * 1000, {"file_type": "txt"})
                 with open(txt_path, 'r', encoding='utf-8') as f:
                     ref_text = f.read().strip()
 
@@ -156,7 +209,9 @@ def fetch_voice_from_gcs(voice_name: str, uid: Optional[str] = None) -> bool:
         if os.path.exists(pt_path):
             logging.info(f"Using cached .pt embedding for voice '{voice_name}' from disk")
         elif pt_blob.exists():
+            _t = time.monotonic()
             pt_blob.download_to_filename(pt_path)
+            gcs_download_duration.record((time.monotonic() - _t) * 1000, {"file_type": "pt"})
             logging.info(f"Downloaded .pt embedding for voice '{voice_name}' from GCS")
         elif model is not None:
             if extract_speaker_embedding(wav_path, ref_text, pt_path):
@@ -372,6 +427,9 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    # Flush OTel before cleanup
+    shutdown_otel()
+
     # Cleanup
     del model
     if torch.cuda.is_available():
@@ -384,6 +442,9 @@ app = FastAPI(
     version="0.2.4",
     lifespan=lifespan
 )
+
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+FastAPIInstrumentor.instrument_app(app)
 
 
 @app.get("/health")
@@ -660,58 +721,97 @@ async def tts_websocket(websocket: WebSocket):
 
             logging.info(f"WebSocket: text='{text[:50]}...', language={language}, voice={voice_name}")
 
-            # Send start message
-            await websocket.send_json({
-                "type": "start",
-                "sample_rate": 24000,
-                "chunk_size": CHUNK_SIZE,
+            # Extract trace context and task_id from request
+            raw_data = json.loads(data)
+            traceparent = raw_data.get("traceparent", "")
+            task_id = raw_data.get("task_id", "")
+            ctx = extract({"traceparent": traceparent}) if traceparent else None
+            current_task_id.set(task_id)
+
+            with tracer.start_as_current_span("tts.generate", context=ctx, attributes={
+                "task_id": task_id,
                 "voice": voice_name,
-                "format": "float32",
-                "request_id": request_id,
-            })
+                "language": language,
+                "text_length": len(text),
+                "request_id": request_id or "",
+            }) as span:
 
-            # Generate and stream audio
-            try:
-                chunk_count = 0
-                start_time = time.time()
-
-                for chunk, sample_rate, timing in model.generate_voice_clone_streaming(
-                    text=text,
-                    language=language,
-                    ref_audio=ref_audio if not vcp else None,
-                    ref_text=ref_text,
-                    voice_clone_prompt=vcp,
-                    chunk_size=CHUNK_SIZE,
-                    xvec_only=False,
-                ):
-                    chunk_count += 1
-                    pcm_data = np.nan_to_num(chunk.astype(np.float32), nan=0.0, posinf=1.0, neginf=-1.0)
-                    pcm_data = np.clip(pcm_data, -1.0, 1.0)
-
-                    await websocket.send_json({
-                        "type": "audio",
-                        "data": pcm_data.tolist(),
-                        "sample_rate": sample_rate,
-                        "chunk_index": chunk_count,
-                    })
-
-                total_time = time.time() - start_time
-
+                # Send start message
                 await websocket.send_json({
-                    "type": "end",
-                    "total_chunks": chunk_count,
-                    "total_time_seconds": total_time,
+                    "type": "start",
+                    "sample_rate": 24000,
+                    "chunk_size": CHUNK_SIZE,
+                    "voice": voice_name,
+                    "format": "float32",
                     "request_id": request_id,
                 })
 
-                logging.info(f"WebSocket streaming complete: {chunk_count} chunks in {total_time:.2f}s")
+                # Generate and stream audio
+                try:
+                    chunk_count = 0
+                    total_samples = 0
+                    start_time = time.time()
 
-            except Exception as e:
-                logging.error(f"Error during streaming: {e}")
-                await websocket.send_json({
-                    "type": "error",
-                    "message": str(e)
-                })
+                    for chunk, sample_rate, timing in model.generate_voice_clone_streaming(
+                        text=text,
+                        language=language,
+                        ref_audio=ref_audio if not vcp else None,
+                        ref_text=ref_text,
+                        voice_clone_prompt=vcp,
+                        chunk_size=CHUNK_SIZE,
+                        xvec_only=False,
+                    ):
+                        chunk_count += 1
+                        total_samples += len(chunk)
+                        pcm_data = np.nan_to_num(chunk.astype(np.float32), nan=0.0, posinf=1.0, neginf=-1.0)
+                        pcm_data = np.clip(pcm_data, -1.0, 1.0)
+
+                        # Record TTFA on first chunk
+                        if chunk_count == 1:
+                            ttfa_ms = (time.time() - start_time) * 1000
+                            tts_ttfa.record(ttfa_ms)
+                            span.set_attribute("ttfa_ms", round(ttfa_ms, 1))
+
+                        await websocket.send_json({
+                            "type": "audio",
+                            "data": pcm_data.tolist(),
+                            "sample_rate": sample_rate,
+                            "chunk_index": chunk_count,
+                        })
+
+                    total_time = time.time() - start_time
+                    total_ms = total_time * 1000
+                    audio_duration_s = total_samples / 24000 if total_samples > 0 else 0
+                    rtf = audio_duration_s / total_time if total_time > 0 else 0
+
+                    # Record metrics
+                    tts_generation_duration.record(total_ms)
+                    tts_rtf.record(rtf)
+
+                    # Set span attributes
+                    span.set_attribute("generation_ms", round(total_ms, 1))
+                    span.set_attribute("audio_duration_s", round(audio_duration_s, 2))
+                    span.set_attribute("rtf", round(rtf, 2))
+                    span.set_attribute("chunk_count", chunk_count)
+
+                    await websocket.send_json({
+                        "type": "end",
+                        "total_chunks": chunk_count,
+                        "total_time_seconds": total_time,
+                        "request_id": request_id,
+                    })
+
+                    logging.info(f"WebSocket streaming complete: {chunk_count} chunks in {total_time:.2f}s (RTF={rtf:.2f})")
+
+                except Exception as e:
+                    tts_errors.add(1)
+                    span.set_attribute("error", True)
+                    span.set_attribute("error.message", str(e))
+                    logging.error(f"Error during streaming: {e}")
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": str(e)
+                    })
 
     except WebSocketDisconnect:
         logging.info("WebSocket connection closed")
