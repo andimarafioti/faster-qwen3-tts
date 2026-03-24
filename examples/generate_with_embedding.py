@@ -95,7 +95,7 @@ def main():
         temperature=0.9, top_k=50, do_sample=True, max_new_tokens=2048,
     )
     if codec_ids is not None and codec_ids.numel() > 0:
-        wavs, sr = model.model.speech_tokenizer.decode([{"audio_codes": codec_ids.to(model.device)}])
+        wavs, sr = model.speech_tokenizer.decode({"audio_codes": codec_ids.to(model.device).unsqueeze(0)})
         audio = wavs[0]
         sf.write(args.output, audio, sr)
         n_steps = timing['steps']

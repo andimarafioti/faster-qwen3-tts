@@ -27,9 +27,11 @@ logging.basicConfig(
 
 # Global model instance
 model = None
-# Voice metadata: maps voice name to (ref_audio_path, ref_text)
-# FasterQwen3TTS caches the actual embeddings internally
+# Voice metadata: maps voice name to (ref_audio_path, ref_text, vcp)
+# vcp is a pre-loaded voice_clone_prompt dict (or None if not yet extracted)
 voices = {}
+# Cached GCS bucket client (initialized once on first use)
+_gcs_bucket = None
 
 # Enable TensorFloat32 for better performance on Ampere+ GPUs
 torch.set_float32_matmul_precision('high')
@@ -53,7 +55,7 @@ def discover_voices(voices_dir: str) -> dict:
         voices_dir: Directory containing voice samples
 
     Returns:
-        dict: Mapping of voice name to (ref_audio_path, ref_text)
+        dict: Mapping of voice name to (ref_audio_path, ref_text, vcp)
     """
     voice_map = {}
 
@@ -91,11 +93,14 @@ def discover_voices(voices_dir: str) -> dict:
         else:
             logging.warning(f"  [{voice_name}] No matching .txt file found")
 
-        if ref_text:
-            voice_map[voice_name] = (wav_path, ref_text)
+        pt_path = os.path.join(voices_dir, f"{voice_name}.pt")
+        vcp = load_voice_clone_prompt(pt_path, ref_text) if os.path.exists(pt_path) else None
+
+        if ref_text or vcp:
+            voice_map[voice_name] = (wav_path, ref_text, vcp)
             logging.info(f"  [{voice_name}] ✓ Loaded")
         else:
-            logging.warning(f"  [{voice_name}] ✗ Skipping (no transcript)")
+            logging.warning(f"  [{voice_name}] ✗ Skipping (no transcript and no .pt)")
 
     logging.info("=" * 80)
     logging.info(f"Successfully loaded {len(voice_map)} voice(s): {list(voice_map.keys())}")
@@ -113,17 +118,12 @@ def fetch_voice_from_gcs(voice_name: str, uid: Optional[str] = None) -> bool:
     if not VOICE_CACHE_BUCKET or not VOICE_CACHE_PREFIX:
         return False
 
+    bucket = get_gcs_bucket()
+    if bucket is None:
+        return False
+
     try:
-        from google.cloud import storage as gcs
-        gcs_client = gcs.Client()
-        bucket = gcs_client.bucket(VOICE_CACHE_BUCKET)
         gcs_prefix = f"{VOICE_CACHE_PREFIX}/{uid}" if uid else VOICE_CACHE_PREFIX
-
-        wav_blob = bucket.blob(f"{gcs_prefix}/{voice_name}.wav")
-        txt_blob = bucket.blob(f"{gcs_prefix}/{voice_name}.txt")
-
-        if not wav_blob.exists() or not txt_blob.exists():
-            return False
 
         voice_dir = os.path.join(VOICES_DIR, uid) if uid else VOICES_DIR
         os.makedirs(voice_dir, exist_ok=True)
@@ -131,20 +131,120 @@ def fetch_voice_from_gcs(voice_name: str, uid: Optional[str] = None) -> bool:
         wav_path = os.path.join(voice_dir, f"{voice_name}.wav")
         txt_path = os.path.join(voice_dir, f"{voice_name}.txt")
 
-        wav_blob.download_to_filename(wav_path)
-        txt_blob.download_to_filename(txt_path)
+        # If already on disk (e.g. from init_voices), skip GCS download for wav/txt
+        if os.path.exists(wav_path):
+            ref_text = None
+            if os.path.exists(txt_path):
+                with open(txt_path, 'r', encoding='utf-8') as f:
+                    ref_text = f.read().strip()
+        else:
+            wav_blob = bucket.blob(f"{gcs_prefix}/{voice_name}.wav")
+            if not wav_blob.exists():
+                return False
+            wav_blob.download_to_filename(wav_path)
 
-        with open(txt_path, 'r', encoding='utf-8') as f:
-            ref_text = f.read().strip()
+            ref_text = None
+            txt_blob = bucket.blob(f"{gcs_prefix}/{voice_name}.txt")
+            if txt_blob.exists():
+                txt_blob.download_to_filename(txt_path)
+                with open(txt_path, 'r', encoding='utf-8') as f:
+                    ref_text = f.read().strip()
+
+        pt_path = os.path.join(voice_dir, f"{voice_name}.pt")
+        pt_blob = bucket.blob(f"{gcs_prefix}/{voice_name}.pt")
+        if os.path.exists(pt_path):
+            logging.info(f"Using cached .pt embedding for voice '{voice_name}' from disk")
+        elif pt_blob.exists():
+            pt_blob.download_to_filename(pt_path)
+            logging.info(f"Downloaded .pt embedding for voice '{voice_name}' from GCS")
+        elif model is not None:
+            if extract_speaker_embedding(wav_path, ref_text, pt_path):
+                logging.info(f"Extracted .pt embedding for voice '{voice_name}'")
+                try:
+                    pt_blob.upload_from_filename(pt_path)
+                    logging.info(f"Uploaded .pt embedding for voice '{voice_name}' to GCS")
+                except Exception as e:
+                    logging.warning(f"GCS upload of .pt failed for '{voice_name}': {e}")
+            else:
+                pt_path = None
 
         cache_key = f"{uid}/{voice_name}" if uid else voice_name
-        voices[cache_key] = (wav_path, ref_text)
+        vcp = load_voice_clone_prompt(pt_path, ref_text) if pt_path and os.path.exists(pt_path) else None
+        if vcp is None and model is not None and os.path.exists(wav_path):
+            if extract_speaker_embedding(wav_path, ref_text, pt_path):
+                vcp = load_voice_clone_prompt(pt_path, ref_text)
+                try:
+                    pt_blob.upload_from_filename(pt_path)
+                except Exception as e:
+                    logging.warning(f"GCS upload of .pt failed for '{voice_name}': {e}")
+        voices[cache_key] = (wav_path, ref_text, vcp)
         logging.info(f"Fetched voice '{cache_key}' from GCS")
         return True
+
     except Exception as e:
         logging.warning(f"Failed to fetch voice '{voice_name}' from GCS: {e}")
         return False
 
+def get_gcs_bucket():
+    """Return cached GCS bucket if configured, else None."""
+    global _gcs_bucket
+    if not VOICE_CACHE_BUCKET or not VOICE_CACHE_PREFIX:
+        return None
+    if _gcs_bucket is not None:
+        return _gcs_bucket
+    try:
+        from google.cloud import storage as gcs
+        _gcs_bucket = gcs.Client().bucket(VOICE_CACHE_BUCKET)
+        return _gcs_bucket
+    except Exception as e:
+        logging.warning(f"GCS client init failed: {e}")
+        return None
+
+
+def extract_speaker_embedding(wav_path: str, ref_text: str, pt_out: str) -> bool:
+    """Extract speaker embedding from wav and save to pt_out. Returns True on success."""
+    try:
+        prompt_items = model.model.create_voice_clone_prompt(
+            ref_audio=wav_path,
+            ref_text=ref_text or "",
+            x_vector_only_mode=not bool(ref_text),
+        )
+        torch.save({
+            'ref_spk_embedding': prompt_items[0].ref_spk_embedding.cpu(),
+            'ref_code': prompt_items[0].ref_code,
+        }, pt_out)
+        return True
+    except Exception as e:
+        logging.warning(f"Failed to extract embedding: {e}")
+        return False
+
+
+def resolve_voice(voice_name: str, uid: Optional[str] = None):
+    """Resolve a voice name to (ref_audio, ref_text, vcp). Raises HTTPException on failure."""
+    cache_key = f"{uid}/{voice_name}" if uid else voice_name
+    if cache_key not in voices and voice_name not in voices:
+        if not fetch_voice_from_gcs(voice_name, uid=uid):
+            raise HTTPException(status_code=404, detail=f"Voice '{voice_name}' not found")
+    ref_audio, ref_text, vcp = voices.get(cache_key, voices.get(voice_name))
+    if not ref_audio and not ref_text and not vcp:
+        raise HTTPException(status_code=500, detail=f"Voice '{voice_name}' has no usable data")
+    if ref_audio and not ref_text and not vcp:
+        logging.warning(f"Voice '{voice_name}' has no transcript or embedding, quality may be reduced")
+    return ref_audio, ref_text, vcp
+
+
+def load_voice_clone_prompt(pt_path: str, ref_text: Optional[str] = None) -> Optional[dict]:
+    data = torch.load(pt_path, weights_only=True)
+    if not isinstance(data, dict):
+        # old format (embedding tensor only) — needs re-extraction to get ref_code
+        return None
+    spk_emb = data['ref_spk_embedding'].to(DEVICE)
+    ref_code = data.get('ref_code')
+    return dict(
+        ref_code=[ref_code],
+        ref_spk_embedding=[spk_emb],
+        x_vector_only_mode=[ref_code is None],
+    )
 
 LANGUAGE_CODE_MAP = {
     "en": "English",
@@ -210,6 +310,28 @@ async def lifespan(app: FastAPI):
     # Discover voices
     voices = discover_voices(VOICES_DIR)
 
+    # Auto-extract .pt speaker embeddings for voices that don't have one yet
+    gcs_bucket = get_gcs_bucket()
+
+    for voice_name, (wav_path, ref_text, vcp) in list(voices.items()):
+        if vcp is None and wav_path and os.path.exists(wav_path):
+            try:
+                logging.info(f"Extracting speaker embedding for '{voice_name}'...")
+                pt_out = os.path.join(os.path.dirname(wav_path), f"{voice_name}.pt")
+                if not extract_speaker_embedding(wav_path, ref_text, pt_out):
+                    continue
+                new_vcp = load_voice_clone_prompt(pt_out, ref_text)
+                voices[voice_name] = (wav_path, ref_text, new_vcp)
+                logging.info(f"  Saved embedding to {pt_out}")
+                if gcs_bucket:
+                    try:
+                        gcs_bucket.blob(f"{VOICE_CACHE_PREFIX}/{voice_name}.pt").upload_from_filename(pt_out)
+                        logging.info(f"  Uploaded {voice_name}.pt to GCS")
+                    except Exception as e:
+                        logging.warning(f"  GCS upload failed for {voice_name}.pt: {e}")
+            except Exception as e:
+                logging.warning(f"  Failed to extract embedding for '{voice_name}': {e}")
+
     if not voices:
         logging.warning("=" * 80)
         logging.warning("WARNING: No voices loaded!")
@@ -269,11 +391,9 @@ async def list_voices(uid: Optional[str] = None):
         }
 
         # Check GCS for additional user voices
-        if VOICE_CACHE_BUCKET and VOICE_CACHE_PREFIX:
+        bucket = get_gcs_bucket()
+        if bucket:
             try:
-                from google.cloud import storage as gcs
-                gcs_client = gcs.Client()
-                bucket = gcs_client.bucket(VOICE_CACHE_BUCKET)
                 gcs_prefix = f"{VOICE_CACHE_PREFIX}/{uid}/"
                 blobs = bucket.list_blobs(prefix=gcs_prefix)
                 for blob in blobs:
@@ -283,10 +403,10 @@ async def list_voices(uid: Optional[str] = None):
             except Exception as e:
                 logging.warning(f"Failed to list GCS voices for uid={uid}: {e}")
 
-        user_voices = [{"id": name, "loaded": f"{uid}/{name}" in voices} for name in sorted(local_voices)]
+        user_voices = [{"id": name, "loaded": f"{uid}/{name}" in voices, "has_embedding": voices.get(f"{uid}/{name}", (None, None, None))[2] is not None} for name in sorted(local_voices)]
 
     return {
-        "system_voices": sorted(system_voices),
+        "system_voices": [{"id": k, "has_embedding": voices.get(k, (None, None, None))[2] is not None} for k in sorted(system_voices)],
         "user_voices": user_voices,
     }
 
@@ -364,18 +484,27 @@ async def upload_voice(
             f.write(txt_content)
         logging.info(f"Saved transcript to {txt_path}")
 
+        # Auto-extract .pt speaker embedding
+        pt_path = os.path.join(voice_dir, f"{voice_name}.pt")
+        if extract_speaker_embedding(wav_path, ref_text, pt_path):
+            logging.info(f"Extracted speaker embedding for '{voice_name}'")
+        else:
+            pt_path = None
+
         # Add to voices dictionary
-        voices[cache_key] = (wav_path, ref_text)
+        vcp = load_voice_clone_prompt(pt_path, ref_text) if pt_path else None
+        voices[cache_key] = (wav_path, ref_text, vcp)
 
         # Upload to GCS if configured
-        if VOICE_CACHE_BUCKET and VOICE_CACHE_PREFIX:
+        bucket = get_gcs_bucket()
+        if bucket:
             try:
-                from google.cloud import storage as gcs
-                gcs_client = gcs.Client()
-                bucket = gcs_client.bucket(VOICE_CACHE_BUCKET)
                 gcs_prefix = f"{VOICE_CACHE_PREFIX}/{uid}" if uid else VOICE_CACHE_PREFIX
                 bucket.blob(f"{gcs_prefix}/{voice_name}.wav").upload_from_filename(wav_path)
                 bucket.blob(f"{gcs_prefix}/{voice_name}.txt").upload_from_filename(txt_path)
+                if pt_path and os.path.exists(pt_path):
+                    bucket.blob(f"{gcs_prefix}/{voice_name}.pt").upload_from_filename(pt_path)
+                    logging.info(f"Uploaded .pt embedding for voice '{voice_name}' to GCS")
                 logging.info(f"Uploaded voice '{voice_name}' to gs://{VOICE_CACHE_BUCKET}/{gcs_prefix}/")
             except Exception as e:
                 logging.warning(f"GCS upload failed for voice '{voice_name}': {e}")
@@ -410,30 +539,34 @@ async def tts_stream_http(request: TTSRequest):
             raise HTTPException(status_code=503, detail="No voices available")
         voice_name = list(voices.keys())[0]
 
-    # Check uid-specific voice first, then fallback to system voice, then try GCS
-    cache_key = f"{request.uid}/{voice_name}" if request.uid else voice_name
-    if cache_key not in voices and voice_name not in voices:
-        if not fetch_voice_from_gcs(voice_name, uid=request.uid):
-            raise HTTPException(status_code=404, detail=f"Voice '{voice_name}' not found")
-
-    ref_audio, ref_text = voices.get(cache_key, voices.get(voice_name))
+    ref_audio, ref_text, vcp = resolve_voice(voice_name, uid=request.uid)
 
     logging.info(f"HTTP Stream: text='{request.text[:50]}...', language={request.language}, voice={voice_name}")
+
+    stream_start_time = time.time()
+    ttfa_ms = None  # Time to first audio chunk
 
     async def generate_audio() -> AsyncIterator[bytes]:
         """Generate audio chunks and yield as raw PCM float32 bytes."""
         try:
+            first_chunk = True
             for chunk, sr, timing in model.generate_voice_clone_streaming(
                 text=request.text,
                 language=request.language,
-                ref_audio=ref_audio,
+                ref_audio=ref_audio if not vcp else None,
                 ref_text=ref_text,
+                voice_clone_prompt=vcp,
                 chunk_size=CHUNK_SIZE,
                 xvec_only=False,
             ):
 
                 pcm = np.nan_to_num(chunk.astype(np.float32), nan=0.0, posinf=1.0, neginf=-1.0)
                 pcm = np.clip(pcm, -1.0, 1.0)
+                if first_chunk:
+                    nonlocal ttfa_ms
+                    ttfa_ms = (time.time() - stream_start_time) * 1000
+                    logging.info(f"Time to first audio chunk: {ttfa_ms:.2f} ms")
+                    first_chunk = False
                 yield pcm.tobytes()
 
             logging.info(f"HTTP streaming complete")
@@ -450,10 +583,10 @@ async def tts_stream_http(request: TTSRequest):
             "X-Channels": "1",
             "X-Format": "float32",
             **({"X-Request-ID": request.request_id} if request.request_id else {}),
+            **({"X-TTFA-MS": str(ttfa_ms)} if ttfa_ms else {}),
         }
     )
-
-
+    
 @app.websocket("/tts/ws")
 async def tts_websocket(websocket: WebSocket):
     """WebSocket endpoint for real-time TTS streaming."""
@@ -492,16 +625,11 @@ async def tts_websocket(websocket: WebSocket):
                 voice_name = list(voices.keys())[0]
 
             uid = request.uid
-            cache_key = f"{uid}/{voice_name}" if uid else voice_name
-            if cache_key not in voices and voice_name not in voices:
-                if not fetch_voice_from_gcs(voice_name, uid=uid):
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": f"Voice '{voice_name}' not found"
-                    })
-                    continue
-
-            ref_audio, ref_text = voices.get(cache_key, voices.get(voice_name))
+            try:
+                ref_audio, ref_text, vcp = resolve_voice(voice_name, uid=uid)
+            except HTTPException as e:
+                await websocket.send_json({"type": "error", "message": e.detail})
+                continue
 
             logging.info(f"WebSocket: text='{text[:50]}...', language={language}, voice={voice_name}")
 
@@ -523,8 +651,9 @@ async def tts_websocket(websocket: WebSocket):
                 for chunk, sample_rate, timing in model.generate_voice_clone_streaming(
                     text=text,
                     language=language,
-                    ref_audio=ref_audio,
+                    ref_audio=ref_audio if not vcp else None,
                     ref_text=ref_text,
+                    voice_clone_prompt=vcp,
                     chunk_size=CHUNK_SIZE,
                     xvec_only=False,
                 ):
@@ -577,13 +706,9 @@ async def tts_generate(request: TTSRequest):
     if not request.voice:
         raise HTTPException(status_code=400, detail="Voice required")
 
-    # Check uid-specific voice first, then fallback to system voice, then try GCS
-    cache_key = f"{request.uid}/{request.voice}" if request.uid else request.voice
-    if cache_key not in voices and request.voice not in voices:
-        if not fetch_voice_from_gcs(request.voice, uid=request.uid):
-            raise HTTPException(status_code=404, detail=f"Voice '{request.voice}' not found")
+    ref_audio, ref_text, vcp = resolve_voice(request.voice, uid=request.uid)
 
-    ref_audio, ref_text = voices.get(cache_key, voices.get(request.voice))
+    logging.info(f"HTTP Generate: text='{request.text[:50]}...', language={request.language}, voice={request.voice}")
 
     try:
         start_time = time.time()
@@ -591,8 +716,9 @@ async def tts_generate(request: TTSRequest):
         wavs, sample_rate = model.generate_voice_clone(
             text=request.text,
             language=request.language,
-            ref_audio=ref_audio,
+            ref_audio=ref_audio if not vcp else None,
             ref_text=ref_text,
+            voice_clone_prompt=vcp,
             xvec_only=False,
         )
 
@@ -602,11 +728,13 @@ async def tts_generate(request: TTSRequest):
         audio_duration = round(len(wav_np) / sample_rate, 2)
         pcm_bytes = wav_np.tobytes()
 
-        logging.info(f"Generated {audio_duration}s audio in {generation_time}s")
+        rtf = round(audio_duration / generation_time, 3) if generation_time > 0 else 0.0
+        logging.info(f"Generated {audio_duration}s audio in {generation_time}s (RTF={rtf})")
 
         headers = {
             "X-Audio-Duration": str(audio_duration),
             "X-Generation-Time": str(generation_time),
+            "X-RTF": str(rtf),
             "X-Sample-Rate": str(sample_rate),
             "X-Channels": "1",
             "X-Format": "float32",
