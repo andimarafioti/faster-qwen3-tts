@@ -1,8 +1,8 @@
 # values.yaml - Faster Qwen3 TTS Configuration
 
 image:
-  repository: us-docker.pkg.dev/qarlproductionregistries/dockerimgstaging/faster-qwen3-tts
-  tag: "1.0.9"
+  repository: us-docker.pkg.dev/qarlproductionregistries/dockerimg/faster-qwen3-tts
+  tag: "1.0.6"
   pullPolicy: IfNotPresent
 
 imagePullSecrets:

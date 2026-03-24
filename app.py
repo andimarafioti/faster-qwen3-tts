@@ -170,6 +170,13 @@ def fetch_voice_from_gcs(voice_name: str, uid: Optional[str] = None) -> bool:
 
         cache_key = f"{uid}/{voice_name}" if uid else voice_name
         vcp = load_voice_clone_prompt(pt_path, ref_text) if pt_path and os.path.exists(pt_path) else None
+        if vcp is None and model is not None and os.path.exists(wav_path):
+            if extract_speaker_embedding(wav_path, ref_text, pt_path):
+                vcp = load_voice_clone_prompt(pt_path, ref_text)
+                try:
+                    pt_blob.upload_from_filename(pt_path)
+                except Exception as e:
+                    logging.warning(f"GCS upload of .pt failed for '{voice_name}': {e}")
         voices[cache_key] = (wav_path, ref_text, vcp)
         logging.info(f"Fetched voice '{cache_key}' from GCS")
         return True
@@ -202,7 +209,10 @@ def extract_speaker_embedding(wav_path: str, ref_text: str, pt_out: str) -> bool
             ref_text=ref_text or "",
             x_vector_only_mode=not bool(ref_text),
         )
-        torch.save(prompt_items[0].ref_spk_embedding.cpu(), pt_out)
+        torch.save({
+            'ref_spk_embedding': prompt_items[0].ref_spk_embedding.cpu(),
+            'ref_code': prompt_items[0].ref_code,
+        }, pt_out)
         return True
     except Exception as e:
         logging.warning(f"Failed to extract embedding: {e}")
@@ -223,13 +233,18 @@ def resolve_voice(voice_name: str, uid: Optional[str] = None):
     return ref_audio, ref_text, vcp
 
 
-def load_voice_clone_prompt(pt_path: str, ref_text: Optional[str] = None) -> dict:
-    spk_emb = torch.load(pt_path, weights_only=True).to(DEVICE)
+def load_voice_clone_prompt(pt_path: str, ref_text: Optional[str] = None) -> Optional[dict]:
+    data = torch.load(pt_path, weights_only=True)
+    if not isinstance(data, dict):
+        # old format (embedding tensor only) — needs re-extraction to get ref_code
+        return None
+    spk_emb = data['ref_spk_embedding'].to(DEVICE)
+    ref_code = data.get('ref_code')
     return dict(
-        ref_code=[None], 
-        ref_spk_embedding=[spk_emb], 
-        x_vector_only_mode=[not bool(ref_text)],
-        )
+        ref_code=[ref_code],
+        ref_spk_embedding=[spk_emb],
+        x_vector_only_mode=[ref_code is None],
+    )
 
 LANGUAGE_CODE_MAP = {
     "en": "English",
@@ -539,7 +554,7 @@ async def tts_stream_http(request: TTSRequest):
                 text=request.text,
                 language=request.language,
                 ref_audio=ref_audio if not vcp else None,
-                ref_text=ref_text if not vcp else None,
+                ref_text=ref_text,
                 voice_clone_prompt=vcp,
                 chunk_size=CHUNK_SIZE,
                 xvec_only=False,
@@ -637,7 +652,7 @@ async def tts_websocket(websocket: WebSocket):
                     text=text,
                     language=language,
                     ref_audio=ref_audio if not vcp else None,
-                    ref_text=ref_text if not vcp else None,
+                    ref_text=ref_text,
                     voice_clone_prompt=vcp,
                     chunk_size=CHUNK_SIZE,
                     xvec_only=False,
@@ -702,7 +717,7 @@ async def tts_generate(request: TTSRequest):
             text=request.text,
             language=request.language,
             ref_audio=ref_audio if not vcp else None,
-            ref_text=ref_text if not vcp else None,
+            ref_text=ref_text,
             voice_clone_prompt=vcp,
             xvec_only=False,
         )
