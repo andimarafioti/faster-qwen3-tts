@@ -443,8 +443,6 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-FastAPIInstrumentor.instrument_app(app)
 
 
 @app.get("/health")
@@ -719,8 +717,6 @@ async def tts_websocket(websocket: WebSocket):
                 await websocket.send_json({"type": "error", "message": e.detail})
                 continue
 
-            logging.info(f"WebSocket: text='{text[:50]}...', language={language}, voice={voice_name}")
-
             # Extract trace context and task_id from request
             raw_data = json.loads(data)
             traceparent = raw_data.get("traceparent", "")
@@ -735,6 +731,8 @@ async def tts_websocket(websocket: WebSocket):
                 "text_length": len(text),
                 "request_id": request_id or "",
             }) as span:
+
+                logging.info(f"WebSocket: text='{text[:50]}...', language={language}, voice={voice_name}")
 
                 # Send start message
                 await websocket.send_json({
