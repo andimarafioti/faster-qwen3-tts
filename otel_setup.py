@@ -62,9 +62,9 @@ def init_otel() -> Callable:
 
     # Bridge stdlib logging -> OTel LogHandler
     handler = LoggingHandler(logger_provider=logger_provider)
+    handler.addFilter(TaskIdFilter())
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
-    root_logger.addFilter(TaskIdFilter())
     root_logger.addHandler(handler)
 
     def shutdown():
