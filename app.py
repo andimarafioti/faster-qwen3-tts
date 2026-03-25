@@ -697,15 +697,6 @@ async def tts_websocket(websocket: WebSocket):
 
                 total_time = time.time() - start_time
 
-                silence = np.zeros(int(24000 * 0.3), dtype=np.float32)
-                chunk_count += 1
-                await websocket.send_json({
-                    "type": "audio",
-                    "data": silence.tolist(),
-                    "sample_rate": 24000,
-                    "chunk_index": chunk_count,
-                })
-
                 await websocket.send_json({
                     "type": "end",
                     "total_chunks": chunk_count,
