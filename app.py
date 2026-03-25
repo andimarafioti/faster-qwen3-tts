@@ -27,6 +27,7 @@ logging.basicConfig(
 
 # Global model instance
 model = None
+model_ready = False
 # Voice metadata: maps voice name to (ref_audio_path, ref_text, vcp)
 # vcp is a pre-loaded voice_clone_prompt dict (or None if not yet extracted)
 voices = {}
@@ -282,7 +283,7 @@ class TTSRequest(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Load model on startup, cleanup on shutdown."""
-    global model, voices
+    global model, voices, model_ready
 
     logging.info("=" * 80)
     logging.info("Loading Faster Qwen3 TTS Model...")
@@ -339,6 +340,30 @@ async def lifespan(app: FastAPI):
         logging.warning(f"Please ensure voice .wav and .txt files exist in {VOICES_DIR}")
         logging.warning("=" * 80)
 
+    # Warmup: run one inference to trigger CUDA graph capture/JIT compilation
+    # so the first real request isn't slow.
+    if voices:
+        warmup_voice = list(voices.keys())[0]
+        ref_audio, ref_text, vcp = voices[warmup_voice]
+        logging.info(f"Warming up model with voice '{warmup_voice}'...")
+        warmup_start = time.time()
+        try:
+            for _ in model.generate_voice_clone_streaming(
+                text="Hello.",
+                language="English",
+                ref_audio=ref_audio if not vcp else None,
+                ref_text=ref_text,
+                voice_clone_prompt=vcp,
+                chunk_size=CHUNK_SIZE,
+                xvec_only=False,
+            ):
+                pass
+            logging.info(f"Warmup complete in {time.time() - warmup_start:.2f}s")
+            model_ready = True
+        except Exception as e:
+            logging.warning(f"Warmup failed (non-fatal): {e}")
+            model_ready = True
+
     logging.info("=" * 80)
     logging.info("Faster Qwen3 TTS API Server Ready!")
     logging.info(f"Available voices: {list(voices.keys())}")
@@ -364,6 +389,8 @@ app = FastAPI(
 @app.get("/health")
 async def health():
     """Health check endpoint."""
+    if not model_ready:
+        raise HTTPException(status_code=503, detail="Model not ready")
     return {
         "status": "ok",
         "model": MODEL_NAME,
@@ -669,6 +696,15 @@ async def tts_websocket(websocket: WebSocket):
                     })
 
                 total_time = time.time() - start_time
+
+                silence = np.zeros(int(24000 * 0.3), dtype=np.float32)
+                chunk_count += 1
+                await websocket.send_json({
+                    "type": "audio",
+                    "data": silence.tolist(),
+                    "sample_rate": 24000,
+                    "chunk_index": chunk_count,
+                })
 
                 await websocket.send_json({
                     "type": "end",
