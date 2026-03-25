@@ -89,10 +89,16 @@ spec:
               key: {{ .Values.hfToken.secretKey | default "HF_TOKEN" }}
         {{- end }}
         {{- if .Values.gcs.voiceCacheBucket }}
-        - name: VOICE_CACHE_BUCKET 
+        - name: VOICE_CACHE_BUCKET
           value: {{ .Values.gcs.voiceCacheBucket | quote }}
         - name: VOICE_CACHE_PREFIX
           value: {{ .Values.gcs.voiceCachePrefix | quote }}
+        {{- end }}
+        {{- if .Values.envVars.OTEL_EXPORTER_OTLP_ENDPOINT }}
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: {{ .Values.envVars.OTEL_EXPORTER_OTLP_ENDPOINT | quote }}
+        - name: OTEL_SERVICE_NAME
+          value: {{ .Values.envVars.OTEL_SERVICE_NAME | default "faster-qwen3-tts" | quote }}
         {{- end }}
 
         # Resource limits
