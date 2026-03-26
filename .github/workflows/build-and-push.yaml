@@ -1,0 +1,94 @@
+name: CI/CD - Build, Push, and Sync Infra
+
+on:
+  pull_request:
+    branches: [ develop ]
+    types: [ opened, synchronize, reopened, closed ]
+
+jobs:
+  build-and-sync:
+    runs-on: ubuntu-latest
+    environment: develop
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout Service Repo
+        uses: actions/checkout@v4
+
+      - name: Set Deployment Metadata
+        id: meta
+        run: |
+          SHORT_SHA=$(echo "${{ github.event.pull_request.head.sha }}" | cut -c1-7)
+          
+          if [[ "${{ github.event.pull_request.merged }}" == "true" ]]; then
+            echo "repo=dockerimg" >> $GITHUB_OUTPUT
+            echo "tag=${SHORT_SHA}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.event.action }}" != "closed" ]]; then
+            echo "repo=dockerimgstaging" >> $GITHUB_OUTPUT
+            echo "tag=${SHORT_SHA}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Authenticate to Google Cloud
+        # Only run if a tag was actually generated
+        if: steps.meta.outputs.tag != ''
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          token_format: access_token
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+      
+      - name: Authenticate Docker to GAR
+        if: steps.meta.outputs.tag != ''
+        run: |
+          gcloud auth configure-docker us-docker.pkg.dev --quiet
+      - name: Set up Docker Buildx
+        if: steps.meta.outputs.tag != ''
+        uses: docker/setup-buildx-action@v3
+        with:
+          # This is the key part that fixes the "driver" error
+          driver: docker-container
+      - name: Build and Push
+        if: steps.meta.outputs.tag != ''
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: us-docker.pkg.dev/qarlproductionregistries/${{ steps.meta.outputs.repo }}/${{ github.event.repository.name }}:${{ steps.meta.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+        
+      - name: Checkout Infra Repo
+        if: steps.meta.outputs.tag != ''
+        uses: actions/checkout@v4
+        with:
+          repository: QarlAI/qarl-studio-infra
+          token: ${{ secrets.INFRA_REPO_PAT }}
+          path: infra-repo
+
+      - name: Update images.yaml
+        if: steps.meta.outputs.tag != ''
+        run: |
+          cd infra-repo
+          SERVICE_NAME="${{ github.event.repository.name }}"
+          NEW_TAG="${{ steps.meta.outputs.tag }}"
+          
+          # Ensure the file exists before editing
+          yq -i ".faster-qwen3-tts.image.repository = \"us-docker.pkg.dev/qarlproductionregistries/${{ steps.meta.outputs.repo }}/${{ github.event.repository.name }}\"" helm/qarl-studio/images.yaml
+          yq -i ".faster-qwen3-tts.pipeqarl.image.tag = \"${NEW_TAG}\"" helm/qarl-studio/images.yaml
+
+      - name: Create or Update Infra PR
+        if: steps.meta.outputs.tag != ''
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.INFRA_REPO_PAT }}
+          path: infra-repo
+          branch: sync/${{ github.head_ref || github.ref_name }}
+          title: "Infra Update: ${{ github.head_ref || github.ref_name }}"
+          commit-message: "deploy: update ${{ github.event.repository.name }} to ${{ steps.meta.outputs.tag }}"
+          body: |
+            Automated image update from `${{ github.event.repository.name }}`.
+            **Tag:** `${{ steps.meta.outputs.tag }}`
+            **Registry:** `${{ steps.meta.outputs.repo }}`
