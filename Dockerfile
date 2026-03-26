@@ -43,6 +43,7 @@ RUN pip install --no-cache-dir -e .
 COPY config.yaml .
 COPY config.py .
 COPY init_voices.py .
+COPY otel_setup.py .
 COPY app.py .
 
 # Copy voice samples to the image
