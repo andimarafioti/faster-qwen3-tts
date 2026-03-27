@@ -10,6 +10,8 @@ on:
         description: "Docker image registry path"
         required: false
         default: "us-docker.pkg.dev/qarlproductionregistries/dockerimg"
+  push:
+    branches: [maryam/add-automated-tests]
 
 concurrency:
   group: integration-test
@@ -27,8 +29,8 @@ jobs:
     env:
       DEPLOYMENT_NAME: it-${{ github.run_id }}
       TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
-      IMAGE_REGISTRY: ${{ inputs.image_registry }}
-      IMAGE_TAG: ${{ inputs.image_tag }}
+      IMAGE_REGISTRY: ${{ inputs.image_registry || 'us-docker.pkg.dev/qarlproductionregistries/dockerimg' }}
+      IMAGE_TAG: ${{ inputs.image_tag || '1.0.9' }}
       GH_PAT: ${{ secrets.GH_PAT }}
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
       SERVICE_ACCOUNT_EMAIL: qarl-studio-backend-sa@qarl-studio.iam.gserviceaccount.com
