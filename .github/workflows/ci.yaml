@@ -1,0 +1,20 @@
+name: CI/CD
+
+on:
+  pull_request:
+    branches: [ develop ]
+    types: [ opened, synchronize, reopened, closed ]
+
+jobs:
+  call-sync-library:
+    uses: QarlAI/.github/.github/workflows/build-push-sync.yaml@main
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: read
+    with:
+      target_branch: develop
+      target_repo: faster-qwen3-tts
+      images_yaml_path: 'helm/qarl-studio/images.yaml'
+      environment: develop
+    secrets: inherit
