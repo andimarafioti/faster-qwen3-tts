@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0,<69", "wheel"]
+requires = ["setuptools>=77.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
@@ -11,7 +11,8 @@ name = "faster-qwen3-tts"
 version = "0.2.5"
 description = "Real-time Qwen3-TTS inference using manual CUDA graph capture"
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Andres Marafioti" }]
 keywords = ["tts", "qwen", "cuda", "cudagraph", "streaming"]
 classifiers = [
