@@ -269,9 +269,10 @@ def extract_speaker_embedding(wav_path: str, ref_text: str, pt_out: str) -> bool
             'ref_spk_embedding': prompt_items[0].ref_spk_embedding.cpu(),
             'ref_code': prompt_items[0].ref_code,
         }, pt_out)
+        logging.info(f"Speaker embedding extracted and saved to '{pt_out}'")
         return True
     except Exception as e:
-        logging.warning(f"Failed to extract embedding: {e}")
+        logging.exception(f"Failed to extract embedding: {e}")
         return False
 
 
@@ -522,6 +523,8 @@ async def upload_voice(
 
     cache_key = f"{uid}/{voice_name}" if uid else voice_name
 
+    logging.info(f"Voice upload request: voice_name='{voice_name}' uid='{uid}'")
+
     try:
         start_time = time.time()
 
@@ -540,11 +543,14 @@ async def upload_voice(
             with open(tmp_path, "wb") as f:
                 f.write(content)
 
+            logging.info(f"Loading audio file: {wav_file.filename} ({len(content)} bytes)")
             wav, sr = torchaudio.load(tmp_path)
+            logging.info(f"Audio loaded successfully: sr={sr}, shape={wav.shape}")
             if wav.shape[0] > 1:
                 wav = wav.mean(dim=0, keepdim=True)
 
             duration = wav.shape[1] / sr
+            logging.info(f"Audio duration: {duration:.1f}s, sample_rate={sr}")
             if duration < 3.0:
                 raise HTTPException(
                     status_code=400,
@@ -575,6 +581,7 @@ async def upload_voice(
         if extract_speaker_embedding(wav_path, ref_text, pt_path):
             logging.info(f"Extracted speaker embedding for '{voice_name}'")
         else:
+            logging.warning(f"Speaker embedding extraction failed for '{voice_name}' — voice will work without embedding")
             pt_path = None
 
         # Add to voices dictionary
@@ -587,7 +594,9 @@ async def upload_voice(
             try:
                 gcs_prefix = f"{VOICE_CACHE_PREFIX}/{uid}" if uid else VOICE_CACHE_PREFIX
                 bucket.blob(f"{gcs_prefix}/{voice_name}.wav").upload_from_filename(wav_path)
+                logging.info(f"Uploaded wav for '{voice_name}' to GCS")
                 bucket.blob(f"{gcs_prefix}/{voice_name}.txt").upload_from_filename(txt_path)
+                logging.info(f"Uploaded transcript for '{voice_name}' to GCS")
                 if pt_path and os.path.exists(pt_path):
                     bucket.blob(f"{gcs_prefix}/{voice_name}.pt").upload_from_filename(pt_path)
                     logging.info(f"Uploaded .pt embedding for voice '{voice_name}' to GCS")
@@ -596,6 +605,7 @@ async def upload_voice(
                 logging.warning(f"GCS upload failed for voice '{voice_name}': {e}")
 
         load_time = time.time() - start_time
+        logging.info(f"Voice upload complete: '{cache_key}' in {load_time:.2f}s")
 
         return {
             "status": "success",
@@ -608,7 +618,7 @@ async def upload_voice(
     except HTTPException:
         raise
     except Exception as e:
-        logging.error(f"Failed to upload voice '{voice_name}': {e}")
+        logging.exception(f"Failed to upload voice '{voice_name}': {e}")
         raise HTTPException(status_code=500, detail=f"Failed to upload voice: {str(e)}")
 
 
