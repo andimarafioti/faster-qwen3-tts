@@ -112,7 +112,7 @@ jobs:
           python - <<'EOF'
           from huggingface_hub import hf_hub_download
           import os
-          dest = "/tmp/parakeet-rs"
+          dest = "/tmp/parakeet-rs/tdt"
           for filename in ["encoder-model.onnx", "encoder-model.onnx.data", "decoder_joint-model.onnx", "vocab.txt"]:
               hf_hub_download(
                   repo_id="istupakov/parakeet-tdt-0.6b-v3-onnx",
