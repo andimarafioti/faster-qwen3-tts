@@ -18,7 +18,7 @@ concurrency:
 jobs:
   integration-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 90
 
     permissions:
       contents: read
@@ -64,7 +64,7 @@ jobs:
       - name: Get instance IP
         id: ip
         working-directory: terraform/integration-test
-        run: echo "ip=$(terraform output -raw public_ip)" >> "$GITHUB_OUTPUT"
+        run: echo "ip=$(terraform output -raw instance_ip)" >> "$GITHUB_OUTPUT"
 
       # ---- Health Check -------------------------------------------------
       - name: Wait for /health endpoint
@@ -82,6 +82,50 @@ jobs:
           done
           echo "Health check failed after 40 attempts"
           exit 1
+
+      # ---- Quality Tests ------------------------------------------------
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python test dependencies
+        run: |
+          pip install pytest websockets numpy requests
+          pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build parakeet-rs
+        run: |
+          git clone https://github.com/altunenes/parakeet-rs /tmp/parakeet-rs
+          cd /tmp/parakeet-rs
+          cargo build --release --example raw
+
+      - name: Download parakeet TDT ONNX models
+        working-directory: /tmp/parakeet-rs
+        run: |
+          pip install huggingface-hub
+          python - <<'EOF'
+          from huggingface_hub import hf_hub_download
+          import os
+          dest = "/tmp/parakeet-rs"
+          for filename in ["encoder-model.onnx", "encoder-model.onnx.data", "decoder_joint-model.onnx", "vocab.txt"]:
+              hf_hub_download(
+                  repo_id="istupakov/parakeet-tdt-0.6b-v3-onnx",
+                  filename=filename,
+                  local_dir=dest,
+              )
+          EOF
+
+      - name: Run quality tests
+        env:
+          TTS_URL: "http://${{ steps.ip.outputs.ip }}:8000"
+          PARAKEET_BIN: /tmp/parakeet-rs/target/release/examples/raw
+          PARAKEET_MODEL_DIR: /tmp/parakeet-rs
+        run: |
+          pytest tests/test_tts_quality.py tests/test_tts_streaming_quality.py -v
 
       # ---- Diagnostics on failure ---------------------------------------
       - name: Dump docker logs from VM

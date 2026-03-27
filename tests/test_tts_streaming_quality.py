@@ -1,3 +1,5 @@
+import asyncio
+import json
 import os
 import subprocess
 import tempfile
@@ -5,36 +7,47 @@ import wave
 
 import numpy as np
 import pytest
-import requests
+import websockets
 
-TTS_URL = os.getenv("TTS_URL", "http://localhost:8000")
+WS_URL = os.getenv("TTS_URL", "ws://localhost:8000").replace("http://", "ws://").replace("https://", "wss://")
 PARAKEET_BIN = os.getenv("PARAKEET_BIN", os.path.expanduser("~/work/parakeet-rs/target/release/examples/raw"))
 PARAKEET_MODEL_DIR = os.getenv("PARAKEET_MODEL_DIR", os.path.expanduser("~/work/parakeet-rs"))
 
 
+async def _ws_tts(text, language, voice):
+    """Connect to /tts/ws, collect all audio chunks, return (samples, sample_rate)."""
+    uri = f"{WS_URL}/tts/ws"
+    async with websockets.connect(uri) as ws:
+        await ws.send(json.dumps({"text": text, "language": language, "voice": voice}))
+        samples = []
+        sample_rate = 24000
+        while True:
+            msg = await ws.recv()
+            data = json.loads(msg)
+            if data["type"] == "audio":
+                samples.extend(data["data"])
+                sample_rate = data["sample_rate"]
+            elif data["type"] == "end":
+                break
+            elif data["type"] == "error":
+                raise RuntimeError(f"TTS error: {data['message']}")
+    return np.array(samples, dtype=np.float32), sample_rate
+
+
 def tts_and_recognize(text, language="English", voice="english-male"):
-    """Send text to TTS, convert PCM audio, run ASR, return recognized text."""
-    r = requests.post(
-        f"{TTS_URL}/tts",
-        json={"text": text, "language": language, "voice": voice},
-        timeout=120,
-    )
-    assert r.status_code == 200, f"TTS failed: {r.text}"
-
-    # Response is raw float32 PCM bytes; sample rate is in headers
-    sample_rate = int(r.headers.get("X-Sample-Rate", 24000))
-    audio = np.frombuffer(r.content, dtype=np.float32)
-
-    # Resample to 16kHz mono for parakeet
-    if sample_rate != 16000:
-        import torch
-        import torchaudio
-        tensor = torch.from_numpy(audio).unsqueeze(0)
-        tensor = torchaudio.functional.resample(tensor, sample_rate, 16000)
-        audio = tensor.squeeze(0).numpy()
+    """Stream audio via WebSocket, resample, transcribe with parakeet-rs."""
+    audio, sample_rate = asyncio.run(_ws_tts(text, language, voice))
 
     with tempfile.TemporaryDirectory() as tmp:
         wav_path = os.path.join(tmp, "tts.wav")
+
+        # Resample to 16kHz mono for parakeet (TTS outputs 24kHz)
+        if sample_rate != 16000:
+            import torch
+            import torchaudio
+            tensor = torch.from_numpy(audio).unsqueeze(0)
+            tensor = torchaudio.functional.resample(tensor, sample_rate, 16000)
+            audio = tensor.squeeze(0).numpy()
 
         # Save as 16kHz mono 16-bit WAV
         audio_int16 = (audio * 32767).clip(-32768, 32767).astype(np.int16)
@@ -44,6 +57,7 @@ def tts_and_recognize(text, language="English", voice="english-male"):
             wf.setframerate(16000)
             wf.writeframes(audio_int16.tobytes())
 
+        # Run parakeet-rs
         result = subprocess.run(
             [PARAKEET_BIN, wav_path, "tdt"],
             capture_output=True,
@@ -80,7 +94,7 @@ def word_overlap(original, recognized):
     return len(orig_words & rec_words) / len(orig_words)
 
 
-class TestTTSQuality:
+class TestTTSStreamingQuality:
     @pytest.mark.parametrize("voice, language, text", [
         ("english-male", "English", "Hello, this is a test of the text to speech system."),
         ("english-female", "English", "Hello, this is a test of the text to speech system."),

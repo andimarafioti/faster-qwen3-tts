@@ -1,0 +1,92 @@
+version: '3'
+
+dotenv: ['.env']
+
+vars:
+  TF_DIR: ./terraform/integration-test
+
+tasks:
+  deploy:
+    desc: Deploy Faster Qwen3 TTS GCE instance
+    cmds:
+      - task: init
+      - task: apply
+      - task: info
+
+  destroy:
+    desc: Destroy Faster Qwen3 TTS GCE instance
+    prompt: This will destroy all infrastructure. Continue?
+    cmds:
+      - task: init
+      - task: tf-destroy
+      - task: state-cleanup
+
+  init:
+    desc: Initialize Terraform
+    dir: "{{.TF_DIR}}"
+    cmds:
+      - |
+        terraform init \
+          -backend-config="bucket=${TF_STATE_BUCKET}" \
+          -backend-config="prefix=faster-qwen3-tts/${DEPLOYMENT_NAME}"
+
+  apply:
+    desc: Apply Terraform
+    dir: "{{.TF_DIR}}"
+    cmds:
+      - |
+        if [ -n "$SERVICE_ACCOUNT_EMAIL" ]; then
+          SA_EMAIL="$SERVICE_ACCOUNT_EMAIL"
+        elif [ -n "$GOOGLE_APPLICATION_CREDENTIALS_PATH" ]; then
+          SA_EMAIL=$(python3 -c "import json; print(json.load(open('$GOOGLE_APPLICATION_CREDENTIALS_PATH'))['client_email'])")
+        else
+          echo "ERROR: Set SERVICE_ACCOUNT_EMAIL or GOOGLE_APPLICATION_CREDENTIALS_PATH"; exit 1
+        fi
+        terraform apply -auto-approve \
+          -var="deployment_name=${DEPLOYMENT_NAME}" \
+          -var="image_registry=${IMAGE_REGISTRY}" \
+          -var="image_tag=${IMAGE_TAG}" \
+          -var="github_token=${GH_PAT}" \
+          -var="hf_token=${HF_TOKEN:-}" \
+          -var="service_account_email=${SA_EMAIL}" \
+          ${PROJECT_ID:+-var="project_id=${PROJECT_ID}"}
+
+  tf-destroy:
+    desc: Destroy Terraform resources
+    dir: "{{.TF_DIR}}"
+    cmds:
+      - |
+        if [ -n "$SERVICE_ACCOUNT_EMAIL" ]; then
+          SA_EMAIL="$SERVICE_ACCOUNT_EMAIL"
+        elif [ -n "$GOOGLE_APPLICATION_CREDENTIALS_PATH" ]; then
+          SA_EMAIL=$(python3 -c "import json; print(json.load(open('$GOOGLE_APPLICATION_CREDENTIALS_PATH'))['client_email'])")
+        else
+          echo "ERROR: Set SERVICE_ACCOUNT_EMAIL or GOOGLE_APPLICATION_CREDENTIALS_PATH"; exit 1
+        fi
+        terraform destroy -auto-approve \
+          -var="deployment_name=${DEPLOYMENT_NAME}" \
+          -var="image_registry=${IMAGE_REGISTRY}" \
+          -var="image_tag=${IMAGE_TAG}" \
+          -var="github_token=${GH_PAT}" \
+          -var="hf_token=${HF_TOKEN:-}" \
+          -var="service_account_email=${SA_EMAIL}" \
+          ${PROJECT_ID:+-var="project_id=${PROJECT_ID}"}
+
+  state-cleanup:
+    desc: Clean up Terraform state from GCS
+    cmds:
+      - |
+        gcloud storage rm -r \
+          "gs://${TF_STATE_BUCKET}/faster-qwen3-tts/${DEPLOYMENT_NAME}/" || true
+
+  info:
+    desc: Show deployment info
+    dir: "{{.TF_DIR}}"
+    silent: true
+    cmds:
+      - |
+        echo "Deployment: ${DEPLOYMENT_NAME}"
+        echo "IP: $(terraform output -raw instance_ip)"
+        echo "Server: http://$(terraform output -raw instance_ip):8000"
+        echo ""
+        echo "To destroy: DEPLOYMENT_NAME=${DEPLOYMENT_NAME} task destroy"
