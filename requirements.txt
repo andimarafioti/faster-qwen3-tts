@@ -6,7 +6,6 @@ requests==2.32.3
 pyyaml>=6.0
 python-multipart>=0.0.7
 google-cloud-storage>=2.0.0
-torchcodec
 opentelemetry-api
 opentelemetry-sdk
 opentelemetry-exporter-otlp

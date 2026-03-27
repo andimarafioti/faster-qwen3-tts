@@ -1,5 +1,5 @@
 # ============================================================
-# Dockerfile - Faster Qwen3 TTS with CUDA 12.6
+# Dockerfile - Faster Qwen3 TTS with CUDA 12.6 (cu126)
 # ============================================================
 
 FROM nvidia/cuda:12.6.0-cudnn-devel-ubuntu24.04
@@ -23,12 +23,13 @@ WORKDIR /app
 # Remove EXTERNALLY-MANAGED to allow pip installs (safe in Docker containers)
 RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
 
-# Install PyTorch 2.10.0 with CUDA 12.8 support first (matches GCP CUDA driver)
+# Install PyTorch 2.10.0 with CUDA 12.6 support first (matches GCP CUDA driver)
 # This ensures we get the CUDA-enabled build instead of CPU-only from default PyPI
 RUN pip install --no-cache-dir \
     torch==2.10.0 \
     torchaudio==2.10.0 \
-    --index-url https://download.pytorch.org/whl/cu128
+    torchcodec==0.10.0 \
+    --index-url https://download.pytorch.org/whl/cu126
 
 # Install API server dependencies
 COPY requirements.txt .
