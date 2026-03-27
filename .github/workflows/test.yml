@@ -1,0 +1,33 @@
+name: Tests
+
+# Trigger on push to main or PR targeting main
+on:             
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Checkout repository code
+      - uses: actions/checkout@v4
+
+      # Set up Python
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      # Install test dependencies
+      - name: Install dependencies
+        run: pip install -r requirements-test.txt
+
+      # Run Lint & pytest
+      # disable for now, enable later
+      # - name: Lint
+      #   run: ruff check .
+
+      - name: Run tests
+        run: pytest tests/ -v --ignore=tests/test_e2e_parity.py

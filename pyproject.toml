@@ -47,3 +47,17 @@ faster-qwen3-tts = "faster_qwen3_tts.cli:main"
 [project.urls]
 Homepage = "https://github.com/andimarafioti/faster-qwen3-tts"
 Repository = "https://github.com/andimarafioti/faster-qwen3-tts"
+
+[tool.pytest.ini_options]
+pythonpath = [".", "tests"]
+testpaths = ["tests"]
+addopts = "--ignore=tests/test_e2e_parity.py --ignore=tests/test_tts_quality.py"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+exclude = ["client", "examples", "benchmarks", "demo"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
