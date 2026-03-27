@@ -3,9 +3,9 @@ name: Tests
 # Trigger on push to main or PR targeting main
 on:             
   push:
-    branches: [main]
+    branches: [develop, maryam/add-automated-tests]
   pull_request:
-    branches: [main]
+    branches: [develop]
 
 jobs:
   test:
