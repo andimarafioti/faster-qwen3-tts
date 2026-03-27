@@ -37,6 +37,7 @@ import torch
 sys.modules['torchaudio'].load.return_value = (torch.zeros(1, 96000), 24000)
 sys.modules["torchaudio"].__spec__ = importlib.util.spec_from_loader("torchaudio", loader=None)
 import app as app_module
+app_module.VOICES_DIR = _test_voices_dir
 from helpers import make_wav_bytes
 
 
