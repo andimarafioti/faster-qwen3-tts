@@ -581,7 +581,7 @@ async def upload_voice(
         if extract_speaker_embedding(wav_path, ref_text, pt_path):
             logging.info(f"Extracted speaker embedding for '{voice_name}'")
         else:
-            logging.warning(f"Speaker embedding extraction failed for '{voice_name}' — voice will work without embedding")
+            logging.warning(f"Speaker embedding extraction failed for '{voice_name}', voice will work without embedding but quality may be reduced")
             pt_path = None
 
         # Add to voices dictionary
