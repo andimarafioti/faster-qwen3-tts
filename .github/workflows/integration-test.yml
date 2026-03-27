@@ -127,7 +127,7 @@ jobs:
           PARAKEET_BIN: /tmp/parakeet-rs/target/release/examples/raw
           PARAKEET_MODEL_DIR: /tmp/parakeet-rs
         run: |
-          pytest tests/test_tts_quality.py tests/test_tts_streaming_quality.py -v
+          pytest tests/test_tts_quality.py tests/test_tts_streaming_quality.py -v -p no:cacheprovider --override-ini="python_files=test_tts_quality.py test_tts_streaming_quality.py" --noconftest
 
       # ---- Diagnostics on failure ---------------------------------------
       - name: Dump docker logs from VM
