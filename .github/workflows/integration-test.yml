@@ -1,0 +1,151 @@
+name: Integration Test (GCE)
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Faster Qwen3 TTS image tag"
+        required: true
+      image_registry:
+        description: "Docker image registry path"
+        required: false
+        default: "us-docker.pkg.dev/qarlproductionregistries/dockerimg"
+  push:
+    branches: [develop]
+
+concurrency:
+  group: integration-test
+  cancel-in-progress: false
+
+jobs:
+  integration-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    permissions:
+      contents: read
+      id-token: write
+
+    env:
+      DEPLOYMENT_NAME: it-${{ github.run_id }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      IMAGE_REGISTRY: ${{ inputs.image_registry || 'us-docker.pkg.dev/qarlproductionregistries/dockerimg' }}
+      IMAGE_TAG: ${{ inputs.image_tag }}
+      GH_PAT: ${{ secrets.GH_PAT }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      SERVICE_ACCOUNT_EMAIL: qarl-studio-backend-sa@qarl-studio.iam.gserviceaccount.com
+
+    steps:
+      # ---- Setup --------------------------------------------------------
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: "projects/1093867875731/locations/global/workloadIdentityPools/github/providers/github-provider"
+          service_account: "qarl-studio-backend-sa@qarl-studio.iam.gserviceaccount.com"
+          token_format: "access_token"
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Install Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+
+      # ---- Deploy ------------------------------------------------------
+      - name: Deploy
+        run: task deploy
+
+      - name: Get instance IP
+        id: ip
+        working-directory: terraform/integration-test
+        run: echo "ip=$(terraform output -raw instance_ip)" >> "$GITHUB_OUTPUT"
+
+      # ---- Health Check -------------------------------------------------
+      - name: Wait for /health endpoint
+        run: |
+          URL="http://${{ steps.ip.outputs.ip }}:8000/health"
+          echo "Polling $URL ..."
+          for i in $(seq 1 40); do
+            if curl -sf --max-time 5 "$URL"; then
+              echo ""
+              echo "Health check passed on attempt $i"
+              exit 0
+            fi
+            echo "  attempt $i/40 — retrying in 15s ..."
+            sleep 15
+          done
+          echo "Health check failed after 40 attempts"
+          exit 1
+
+      # ---- Quality Tests ------------------------------------------------
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python test dependencies
+        run: |
+          pip install pytest websockets numpy requests
+          pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build parakeet-rs
+        run: |
+          git clone https://github.com/altunenes/parakeet-rs /tmp/parakeet-rs
+          cd /tmp/parakeet-rs
+          cargo build --release --example raw
+
+      - name: Download parakeet TDT ONNX models
+        working-directory: /tmp/parakeet-rs
+        run: |
+          pip install huggingface-hub
+          python - <<'EOF'
+          from huggingface_hub import hf_hub_download
+          import os
+          dest = "/tmp/parakeet-rs/tdt"
+          for filename in ["encoder-model.onnx", "encoder-model.onnx.data", "decoder_joint-model.onnx", "vocab.txt"]:
+              hf_hub_download(
+                  repo_id="istupakov/parakeet-tdt-0.6b-v3-onnx",
+                  filename=filename,
+                  local_dir=dest,
+              )
+          EOF
+
+      - name: Run quality tests
+        env:
+          TTS_URL: "http://${{ steps.ip.outputs.ip }}:8000"
+          PARAKEET_BIN: /tmp/parakeet-rs/target/release/examples/raw
+          PARAKEET_MODEL_DIR: /tmp/parakeet-rs
+        run: |
+          pytest tests/test_tts_quality.py tests/test_tts_streaming_quality.py -v -p no:cacheprovider --override-ini="python_files=test_tts_quality.py test_tts_streaming_quality.py" --noconftest
+
+      # ---- Diagnostics on failure ---------------------------------------
+      - name: Dump docker logs from VM
+        if: failure()
+        run: |
+          INSTANCE_NAME=$(cd terraform/integration-test && terraform output -raw instance_name)
+          gcloud compute ssh "$INSTANCE_NAME" \
+            --zone=us-east1-b --project=qarl-studio \
+            --command="sudo docker logs faster-qwen3-tts 2>&1 || echo 'No container logs available'" || true
+
+      - name: Dump VM serial port output
+        if: failure()
+        run: |
+          INSTANCE_NAME=$(cd terraform/integration-test && terraform output -raw instance_name)
+          gcloud compute instances get-serial-port-output "$INSTANCE_NAME" \
+            --zone=us-east1-b --project=qarl-studio || true
+
+      # ---- Cleanup (always) ---------------------------------------------
+      - name: Destroy
+        if: always()
+        run: task destroy --yes

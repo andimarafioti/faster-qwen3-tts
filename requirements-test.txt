@@ -1,0 +1,16 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+torchaudio
+transformers
+pytest
+httpx
+ruff
+soundfile
+numpy
+fastapi
+uvicorn
+pydantic
+google-cloud-storage
+python-multipart
+pyyaml
+audiooop-lts; python_version >= "3.13"
