@@ -9,6 +9,11 @@ soundfile
 numpy
 fastapi
 uvicorn
+opentelemetry-api
+opentelemetry-sdk
+opentelemetry-exporter-otlp
+opentelemetry-instrumentation-logging
+opentelemetry-instrumentation-fastapi
 pydantic
 google-cloud-storage
 python-multipart
