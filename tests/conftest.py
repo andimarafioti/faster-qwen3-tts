@@ -15,6 +15,7 @@ import pytest
 for mod in [
     "init_voices",
     "torchaudio",
+    "otel_setup",
 ]:
     sys.modules.setdefault(mod, MagicMock())
 
