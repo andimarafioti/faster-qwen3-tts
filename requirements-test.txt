@@ -9,6 +9,7 @@ soundfile
 numpy
 fastapi
 uvicorn
+protobuf
 opentelemetry-api
 opentelemetry-sdk
 opentelemetry-exporter-otlp
