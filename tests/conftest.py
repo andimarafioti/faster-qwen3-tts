@@ -19,6 +19,7 @@ for mod in [
     "opentelemetry",
     "opentelemetry.trace",
     "opentelemetry.metrics",
+    "opentelemetry.propagate",
 ]:
     sys.modules.setdefault(mod, MagicMock())
 
