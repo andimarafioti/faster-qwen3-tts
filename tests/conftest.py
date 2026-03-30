@@ -16,6 +16,9 @@ for mod in [
     "init_voices",
     "torchaudio",
     "otel_setup",
+    "opentelemetry",
+    "opentelemetry.trace",
+    "opentelemetry.metrics",
 ]:
     sys.modules.setdefault(mod, MagicMock())
 
