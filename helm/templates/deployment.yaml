@@ -67,10 +67,6 @@ spec:
 
         # Environment variables
         env:
-        - name: NVIDIA_VISIBLE_DEVICES
-          value: {{ .Values.envVars.NVIDIA_VISIBLE_DEVICES | quote }}
-        - name: NVIDIA_DRIVER_CAPABILITIES
-          value: {{ .Values.envVars.NVIDIA_DRIVER_CAPABILITIES | quote }}
         - name: MODEL_NAME
           value: {{ .Values.model.name | quote }}
         - name: DEVICE
@@ -94,11 +90,9 @@ spec:
         - name: VOICE_CACHE_PREFIX
           value: {{ .Values.gcs.voiceCachePrefix | quote }}
         {{- end }}
-        {{- if .Values.envVars.OTEL_EXPORTER_OTLP_ENDPOINT }}
-        - name: OTEL_EXPORTER_OTLP_ENDPOINT
-          value: {{ .Values.envVars.OTEL_EXPORTER_OTLP_ENDPOINT | quote }}
-        - name: OTEL_SERVICE_NAME
-          value: {{ .Values.envVars.OTEL_SERVICE_NAME | default "faster-qwen3-tts" | quote }}
+        {{- range $name, $value := .Values.envVars }}
+        - name: {{ $name }}
+          value: {{ $value | quote }}
         {{- end }}
 
         # Resource limits
@@ -130,6 +124,9 @@ spec:
           mountPath: /dev/shm
         - name: models
           mountPath: /root/.cache/huggingface
+        {{- with .Values.extraVolumeMounts }}
+          {{- toYaml . | nindent 8 }}
+        {{- end }}
 
       # Volumes
       volumes:
@@ -140,6 +137,9 @@ spec:
       - name: models
         persistentVolumeClaim:
           claimName: faster-qwen3-tts-models
+      {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 6 }}
+      {{- end }}
 
 ---
 apiVersion: v1

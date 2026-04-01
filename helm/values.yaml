@@ -65,6 +65,10 @@ hfToken:
   # Key within the secret (defaults to "HF_TOKEN" if not specified)
   secretKey: "HF_TOKEN"
 
+# Extra volumes and volume mounts (e.g., for GCP SA key)
+extraVolumes: []
+extraVolumeMounts: []
+
 # GCS voice cache configuration
 gcs:
   voiceCacheBucket: ""
