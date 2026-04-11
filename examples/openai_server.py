@@ -41,15 +41,18 @@ import json
 import logging
 import os
 import queue
+import re
 import struct
 import sys
+import tempfile
 import threading
+from pathlib import Path
 from typing import AsyncGenerator, Optional
 
 import numpy as np
 import torch
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
@@ -69,6 +72,18 @@ voices: dict = {}
 default_voice: Optional[str] = None
 SAMPLE_RATE = 24000  # updated once the model loads
 _model_lock = threading.Lock()  # prevent concurrent GPU inference
+
+# Voice management state. Populated by main() when --voices is used.
+# voices_json_path is the source-of-truth JSON file on disk that we
+# atomically rewrite on upload / delete. voice_samples_dir is where
+# uploaded WAVs live.
+voices_json_path: Optional[Path] = None
+voice_samples_dir: Optional[Path] = None
+_voices_lock = threading.Lock()  # protect voices dict + voices.json file
+
+# Voice names must be filesystem-safe and URL-safe. Matches a-z, 0-9,
+# underscore, hyphen — no dots, slashes, or whitespace.
+_VOICE_NAME_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
 
 # ---------------------------------------------------------------------------
 # Request / response models
@@ -163,6 +178,43 @@ def resolve_voice(voice_name: str) -> dict:
     )
 
 
+def _validate_voice_name(name: str) -> None:
+    """Raise 400 if the voice name is empty or unsafe for the filesystem."""
+    if not name or not _VOICE_NAME_RE.match(name):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Invalid voice name. Use only letters, digits, underscore, "
+                "and hyphen (no dots, slashes, or whitespace)."
+            ),
+        )
+
+
+def _persist_voices_unlocked() -> None:
+    """Rewrite voices.json atomically. Caller must hold _voices_lock."""
+    if voices_json_path is None:
+        # Server wasn't started with --voices; nothing to persist.
+        return
+    parent = voices_json_path.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    # Write to a sibling temp file then atomically rename so a crash
+    # mid-write can't corrupt voices.json.
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=".voices-", suffix=".json.tmp", dir=str(parent)
+    )
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(voices, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+        os.replace(tmp_path, str(voices_json_path))
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 # ---------------------------------------------------------------------------
 # Streaming helper: run sync generator in a background thread
 # ---------------------------------------------------------------------------
@@ -214,6 +266,146 @@ async def _stream_chunks(voice_cfg: dict, text: str) -> AsyncGenerator[bytes, No
 @app.get("/health")
 async def health():
     return {"status": "ok", "model_loaded": tts_model is not None}
+
+
+# ---------------------------------------------------------------------------
+# Voice management API
+#
+# Mirrors the shape of vllm-omni's /v1/audio/voices endpoints so existing
+# clients can drop in unchanged. Uploaded voices are written to
+# voice_samples_dir (next to voices.json by default) and the voices.json
+# file is rewritten atomically on every mutation.
+#
+# Requires --voices <file> (or QWEN_TTS_VOICES); when using --ref-audio
+# in single-voice mode there is no persistent registry to mutate.
+# ---------------------------------------------------------------------------
+
+
+@app.get("/v1/audio/voices")
+async def list_voices():
+    with _voices_lock:
+        names = sorted(voices.keys())
+        details = [
+            {
+                "name": name,
+                "ref_text": cfg.get("ref_text", ""),
+                "language": cfg.get("language", "Auto"),
+                "ref_audio": cfg.get("ref_audio", ""),
+            }
+            for name, cfg in voices.items()
+        ]
+    return {"voices": names, "uploaded_voices": details}
+
+
+@app.post("/v1/audio/voices")
+async def upload_voice(
+    audio_sample: UploadFile = File(...),
+    name: str = Form(...),
+    ref_text: str = Form(""),
+    language: str = Form("English"),
+    consent: Optional[str] = Form(None),  # accepted for vllm-omni compat; unused
+):
+    if voices_json_path is None or voice_samples_dir is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Server was started without --voices, so runtime voice "
+                "management is disabled. Restart with --voices <file> to "
+                "enable upload/delete."
+            ),
+        )
+    _validate_voice_name(name)
+    if consent:
+        logger.info("Voice upload %r received consent field: %r", name, consent)
+
+    content = await audio_sample.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="audio_sample is empty")
+
+    dest = voice_samples_dir / f"{name}.wav"
+
+    with _voices_lock:
+        voice_samples_dir.mkdir(parents=True, exist_ok=True)
+        existed = name in voices
+        try:
+            dest.write_bytes(content)
+        except OSError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to write reference audio to {dest}: {exc}",
+            )
+        voices[name] = {
+            "ref_audio": str(dest),
+            "ref_text": ref_text,
+            "language": language,
+        }
+        try:
+            _persist_voices_unlocked()
+        except OSError as exc:
+            # Roll back the in-memory change so state stays consistent.
+            if existed:
+                logger.exception("voices.json write failed; in-memory entry kept")
+            else:
+                voices.pop(name, None)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to persist voices.json: {exc}",
+            )
+
+        global default_voice
+        if default_voice is None or default_voice not in voices:
+            default_voice = name
+
+    return {
+        "name": name,
+        "status": "replaced" if existed else "created",
+        "ref_audio": str(dest),
+        "file_size": len(content),
+    }
+
+
+@app.delete("/v1/audio/voices/{name}")
+async def delete_voice(name: str):
+    if voices_json_path is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Server was started without --voices; nothing to delete.",
+        )
+    _validate_voice_name(name)
+
+    with _voices_lock:
+        if name not in voices:
+            raise HTTPException(
+                status_code=404, detail=f"Voice {name!r} not found"
+            )
+        entry = voices.pop(name)
+        try:
+            _persist_voices_unlocked()
+        except OSError as exc:
+            voices[name] = entry  # roll back
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to persist voices.json: {exc}",
+            )
+
+        # Best-effort delete of the reference WAV. Only remove files that
+        # live under our managed voice_samples_dir, so we never accidentally
+        # unlink a WAV the user pointed at via an absolute path in voices.json.
+        ref_audio = entry.get("ref_audio", "")
+        if ref_audio and voice_samples_dir is not None:
+            try:
+                ref_path = Path(ref_audio).resolve()
+                vsd = voice_samples_dir.resolve()
+                if ref_path.is_relative_to(vsd) and ref_path.exists():
+                    ref_path.unlink()
+            except (OSError, ValueError) as exc:
+                logger.warning("Failed to delete %s: %s", ref_audio, exc)
+
+        global default_voice
+        if default_voice == name:
+            default_voice = next(iter(voices), None)
+
+    return {"name": name, "status": "deleted"}
 
 
 @app.post("/v1/audio/speech")
@@ -303,6 +495,15 @@ def _parse_args():
         default=os.environ.get("QWEN_TTS_LANGUAGE", "Auto"),
         help="Target language (English, French, Auto, …) when --voices is not used",
     )
+    p.add_argument(
+        "--voice-samples-dir",
+        default=os.environ.get("QWEN_TTS_VOICE_SAMPLES_DIR"),
+        metavar="DIR",
+        help=(
+            "Directory where uploaded reference WAVs are written via "
+            "POST /v1/audio/voices. Defaults to <dir of voices.json>/voice_samples."
+        ),
+    )
     p.add_argument("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)")
     p.add_argument("--port", type=int, default=8000, help="Bind port (default: 8000)")
     p.add_argument("--device", default="cuda", help="Torch device (default: cuda)")
@@ -311,6 +512,7 @@ def _parse_args():
 
 def main():
     global tts_model, voices, default_voice, SAMPLE_RATE
+    global voices_json_path, voice_samples_dir
 
     args = _parse_args()
 
@@ -318,8 +520,20 @@ def main():
     if args.voices:
         with open(args.voices) as f:
             voices = json.load(f)
-        default_voice = next(iter(voices))
-        logger.info("Loaded %d voice(s) from %s", len(voices), args.voices)
+        default_voice = next(iter(voices)) if voices else None
+        voices_json_path = Path(args.voices).resolve()
+        # Uploaded WAVs live next to voices.json by default.
+        if args.voice_samples_dir:
+            voice_samples_dir = Path(args.voice_samples_dir).resolve()
+        else:
+            voice_samples_dir = voices_json_path.parent / "voice_samples"
+        voice_samples_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(
+            "Loaded %d voice(s) from %s (samples dir: %s)",
+            len(voices),
+            args.voices,
+            voice_samples_dir,
+        )
     elif args.ref_audio:
         voices = {
             "default": {
