@@ -191,7 +191,13 @@ def _validate_voice_name(name: str) -> None:
 
 
 def _persist_voices_unlocked() -> None:
-    """Rewrite voices.json atomically. Caller must hold _voices_lock."""
+    """Rewrite voices.json atomically. Caller must hold _voices_lock.
+
+    Note on bind mounts: atomic rename only works when voices.json lives
+    inside a *directory* bind mount, not a file bind mount. The latter
+    binds the kernel mountpoint to the file itself, and os.replace()
+    across it returns EBUSY. Mount the parent directory instead.
+    """
     if voices_json_path is None:
         # Server wasn't started with --voices; nothing to persist.
         return
@@ -206,6 +212,11 @@ def _persist_voices_unlocked() -> None:
         with os.fdopen(fd, "w") as f:
             json.dump(voices, f, indent=2, ensure_ascii=False)
             f.write("\n")
+        # mkstemp creates files with secure 0600 perms. When voices.json
+        # is on a host bind mount the server owner differs from the host
+        # user, so widen to 0644 so the host user (and any sidecar tools
+        # like add_voice.py) can still read the file.
+        os.chmod(tmp_path, 0o644)
         os.replace(tmp_path, str(voices_json_path))
     except Exception:
         try:
