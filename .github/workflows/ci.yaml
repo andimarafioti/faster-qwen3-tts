@@ -10,7 +10,45 @@ on:
       - 'taskfile.yaml'
 
 jobs:
+  build-image:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      prebuilt_tag: ${{ steps.meta.outputs.prebuilt_tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set prebuilt tag
+        id: meta
+        run: |
+          echo "prebuilt_tag=us-docker.pkg.dev/qarlproductionregistries/dockerimgstaging/faster-qwen3-tts:prebuilt-${{ github.event.pull_request.head.sha || github.sha }}" >> $GITHUB_OUTPUT
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          token_format: access_token
+          workload_identity_provider: 'projects/1093867875731/locations/global/workloadIdentityPools/github/providers/github-provider'
+          service_account: 'qarl-studio-backend-sa@qarl-studio.iam.gserviceaccount.com'
+
+      - name: Authenticate Docker to GAR
+        run: gcloud auth configure-docker us-docker.pkg.dev --quiet
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and Push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.prebuilt_tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
   call-sync-library:
+    needs: build-image
     uses: QarlAI/.github/.github/workflows/build-push-sync.yaml@main
     permissions:
       contents: read
@@ -18,7 +56,10 @@ jobs:
       pull-requests: read
     with:
       target_branch: develop
-      target_repo: faster-qwen3-tts
-      images_yaml_path: 'helm/qarl-studio/images.yaml'
+      image_name: faster-qwen3-tts
+      prebuilt_tag: ${{ needs.build-image.outputs.prebuilt_tag }}
+      yaml_key: .faster-qwen3-tts
+      images_yaml_paths: |
+        helm/qarl-studio/images.yaml
       environment: develop
     secrets: inherit
