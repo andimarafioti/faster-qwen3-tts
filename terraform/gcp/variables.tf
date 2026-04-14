@@ -47,7 +47,7 @@ variable "gpu_count" {
 variable "image_family" {
   description = "Image family for the boot disk (Deep Learning VM with Ubuntu 24.04, CUDA 12.8, NVIDIA drivers)"
   type        = string
-  default     = "deeplearning-platform-release/common-cu128-ubuntu-2404-nvidia-570"
+  default     = "deeplearning-platform-release/common-cu129-ubuntu-2404-nvidia-580"
 }
 
 variable "boot_disk_size" {
