@@ -14,7 +14,6 @@ Automated test suite for the Faster Qwen3 TTS API. Uses **pytest** with a mocked
 # Lint
 .venv/bin/ruff check .
 ```
-
 ---
 
 ## Test files

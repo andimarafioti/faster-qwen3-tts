@@ -10,8 +10,6 @@ on:
         description: "Docker image registry path"
         required: false
         default: "us-docker.pkg.dev/qarlproductionregistries/dockerimg"
-  push:
-    branches: [develop]
 
 concurrency:
   group: integration-test
