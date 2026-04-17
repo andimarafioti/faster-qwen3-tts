@@ -253,9 +253,9 @@ The 12 Hz codec uses a causal `chunked_decode`: each frame is reconstructed usin
 ### Text input streaming vs Non-streaming quality
 
 The original Qwen3TTS implementation supports two mode of generation. It either takes the full input text and prepares the utterance, or it feeds the text progressively. This is the `non_streaming_mode` parameter in the generation methods. The name is maintained from the Qwen3TTS implementation, but I understand it might bring some headaches since here we also have general audio output streaming.
-`generate_voice_clone` now defaults to `non_streaming_mode=False` to match upstream step-by-step text feeding during decode.
-`generate_voice_clone_streaming` also defaults to `non_streaming_mode=False`. Set either method to `True` to pre-fill the full target text before decode for the old behavior.
-`generate_custom_voice`, `generate_custom_voice_streaming`, `generate_voice_design`, and `generate_voice_design_streaming` default to `non_streaming_mode=True` to match the upstream CustomVoice and VoiceDesign defaults.
+The public API uses `non_streaming_mode=None` as a sentinel, which preserves each method's upstream default unless you override it explicitly.
+`generate_voice_clone` and `generate_voice_clone_streaming` resolve `None` to `False`, matching upstream step-by-step text feeding during decode.
+`generate_custom_voice`, `generate_custom_voice_streaming`, `generate_voice_design`, and `generate_voice_design_streaming` resolve `None` to `True`, matching the upstream CustomVoice and VoiceDesign defaults.
 
 **Performance impact (RTX 4090, 1.7B, ICL, chunk_size=8):** TTFA is unchanged (≈159ms ± 1ms), and RTF is effectively the same (nsm=False: 4.87 ± 0.01, nsm=True: 4.85 ± 0.01).
 
