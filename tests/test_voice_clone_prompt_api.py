@@ -16,11 +16,15 @@ def _build_dummy_model():
     base.model = types.SimpleNamespace(
         talker=types.SimpleNamespace(rope_deltas=None),
         config=types.SimpleNamespace(talker_config=types.SimpleNamespace()),
+        tts_model_size="1b7",
+        tts_model_type="base",
     )
     base._build_assistant_text = lambda text: text
     base._build_ref_text = lambda text: text
     base._build_instruct_text = lambda text: text
     base._tokenize_texts = lambda _texts: [torch.tensor([[1, 2, 3, 4, 5, 6, 7, 8]], dtype=torch.long)]
+    base._validate_languages = lambda _languages: None
+    base._validate_speakers = lambda _speakers: None
 
     def _fail(*_args, **_kwargs):
         raise AssertionError("create_voice_clone_prompt should not be called when voice_clone_prompt is provided")
@@ -60,21 +64,132 @@ def test_public_api_exposes_voice_clone_prompt_parameter():
     assert list(sig_clone.parameters)[-1] == "voice_clone_prompt"
     assert list(sig_stream.parameters)[-1] == "voice_clone_prompt"
     assert sig_clone.parameters["xvec_only"].default is False
-    assert sig_clone.parameters["non_streaming_mode"].default is False
+    assert sig_clone.parameters["non_streaming_mode"].default is None
     assert sig_stream.parameters["xvec_only"].default is False
-    assert sig_stream.parameters["non_streaming_mode"].default is False
+    assert sig_stream.parameters["non_streaming_mode"].default is None
 
 
-def test_public_api_matches_upstream_non_streaming_defaults():
+def test_public_api_uses_none_sentinel_for_non_streaming_overrides():
     sig_custom = inspect.signature(FasterQwen3TTS.generate_custom_voice)
     sig_custom_stream = inspect.signature(FasterQwen3TTS.generate_custom_voice_streaming)
     sig_design = inspect.signature(FasterQwen3TTS.generate_voice_design)
     sig_design_stream = inspect.signature(FasterQwen3TTS.generate_voice_design_streaming)
 
-    assert sig_custom.parameters["non_streaming_mode"].default is True
-    assert sig_custom_stream.parameters["non_streaming_mode"].default is True
-    assert sig_design.parameters["non_streaming_mode"].default is True
-    assert sig_design_stream.parameters["non_streaming_mode"].default is True
+    assert sig_custom.parameters["non_streaming_mode"].default is None
+    assert sig_custom_stream.parameters["non_streaming_mode"].default is None
+    assert sig_design.parameters["non_streaming_mode"].default is None
+    assert sig_design_stream.parameters["non_streaming_mode"].default is None
+
+
+@pytest.mark.parametrize(
+    ("method_name", "kwargs", "expected_default"),
+    [
+        ("generate_voice_clone", {"text": "hello", "language": "English"}, False),
+        ("generate_voice_clone_streaming", {"text": "hello", "language": "English"}, False),
+        (
+            "generate_custom_voice",
+            {"text": "hello", "speaker": "speaker_a", "language": "English"},
+            True,
+        ),
+        (
+            "generate_custom_voice_streaming",
+            {"text": "hello", "speaker": "speaker_a", "language": "English"},
+            True,
+        ),
+        (
+            "generate_voice_design",
+            {"text": "hello", "instruct": "bright radio voice", "language": "English"},
+            True,
+        ),
+        (
+            "generate_voice_design_streaming",
+            {"text": "hello", "instruct": "bright radio voice", "language": "English"},
+            True,
+        ),
+    ],
+)
+def test_public_generation_methods_resolve_none_to_mode_defaults(
+    monkeypatch, method_name, kwargs, expected_default
+):
+    model = _build_dummy_model()
+    captured = {}
+
+    if "custom" in method_name:
+        model.model.model.tts_model_type = "custom_voice"
+    elif "design" in method_name:
+        model.model.model.tts_model_type = "voice_design"
+
+    def _capture_clone(*_args, **inner_kwargs):
+        captured["non_streaming_mode"] = inner_kwargs["non_streaming_mode"]
+        raise RuntimeError("stop after capture")
+
+    def _capture_custom(*_args, **inner_kwargs):
+        captured["non_streaming_mode"] = inner_kwargs["non_streaming_mode"]
+        raise RuntimeError("stop after capture")
+
+    if "clone" in method_name:
+        monkeypatch.setattr(model, "_prepare_generation", _capture_clone)
+    else:
+        monkeypatch.setattr(model, "_prepare_generation_custom", _capture_custom)
+
+    with pytest.raises(RuntimeError, match="stop after capture"):
+        result = getattr(model, method_name)(non_streaming_mode=None, **kwargs)
+        if method_name.endswith("_streaming"):
+            next(result)
+
+    assert captured["non_streaming_mode"] is expected_default
+
+
+@pytest.mark.parametrize("override", [False, True])
+@pytest.mark.parametrize(
+    ("method_name", "kwargs"),
+    [
+        ("generate_voice_clone", {"text": "hello", "language": "English"}),
+        ("generate_voice_clone_streaming", {"text": "hello", "language": "English"}),
+        (
+            "generate_custom_voice",
+            {"text": "hello", "speaker": "speaker_a", "language": "English"},
+        ),
+        (
+            "generate_custom_voice_streaming",
+            {"text": "hello", "speaker": "speaker_a", "language": "English"},
+        ),
+        (
+            "generate_voice_design",
+            {"text": "hello", "instruct": "bright radio voice", "language": "English"},
+        ),
+        (
+            "generate_voice_design_streaming",
+            {"text": "hello", "instruct": "bright radio voice", "language": "English"},
+        ),
+    ],
+)
+def test_public_generation_methods_preserve_explicit_non_streaming_overrides(
+    monkeypatch, method_name, kwargs, override
+):
+    model = _build_dummy_model()
+    captured = {}
+
+    if "custom" in method_name:
+        model.model.model.tts_model_type = "custom_voice"
+    elif "design" in method_name:
+        model.model.model.tts_model_type = "voice_design"
+
+    def _capture(*_args, **inner_kwargs):
+        captured["non_streaming_mode"] = inner_kwargs["non_streaming_mode"]
+        raise RuntimeError("stop after capture")
+
+    if "clone" in method_name:
+        monkeypatch.setattr(model, "_prepare_generation", _capture)
+    else:
+        monkeypatch.setattr(model, "_prepare_generation_custom", _capture)
+
+    with pytest.raises(RuntimeError, match="stop after capture"):
+        result = getattr(model, method_name)(non_streaming_mode=override, **kwargs)
+        if method_name.endswith("_streaming"):
+            next(result)
+
+    assert captured["non_streaming_mode"] is override
 
 
 def test_prepare_generation_uses_precomputed_xvec_prompt_without_prompt_extraction():
