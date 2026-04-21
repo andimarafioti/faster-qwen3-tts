@@ -59,10 +59,23 @@ def test_public_api_exposes_voice_clone_prompt_parameter():
     sig_stream = inspect.signature(FasterQwen3TTS.generate_voice_clone_streaming)
     assert "voice_clone_prompt" in sig_clone.parameters
     assert "voice_clone_prompt" in sig_stream.parameters
+    assert "continuation_state" in sig_clone.parameters
+    assert "continuation_state" in sig_stream.parameters
+    assert "return_continuation_state" in sig_clone.parameters
+    assert "return_continuation_state" in sig_stream.parameters
     assert list(sig_clone.parameters).index("max_new_tokens") == 5
     assert list(sig_stream.parameters).index("max_new_tokens") == 5
-    assert list(sig_clone.parameters)[-1] == "voice_clone_prompt"
-    assert list(sig_stream.parameters)[-1] == "voice_clone_prompt"
+    assert list(sig_clone.parameters)[-4:] == [
+        "voice_clone_prompt",
+        "continuation_state",
+        "return_continuation_state",
+        "continuation_state_device",
+    ]
+    assert list(sig_stream.parameters)[-3:] == [
+        "continuation_state",
+        "return_continuation_state",
+        "continuation_state_device",
+    ]
     assert sig_clone.parameters["xvec_only"].default is False
     assert sig_clone.parameters["non_streaming_mode"].default is None
     assert sig_stream.parameters["xvec_only"].default is False
@@ -79,6 +92,10 @@ def test_public_api_uses_none_sentinel_for_non_streaming_overrides():
     assert sig_custom_stream.parameters["non_streaming_mode"].default is None
     assert sig_design.parameters["non_streaming_mode"].default is None
     assert sig_design_stream.parameters["non_streaming_mode"].default is None
+    for sig in (sig_custom, sig_custom_stream, sig_design, sig_design_stream):
+        assert "continuation_state" in sig.parameters
+        assert "return_continuation_state" in sig.parameters
+        assert "continuation_state_device" in sig.parameters
 
 
 @pytest.mark.parametrize(

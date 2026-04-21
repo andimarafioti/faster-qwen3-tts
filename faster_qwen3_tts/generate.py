@@ -7,6 +7,16 @@ from typing import Optional, Tuple
 
 import torch
 
+from .continuation import (
+    apply_continuation_state_delta,
+    build_continuation_state_status,
+    build_continuation_state_delta,
+    continuation_state_first_token_history,
+    continuation_state_to_dynamic_cache,
+    model_signature,
+    normalize_return_continuation_state,
+    validate_full_continuation_state,
+)
 from .predictor_graph import PredictorGraph
 from .sampling import apply_repetition_penalty, sample_logits
 from .talker_graph import TalkerGraph
@@ -34,6 +44,11 @@ def fast_generate(
     subtalker_top_p: Optional[float] = None,
     subtalker_temperature: Optional[float] = None,
     parity_mode: bool = False,
+    continuation_state: Optional[dict] = None,
+    return_continuation_state: bool | str = False,
+    continuation_mode: str = "voice_clone",
+    continuation_non_streaming_mode: bool = False,
+    continuation_state_device: str = "cpu",
 ) -> Tuple[Optional[torch.Tensor], dict]:
     """
     Fast autoregressive generation with CUDA-graphed predictor and talker.
@@ -48,6 +63,26 @@ def fast_generate(
     for i in range(suppress_start, vocab_size):
         if i != eos_id:
             suppress_mask[i] = True
+
+    continuation_return_mode = normalize_return_continuation_state(return_continuation_state)
+    signature = model_signature(
+        num_layers=talker_graph.num_layers,
+        max_seq_len=talker_graph.max_seq_len,
+        hidden_size=talker_graph.hidden_size,
+    )
+    validate_full_continuation_state(
+        continuation_state,
+        mode=continuation_mode,
+        expected_signature=signature,
+    )
+    if (
+        continuation_state is not None
+        and continuation_state["non_streaming_mode"] != bool(continuation_non_streaming_mode)
+    ):
+        raise ValueError(
+            "continuation_state non_streaming_mode does not match the current request"
+        )
+    base_seq_len = 0 if continuation_state is None else int(continuation_state["seq_len"])
 
     if parity_mode:
         suppress_tokens = [i for i in range(suppress_start, vocab_size) if i != eos_id]
@@ -103,19 +138,67 @@ def fast_generate(
     
     # === PREFILL (still uses HF forward for variable-length prefill) ===
     t_start = time.time()
-    
-    out = talker.forward(
-        inputs_embeds=talker_input_embeds,
-        attention_mask=attention_mask,
-        use_cache=True,
-        output_hidden_states=True,
-        return_dict=True,
-        trailing_text_hidden=trailing_text_hiddens,
-        tts_pad_embed=tts_pad_embed,
-        generation_step=None,
-        past_hidden=None,
-        past_key_values=None,
-    )
+    full_attention_mask = attention_mask
+    if continuation_state is None:
+        out = talker.forward(
+            inputs_embeds=talker_input_embeds,
+            attention_mask=attention_mask,
+            use_cache=True,
+            output_hidden_states=True,
+            return_dict=True,
+            trailing_text_hidden=trailing_text_hiddens,
+            tts_pad_embed=tts_pad_embed,
+            generation_step=None,
+            past_hidden=None,
+            past_key_values=None,
+        )
+    else:
+        prefix_len = int(talker_input_embeds.shape[1])
+        required_len = base_seq_len + prefix_len
+        if required_len >= talker_graph.max_seq_len - 1:
+            raise RuntimeError(
+                "Continuation prefill exceeds max_seq_len. Reset the continuation state "
+                "or increase max_seq_len."
+            )
+        full_attention_mask = torch.ones(
+            attention_mask.shape[0],
+            required_len,
+            dtype=attention_mask.dtype,
+            device=attention_mask.device,
+        )
+        prefix_cache_position = torch.arange(
+            base_seq_len,
+            required_len,
+            device=device,
+        )
+        prefix_input_ids = torch.zeros(
+            (talker_input_embeds.shape[0], prefix_len),
+            dtype=torch.long,
+            device=device,
+        )
+        talker.rope_deltas = continuation_state["rope_deltas"].to(
+            device=talker_input_embeds.device,
+            dtype=torch.float32,
+        )
+        dynamic_cache = continuation_state_to_dynamic_cache(
+            continuation_state,
+            config=talker.config,
+            device=device,
+        )
+        out = talker.forward(
+            input_ids=prefix_input_ids,
+            inputs_embeds=talker_input_embeds,
+            attention_mask=full_attention_mask,
+            use_cache=True,
+            output_hidden_states=True,
+            return_dict=True,
+            trailing_text_hidden=trailing_text_hiddens,
+            tts_pad_embed=tts_pad_embed,
+            generation_step=None,
+            past_hidden=None,
+            past_key_values=dynamic_cache,
+            cache_position=prefix_cache_position,
+        )
     
     talker_past_kv = out.past_key_values
     past_hidden = out.past_hidden
@@ -137,7 +220,7 @@ def fast_generate(
     prefill_len = talker_graph.prefill_kv(talker_past_kv)
     # Sync padding mask + rope deltas for decode parity
     rope_deltas = getattr(talker, "rope_deltas", None)
-    talker_graph.set_generation_state(attention_mask, rope_deltas)
+    talker_graph.set_generation_state(full_attention_mask, rope_deltas)
     
     torch.cuda.synchronize()
     t_prefill = time.time() - t_start
@@ -145,6 +228,11 @@ def fast_generate(
     # === DECODE LOOP ===
     t_decode_start = time.time()
     all_codec_ids = []
+    all_first_tokens = continuation_state_first_token_history(
+        continuation_state,
+        device=device,
+    )
+    generated_first_tokens = []
     
     for step_idx in range(max_new_tokens):
         if token.item() == eos_id:
@@ -158,6 +246,8 @@ def fast_generate(
         # Build full codec: [first_cb, cb1, ..., cb15]
         all_cb = torch.cat([token.view(1), codebook_token_ids])  # [16]
         all_codec_ids.append(all_cb.detach())
+        all_first_tokens.append(token.detach())
+        generated_first_tokens.append(token.detach())
         
         # --- Build input embedding for talker ---
         codec_hiddens = [last_id_hidden]
@@ -181,8 +271,8 @@ def fast_generate(
         
         logits = talker_codec_head(hidden_states[:, -1, :]).unsqueeze(0)
         
-        if repetition_penalty != 1.0 and len(all_codec_ids) > 0:
-            history = torch.stack([c[0] for c in all_codec_ids])
+        if repetition_penalty != 1.0 and all_first_tokens:
+            history = torch.stack(all_first_tokens)
             logits = apply_repetition_penalty(logits, history, repetition_penalty)
 
         suppress_eos = len(all_codec_ids) < min_new_tokens
@@ -209,6 +299,31 @@ def fast_generate(
         'ms_per_step': (t_decode / n_steps * 1000) if n_steps > 0 else 0,
         'steps_per_s': (n_steps / t_decode) if t_decode > 0 else 0,
     }
+    if continuation_return_mode != "none":
+        final_seq_len = prefill_len + n_steps
+        delta = build_continuation_state_delta(
+            static_cache=talker_graph.static_cache,
+            base_seq_len=base_seq_len,
+            seq_len=final_seq_len,
+            rope_deltas=talker_graph.rope_deltas,
+            first_codebook_history_delta=generated_first_tokens,
+            codec_ids_delta=all_codec_ids,
+            mode=continuation_mode,
+            non_streaming_mode=continuation_non_streaming_mode,
+            model_signature_dict=signature,
+            device=continuation_state_device,
+        )
+        if continuation_return_mode == "delta":
+            timing["continuation_state_delta"] = delta
+        else:
+            timing["continuation_state"] = apply_continuation_state_delta(
+                continuation_state,
+                delta,
+            )
+        timing["continuation_state_status"] = build_continuation_state_status(
+            seq_len=final_seq_len,
+            max_seq_len=talker_graph.max_seq_len,
+        )
     
     if all_codec_ids:
         return torch.stack(all_codec_ids), timing
