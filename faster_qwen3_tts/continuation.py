@@ -32,6 +32,18 @@ def model_signature(*, num_layers: int, max_seq_len: int, hidden_size: int) -> D
     }
 
 
+def _validate_cache_layer_count(
+    *,
+    cache_layers: Any,
+    expected_num_layers: int,
+    field_name: str,
+) -> None:
+    if len(cache_layers) != expected_num_layers:
+        raise ValueError(
+            f"{field_name} layer count mismatch: expected {expected_num_layers}, got {len(cache_layers)}"
+        )
+
+
 def build_continuation_state_status(*, seq_len: int, max_seq_len: int) -> Dict[str, Any]:
     usable_seq_len = max(int(max_seq_len) - 1, 0)
     remaining_tokens = max(usable_seq_len - int(seq_len), 0)
@@ -81,6 +93,38 @@ def validate_full_continuation_state(
         )
     if state.get("model_signature") != expected_signature:
         raise ValueError("continuation_state does not match the loaded model configuration")
+    _validate_cache_layer_count(
+        cache_layers=state.get("cache", []),
+        expected_num_layers=expected_signature["num_layers"],
+        field_name="continuation_state.cache",
+    )
+
+
+def validate_continuation_delta(delta: Dict[str, Any]) -> None:
+    if delta.get("version") != CONTINUATION_STATE_VERSION:
+        raise ValueError(
+            f"Unsupported continuation delta version: {delta.get('version')!r}"
+        )
+    if delta.get("state_kind") == "full":
+        signature = delta.get("model_signature")
+        if not isinstance(signature, dict):
+            raise ValueError("Full continuation state is missing model_signature")
+        _validate_cache_layer_count(
+            cache_layers=delta.get("cache", []),
+            expected_num_layers=int(signature["num_layers"]),
+            field_name="continuation_state.cache",
+        )
+        return
+    if delta.get("state_kind") != "delta":
+        raise ValueError("Unknown continuation state kind")
+    signature = delta.get("model_signature")
+    if not isinstance(signature, dict):
+        raise ValueError("Continuation delta is missing model_signature")
+    _validate_cache_layer_count(
+        cache_layers=delta.get("cache_delta", []),
+        expected_num_layers=int(signature["num_layers"]),
+        field_name="continuation_state_delta.cache_delta",
+    )
 
 
 def continuation_state_to_dynamic_cache(
@@ -326,14 +370,9 @@ def apply_continuation_state_delta(
     state: Optional[Dict[str, Any]],
     delta: Dict[str, Any],
 ) -> Dict[str, Any]:
-    if delta.get("version") != CONTINUATION_STATE_VERSION:
-        raise ValueError(
-            f"Unsupported continuation delta version: {delta.get('version')!r}"
-        )
+    validate_continuation_delta(delta)
     if delta.get("state_kind") == "full":
         return delta
-    if delta.get("state_kind") != "delta":
-        raise ValueError("Unknown continuation state kind")
 
     if state is None:
         if int(delta["base_seq_len"]) != 0:

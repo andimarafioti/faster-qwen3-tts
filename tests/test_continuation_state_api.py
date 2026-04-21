@@ -6,6 +6,7 @@ import torch
 from faster_qwen3_tts.continuation import (
     apply_continuation_state_delta,
     build_continuation_state_status,
+    validate_full_continuation_state,
 )
 from faster_qwen3_tts.model import FasterQwen3TTS
 from faster_qwen3_tts.streaming import parity_generate_streaming
@@ -94,6 +95,14 @@ def test_apply_continuation_state_delta_rejects_version_mismatch():
         apply_continuation_state_delta(None, delta)
 
 
+def test_apply_continuation_state_delta_rejects_cache_layer_count_mismatch():
+    delta = _delta(base_seq_len=0, added_seq_len=2, value=5)
+    delta["cache_delta"] = delta["cache_delta"][:1]
+
+    with pytest.raises(ValueError, match="cache_delta.*expected 2, got 1"):
+        apply_continuation_state_delta(None, delta)
+
+
 def test_apply_continuation_state_delta_rejects_seq_len_mismatch():
     state = apply_continuation_state_delta(None, _delta(base_seq_len=0, added_seq_len=2, value=5))
 
@@ -124,6 +133,18 @@ def test_build_continuation_state_status_warns_near_limit():
     assert status["remaining_tokens"] == 247
     assert status["should_reset"] is True
     assert "warning" in status
+
+
+def test_validate_full_continuation_state_rejects_cache_layer_count_mismatch():
+    state = apply_continuation_state_delta(None, _delta(base_seq_len=0, added_seq_len=2, value=5))
+    state["cache"] = state["cache"][:1]
+
+    with pytest.raises(ValueError, match="expected 2, got 1"):
+        validate_full_continuation_state(
+            state,
+            mode="custom_voice",
+            expected_signature=state["model_signature"],
+        )
 
 
 def test_generate_voice_clone_returns_info_when_continuation_requested(monkeypatch):
