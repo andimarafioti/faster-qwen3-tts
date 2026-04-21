@@ -58,23 +58,26 @@ def fast_generate(
     suppress_mask = build_suppress_mask(vocab_size, eos_id, device=device)
 
     continuation_return_mode = normalize_return_continuation_state(return_continuation_state)
-    signature = model_signature(
-        num_layers=talker_graph.num_layers,
-        max_seq_len=talker_graph.max_seq_len,
-        hidden_size=talker_graph.hidden_size,
-    )
-    validate_full_continuation_state(
-        continuation_state,
-        mode=continuation_mode,
-        expected_signature=signature,
-    )
-    if (
-        continuation_state is not None
-        and continuation_state["non_streaming_mode"] != continuation_non_streaming_mode
-    ):
-        raise ValueError(
-            "continuation_state non_streaming_mode does not match the current request"
+    continuation_active = continuation_state is not None or continuation_return_mode != "none"
+    signature = None
+    if continuation_active:
+        signature = model_signature(
+            num_layers=talker_graph.num_layers,
+            max_seq_len=talker_graph.max_seq_len,
+            hidden_size=talker_graph.hidden_size,
         )
+        validate_full_continuation_state(
+            continuation_state,
+            mode=continuation_mode,
+            expected_signature=signature,
+        )
+        if (
+            continuation_state is not None
+            and continuation_state["non_streaming_mode"] != continuation_non_streaming_mode
+        ):
+            raise ValueError(
+                "continuation_state non_streaming_mode does not match the current request"
+            )
     base_seq_len = 0 if continuation_state is None else int(continuation_state["seq_len"])
 
     if parity_mode:

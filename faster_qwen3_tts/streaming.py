@@ -62,23 +62,26 @@ def fast_generate_streaming(
     suppress_mask = build_suppress_mask(vocab_size, eos_id, device=device)
 
     continuation_return_mode = normalize_return_continuation_state(return_continuation_state)
-    signature = model_signature(
-        num_layers=talker_graph.num_layers,
-        max_seq_len=talker_graph.max_seq_len,
-        hidden_size=talker_graph.hidden_size,
-    )
-    validate_full_continuation_state(
-        continuation_state,
-        mode=continuation_mode,
-        expected_signature=signature,
-    )
-    if (
-        continuation_state is not None
-        and continuation_state["non_streaming_mode"] != continuation_non_streaming_mode
-    ):
-        raise ValueError(
-            "continuation_state non_streaming_mode does not match the current request"
+    continuation_active = continuation_state is not None or continuation_return_mode != "none"
+    signature = None
+    if continuation_active:
+        signature = model_signature(
+            num_layers=talker_graph.num_layers,
+            max_seq_len=talker_graph.max_seq_len,
+            hidden_size=talker_graph.hidden_size,
         )
+        validate_full_continuation_state(
+            continuation_state,
+            mode=continuation_mode,
+            expected_signature=signature,
+        )
+        if (
+            continuation_state is not None
+            and continuation_state["non_streaming_mode"] != continuation_non_streaming_mode
+        ):
+            raise ValueError(
+                "continuation_state non_streaming_mode does not match the current request"
+            )
     base_seq_len = 0 if continuation_state is None else int(continuation_state["seq_len"])
     running_state = continuation_state
 
@@ -301,29 +304,32 @@ def parity_generate_streaming(
     suppress_mask = build_suppress_mask(vocab_size, eos_id, device=device)
 
     continuation_return_mode = normalize_return_continuation_state(return_continuation_state)
-    if continuation_max_seq_len is None:
-        continuation_max_seq_len = (
-            continuation_state["model_signature"]["max_seq_len"]
-            if continuation_state is not None
-            else int(talker_input_embeds.shape[1] + max_new_tokens + 1)
+    continuation_active = continuation_state is not None or continuation_return_mode != "none"
+    signature = None
+    if continuation_active:
+        if continuation_max_seq_len is None:
+            continuation_max_seq_len = (
+                continuation_state["model_signature"]["max_seq_len"]
+                if continuation_state is not None
+                else int(talker_input_embeds.shape[1] + max_new_tokens + 1)
+            )
+        signature = model_signature(
+            num_layers=talker.config.num_hidden_layers,
+            max_seq_len=continuation_max_seq_len,
+            hidden_size=talker.config.hidden_size,
         )
-    signature = model_signature(
-        num_layers=talker.config.num_hidden_layers,
-        max_seq_len=continuation_max_seq_len,
-        hidden_size=talker.config.hidden_size,
-    )
-    validate_full_continuation_state(
-        continuation_state,
-        mode=continuation_mode,
-        expected_signature=signature,
-    )
-    if (
-        continuation_state is not None
-        and continuation_state["non_streaming_mode"] != continuation_non_streaming_mode
-    ):
-        raise ValueError(
-            "continuation_state non_streaming_mode does not match the current request"
+        validate_full_continuation_state(
+            continuation_state,
+            mode=continuation_mode,
+            expected_signature=signature,
         )
+        if (
+            continuation_state is not None
+            and continuation_state["non_streaming_mode"] != continuation_non_streaming_mode
+        ):
+            raise ValueError(
+                "continuation_state non_streaming_mode does not match the current request"
+            )
     base_seq_len = 0 if continuation_state is None else int(continuation_state["seq_len"])
     running_state = continuation_state
 
