@@ -5,6 +5,7 @@ import pytest
 import torch
 
 from faster_qwen3_tts.model import FasterQwen3TTS
+from faster_qwen3_tts.streaming import parity_generate_streaming
 
 
 def _dummy_graph():
@@ -57,12 +58,14 @@ def _xvec_prompt():
 def test_public_api_exposes_voice_clone_prompt_parameter():
     sig_clone = inspect.signature(FasterQwen3TTS.generate_voice_clone)
     sig_stream = inspect.signature(FasterQwen3TTS.generate_voice_clone_streaming)
+    sig_parity_stream = inspect.signature(parity_generate_streaming)
     assert "voice_clone_prompt" in sig_clone.parameters
     assert "voice_clone_prompt" in sig_stream.parameters
     assert "continuation_state" in sig_clone.parameters
     assert "continuation_state" in sig_stream.parameters
     assert "return_continuation_state" in sig_clone.parameters
     assert "return_continuation_state" in sig_stream.parameters
+    assert "continuation_max_seq_len" in sig_parity_stream.parameters
     assert list(sig_clone.parameters).index("max_new_tokens") == 5
     assert list(sig_stream.parameters).index("max_new_tokens") == 5
     assert list(sig_clone.parameters)[-4:] == [
@@ -80,6 +83,57 @@ def test_public_api_exposes_voice_clone_prompt_parameter():
     assert sig_clone.parameters["non_streaming_mode"].default is None
     assert sig_stream.parameters["xvec_only"].default is False
     assert sig_stream.parameters["non_streaming_mode"].default is None
+
+
+def test_generate_voice_clone_streaming_parity_passes_continuation_max_seq_len(monkeypatch):
+    model = _build_dummy_model()
+    captured = {}
+
+    monkeypatch.setattr(
+        model,
+        "_prepare_generation",
+        lambda **_kwargs: (
+            types.SimpleNamespace(
+                speech_tokenizer=types.SimpleNamespace(
+                    decode=lambda _payload: ([torch.arange(16, dtype=torch.float32)], 24000)
+                )
+            ),
+            object(),
+            object(),
+            torch.zeros(1, 1, 1),
+            torch.ones(1, 1, dtype=torch.long),
+            torch.zeros(1, 1, 1),
+            torch.zeros(1, 1, 1),
+            None,
+        ),
+    )
+
+    def _fake_parity_stream(**kwargs):
+        captured["continuation_max_seq_len"] = kwargs["continuation_max_seq_len"]
+        yield torch.zeros(2, 16, dtype=torch.long), {
+            "chunk_index": 0,
+            "chunk_steps": 2,
+            "prefill_ms": 0.0,
+            "decode_ms": 1.0,
+            "total_steps_so_far": 2,
+            "is_final": True,
+        }
+
+    monkeypatch.setattr("faster_qwen3_tts.streaming.parity_generate_streaming", _fake_parity_stream)
+
+    chunk, sr, timing = next(
+        model.generate_voice_clone_streaming(
+            text="hello",
+            language="English",
+            voice_clone_prompt=_xvec_prompt(),
+            parity_mode=True,
+        )
+    )
+
+    assert captured["continuation_max_seq_len"] == model.max_seq_len
+    assert sr == 24000
+    assert chunk.ndim == 1
+    assert timing["chunk_index"] == 0
 
 
 def test_public_api_uses_none_sentinel_for_non_streaming_overrides():

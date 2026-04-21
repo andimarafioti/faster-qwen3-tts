@@ -7,6 +7,20 @@ import torch
 import torch.nn.functional as F
 
 
+def build_suppress_mask(
+    vocab_size: int,
+    eos_id: int,
+    *,
+    device: torch.device | str,
+) -> torch.Tensor:
+    """Build the standard Qwen TTS suppress mask for reserved high token ids."""
+    suppress_mask = torch.zeros(vocab_size, dtype=torch.bool, device=device)
+    suppress_start = max(0, vocab_size - 1024)
+    suppress_mask[suppress_start:] = True
+    suppress_mask[eos_id] = False
+    return suppress_mask
+
+
 def apply_repetition_penalty(
     logits: torch.Tensor,
     token_history: torch.Tensor,

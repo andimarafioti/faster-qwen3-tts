@@ -11,17 +11,15 @@ from typing import Generator, Tuple
 import torch
 
 from .continuation import (
-    apply_continuation_state_delta,
-    build_continuation_state_status,
-    build_continuation_state_delta,
+    attach_continuation_result,
     continuation_state_first_token_history,
-    continuation_state_to_dynamic_cache,
     model_signature,
     normalize_return_continuation_state,
+    prefill_with_continuation,
     validate_full_continuation_state,
 )
 from .predictor_graph import PredictorGraph
-from .sampling import apply_repetition_penalty, sample_logits
+from .sampling import apply_repetition_penalty, build_suppress_mask, sample_logits
 from .talker_graph import TalkerGraph
 
 
@@ -61,11 +59,7 @@ def fast_generate_streaming(
     vocab_size = config.vocab_size
     device = talker_input_embeds.device
 
-    suppress_mask = torch.zeros(vocab_size, dtype=torch.bool, device=device)
-    suppress_start = max(0, vocab_size - 1024)
-    for i in range(suppress_start, vocab_size):
-        if i != eos_id:
-            suppress_mask[i] = True
+    suppress_mask = build_suppress_mask(vocab_size, eos_id, device=device)
 
     continuation_return_mode = normalize_return_continuation_state(return_continuation_state)
     signature = model_signature(
@@ -80,7 +74,7 @@ def fast_generate_streaming(
     )
     if (
         continuation_state is not None
-        and continuation_state["non_streaming_mode"] != bool(continuation_non_streaming_mode)
+        and continuation_state["non_streaming_mode"] != continuation_non_streaming_mode
     ):
         raise ValueError(
             "continuation_state non_streaming_mode does not match the current request"
@@ -96,67 +90,16 @@ def fast_generate_streaming(
 
     # === PREFILL (still uses HF forward for variable-length prefill) ===
     t_start = time.time()
-    full_attention_mask = attention_mask
-    if continuation_state is None:
-        out = talker.forward(
-            inputs_embeds=talker_input_embeds,
-            attention_mask=attention_mask,
-            use_cache=True,
-            output_hidden_states=True,
-            return_dict=True,
-            trailing_text_hidden=trailing_text_hiddens,
-            tts_pad_embed=tts_pad_embed,
-            generation_step=None,
-            past_hidden=None,
-            past_key_values=None,
-        )
-    else:
-        prefix_len = int(talker_input_embeds.shape[1])
-        required_len = base_seq_len + prefix_len
-        if required_len >= talker_graph.max_seq_len - 1:
-            raise RuntimeError(
-                "Continuation prefill exceeds max_seq_len. Reset the continuation state "
-                "or increase max_seq_len."
-            )
-        full_attention_mask = torch.ones(
-            attention_mask.shape[0],
-            required_len,
-            dtype=attention_mask.dtype,
-            device=attention_mask.device,
-        )
-        prefix_cache_position = torch.arange(
-            base_seq_len,
-            required_len,
-            device=device,
-        )
-        prefix_input_ids = torch.zeros(
-            (talker_input_embeds.shape[0], prefix_len),
-            dtype=torch.long,
-            device=device,
-        )
-        talker.rope_deltas = continuation_state["rope_deltas"].to(
-            device=talker_input_embeds.device,
-            dtype=torch.float32,
-        )
-        dynamic_cache = continuation_state_to_dynamic_cache(
-            continuation_state,
-            config=talker.config,
-            device=device,
-        )
-        out = talker.forward(
-            input_ids=prefix_input_ids,
-            inputs_embeds=talker_input_embeds,
-            attention_mask=full_attention_mask,
-            use_cache=True,
-            output_hidden_states=True,
-            return_dict=True,
-            trailing_text_hidden=trailing_text_hiddens,
-            tts_pad_embed=tts_pad_embed,
-            generation_step=None,
-            past_hidden=None,
-            past_key_values=dynamic_cache,
-            cache_position=prefix_cache_position,
-        )
+    out, full_attention_mask, base_seq_len = prefill_with_continuation(
+        talker=talker,
+        talker_input_embeds=talker_input_embeds,
+        attention_mask=attention_mask,
+        trailing_text_hiddens=trailing_text_hiddens,
+        tts_pad_embed=tts_pad_embed,
+        continuation_state=continuation_state,
+        max_seq_len=talker_graph.max_seq_len,
+        device=device,
+    )
 
     talker_past_kv = out.past_key_values
     past_hidden = out.past_hidden
@@ -259,8 +202,11 @@ def fast_generate_streaming(
             }
             if continuation_return_mode != "none":
                 seq_len = prefill_len + total_steps
-                delta = build_continuation_state_delta(
-                    static_cache=talker_graph.static_cache,
+                running_state = attach_continuation_result(
+                    timing=timing,
+                    continuation_return_mode=continuation_return_mode,
+                    running_state=running_state,
+                    cache_source=talker_graph.static_cache,
                     base_seq_len=last_export_seq_len,
                     seq_len=seq_len,
                     rope_deltas=talker_graph.rope_deltas,
@@ -270,14 +216,6 @@ def fast_generate_streaming(
                     non_streaming_mode=continuation_non_streaming_mode,
                     model_signature_dict=signature,
                     device=continuation_state_device,
-                )
-                if continuation_return_mode == "delta":
-                    timing["continuation_state_delta"] = delta
-                else:
-                    running_state = apply_continuation_state_delta(running_state, delta)
-                    timing["continuation_state"] = running_state
-                timing["continuation_state_status"] = build_continuation_state_status(
-                    seq_len=seq_len,
                     max_seq_len=talker_graph.max_seq_len,
                 )
                 last_export_seq_len = seq_len
@@ -304,8 +242,11 @@ def fast_generate_streaming(
         }
         if continuation_return_mode != "none":
             seq_len = prefill_len + total_steps
-            delta = build_continuation_state_delta(
-                static_cache=talker_graph.static_cache,
+            running_state = attach_continuation_result(
+                timing=timing,
+                continuation_return_mode=continuation_return_mode,
+                running_state=running_state,
+                cache_source=talker_graph.static_cache,
                 base_seq_len=last_export_seq_len,
                 seq_len=seq_len,
                 rope_deltas=talker_graph.rope_deltas,
@@ -315,14 +256,6 @@ def fast_generate_streaming(
                 non_streaming_mode=continuation_non_streaming_mode,
                 model_signature_dict=signature,
                 device=continuation_state_device,
-            )
-            if continuation_return_mode == "delta":
-                timing["continuation_state_delta"] = delta
-            else:
-                running_state = apply_continuation_state_delta(running_state, delta)
-                timing["continuation_state"] = running_state
-            timing["continuation_state_status"] = build_continuation_state_status(
-                seq_len=seq_len,
                 max_seq_len=talker_graph.max_seq_len,
             )
 
@@ -350,6 +283,7 @@ def parity_generate_streaming(
     continuation_mode: str = "voice_clone",
     continuation_non_streaming_mode: bool = False,
     continuation_state_device: str = "cpu",
+    continuation_max_seq_len: int | None = None,
 ) -> Generator[Tuple[torch.Tensor, dict], None, None]:
     """
     Streaming generation without CUDA graphs (dynamic cache).
@@ -364,11 +298,7 @@ def parity_generate_streaming(
     vocab_size = config.vocab_size
     device = talker_input_embeds.device
 
-    suppress_mask = torch.zeros(vocab_size, dtype=torch.bool, device=device)
-    suppress_start = max(0, vocab_size - 1024)
-    for i in range(suppress_start, vocab_size):
-        if i != eos_id:
-            suppress_mask[i] = True
+    suppress_mask = build_suppress_mask(vocab_size, eos_id, device=device)
 
     continuation_return_mode = normalize_return_continuation_state(return_continuation_state)
     if continuation_max_seq_len is None:
@@ -389,7 +319,7 @@ def parity_generate_streaming(
     )
     if (
         continuation_state is not None
-        and continuation_state["non_streaming_mode"] != bool(continuation_non_streaming_mode)
+        and continuation_state["non_streaming_mode"] != continuation_non_streaming_mode
     ):
         raise ValueError(
             "continuation_state non_streaming_mode does not match the current request"
@@ -399,67 +329,16 @@ def parity_generate_streaming(
 
     # === PREFILL ===
     t_start = time.time()
-    full_attention_mask = attention_mask
-    if continuation_state is None:
-        out = talker.forward(
-            inputs_embeds=talker_input_embeds,
-            attention_mask=attention_mask,
-            use_cache=True,
-            output_hidden_states=True,
-            return_dict=True,
-            trailing_text_hidden=trailing_text_hiddens,
-            tts_pad_embed=tts_pad_embed,
-            generation_step=None,
-            past_hidden=None,
-            past_key_values=None,
-        )
-    else:
-        prefix_len = int(talker_input_embeds.shape[1])
-        required_len = base_seq_len + prefix_len
-        if required_len >= continuation_max_seq_len - 1:
-            raise RuntimeError(
-                "Continuation prefill exceeds max_seq_len. Reset the continuation state "
-                "or increase max_seq_len."
-            )
-        full_attention_mask = torch.ones(
-            attention_mask.shape[0],
-            required_len,
-            dtype=attention_mask.dtype,
-            device=attention_mask.device,
-        )
-        prefix_cache_position = torch.arange(
-            base_seq_len,
-            required_len,
-            device=device,
-        )
-        prefix_input_ids = torch.zeros(
-            (talker_input_embeds.shape[0], prefix_len),
-            dtype=torch.long,
-            device=device,
-        )
-        talker.rope_deltas = continuation_state["rope_deltas"].to(
-            device=talker_input_embeds.device,
-            dtype=torch.float32,
-        )
-        talker_past_kv = continuation_state_to_dynamic_cache(
-            continuation_state,
-            config=talker.config,
-            device=device,
-        )
-        out = talker.forward(
-            input_ids=prefix_input_ids,
-            inputs_embeds=talker_input_embeds,
-            attention_mask=full_attention_mask,
-            use_cache=True,
-            output_hidden_states=True,
-            return_dict=True,
-            trailing_text_hidden=trailing_text_hiddens,
-            tts_pad_embed=tts_pad_embed,
-            generation_step=None,
-            past_hidden=None,
-            past_key_values=talker_past_kv,
-            cache_position=prefix_cache_position,
-        )
+    out, full_attention_mask, base_seq_len = prefill_with_continuation(
+        talker=talker,
+        talker_input_embeds=talker_input_embeds,
+        attention_mask=attention_mask,
+        trailing_text_hiddens=trailing_text_hiddens,
+        tts_pad_embed=tts_pad_embed,
+        continuation_state=continuation_state,
+        max_seq_len=continuation_max_seq_len,
+        device=device,
+    )
 
     talker_past_kv = out.past_key_values
     past_hidden = out.past_hidden
@@ -566,8 +445,11 @@ def parity_generate_streaming(
             }
             if continuation_return_mode != "none":
                 seq_len = int(attention_mask.shape[1]) if attention_mask is not None else base_seq_len + total_steps
-                delta = build_continuation_state_delta(
-                    static_cache=talker_past_kv,
+                running_state = attach_continuation_result(
+                    timing=timing,
+                    continuation_return_mode=continuation_return_mode,
+                    running_state=running_state,
+                    cache_source=talker_past_kv,
                     base_seq_len=last_export_seq_len,
                     seq_len=seq_len,
                     rope_deltas=talker.rope_deltas,
@@ -577,14 +459,6 @@ def parity_generate_streaming(
                     non_streaming_mode=continuation_non_streaming_mode,
                     model_signature_dict=signature,
                     device=continuation_state_device,
-                )
-                if continuation_return_mode == "delta":
-                    timing["continuation_state_delta"] = delta
-                else:
-                    running_state = apply_continuation_state_delta(running_state, delta)
-                    timing["continuation_state"] = running_state
-                timing["continuation_state_status"] = build_continuation_state_status(
-                    seq_len=seq_len,
                     max_seq_len=continuation_max_seq_len,
                 )
                 last_export_seq_len = seq_len
@@ -610,8 +484,11 @@ def parity_generate_streaming(
         }
         if continuation_return_mode != "none":
             seq_len = int(attention_mask.shape[1]) if attention_mask is not None else base_seq_len + total_steps
-            delta = build_continuation_state_delta(
-                static_cache=talker_past_kv,
+            running_state = attach_continuation_result(
+                timing=timing,
+                continuation_return_mode=continuation_return_mode,
+                running_state=running_state,
+                cache_source=talker_past_kv,
                 base_seq_len=last_export_seq_len,
                 seq_len=seq_len,
                 rope_deltas=talker.rope_deltas,
@@ -621,14 +498,6 @@ def parity_generate_streaming(
                 non_streaming_mode=continuation_non_streaming_mode,
                 model_signature_dict=signature,
                 device=continuation_state_device,
-            )
-            if continuation_return_mode == "delta":
-                timing["continuation_state_delta"] = delta
-            else:
-                running_state = apply_continuation_state_delta(running_state, delta)
-                timing["continuation_state"] = running_state
-            timing["continuation_state_status"] = build_continuation_state_status(
-                seq_len=seq_len,
                 max_seq_len=continuation_max_seq_len,
             )
 

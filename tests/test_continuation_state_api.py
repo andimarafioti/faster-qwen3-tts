@@ -8,6 +8,7 @@ from faster_qwen3_tts.continuation import (
     build_continuation_state_status,
 )
 from faster_qwen3_tts.model import FasterQwen3TTS
+from faster_qwen3_tts.streaming import parity_generate_streaming
 
 
 def _dummy_graph():
@@ -69,6 +70,53 @@ def test_apply_continuation_state_delta_builds_and_extends_state():
     assert state["first_codebook_history"].tolist() == [5, 6, 9, 10]
     assert torch.all(state["cache"][0]["key"][:, :, :3, :] == 5)
     assert torch.all(state["cache"][0]["key"][:, :, 3:, :] == 9)
+
+
+def test_apply_continuation_state_delta_rejects_nonzero_base_without_state():
+    with pytest.raises(ValueError, match="base_seq_len is non-zero"):
+        apply_continuation_state_delta(None, _delta(base_seq_len=3, added_seq_len=2, value=5))
+
+
+def test_apply_continuation_state_delta_rejects_mode_mismatch():
+    state = apply_continuation_state_delta(None, _delta(base_seq_len=0, added_seq_len=2, value=5))
+    delta = _delta(base_seq_len=2, added_seq_len=1, value=7)
+    delta["mode"] = "voice_clone"
+
+    with pytest.raises(ValueError, match="mode mismatch"):
+        apply_continuation_state_delta(state, delta)
+
+
+def test_apply_continuation_state_delta_rejects_version_mismatch():
+    delta = _delta(base_seq_len=0, added_seq_len=2, value=5)
+    delta["version"] = 999
+
+    with pytest.raises(ValueError, match="Unsupported continuation delta version"):
+        apply_continuation_state_delta(None, delta)
+
+
+def test_apply_continuation_state_delta_rejects_seq_len_mismatch():
+    state = apply_continuation_state_delta(None, _delta(base_seq_len=0, added_seq_len=2, value=5))
+
+    with pytest.raises(ValueError, match="base_seq_len"):
+        apply_continuation_state_delta(state, _delta(base_seq_len=3, added_seq_len=1, value=7))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for mixed-device merge test")
+def test_apply_continuation_state_delta_moves_delta_to_state_device():
+    state = apply_continuation_state_delta(None, _delta(base_seq_len=0, added_seq_len=2, value=5))
+    delta = _delta(base_seq_len=2, added_seq_len=1, value=7)
+    delta["rope_deltas"] = delta["rope_deltas"].to("cuda")
+    delta["first_codebook_history_delta"] = delta["first_codebook_history_delta"].to("cuda")
+    delta["codec_ids_delta"] = delta["codec_ids_delta"].to("cuda")
+    for layer in delta["cache_delta"]:
+        layer["key"] = layer["key"].to("cuda")
+        layer["value"] = layer["value"].to("cuda")
+
+    merged = apply_continuation_state_delta(state, delta)
+
+    assert merged["rope_deltas"].device.type == "cpu"
+    assert merged["first_codebook_history"].device.type == "cpu"
+    assert merged["decoder_context_codes"].device.type == "cpu"
 
 
 def test_build_continuation_state_status_warns_near_limit():
@@ -176,3 +224,49 @@ def test_generate_custom_voice_streaming_keeps_continuation_delta_in_timing(monk
     assert chunk.ndim == 1
     assert timing["continuation_state_delta"] == {"delta": True}
     assert timing["continuation_state_status"] == {"remaining_tokens": 55}
+
+
+def test_parity_generate_streaming_smoke_with_continuation(monkeypatch):
+    delta = _delta(base_seq_len=0, added_seq_len=2, value=5)
+    delta["mode"] = "voice_clone"
+    state = apply_continuation_state_delta(None, delta)
+
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda: None)
+    monkeypatch.setattr(
+        "faster_qwen3_tts.streaming.prefill_with_continuation",
+        lambda **_kwargs: (
+            types.SimpleNamespace(
+                past_key_values=types.SimpleNamespace(layers=[]),
+                past_hidden=torch.zeros(1, 1, 4),
+                generation_step=0,
+                logits=torch.zeros(1, 1, 32),
+            ),
+            torch.ones(1, state["seq_len"] + 1, dtype=torch.long),
+            state["seq_len"],
+        ),
+    )
+
+    talker = types.SimpleNamespace(
+        config=types.SimpleNamespace(num_hidden_layers=2, hidden_size=4),
+        rope_deltas=torch.zeros(1, 1),
+    )
+    config = types.SimpleNamespace(codec_eos_token_id=31, vocab_size=32)
+
+    result = list(
+        parity_generate_streaming(
+            talker=talker,
+            talker_input_embeds=torch.zeros(1, 1, 4),
+            attention_mask=torch.ones(1, 1, dtype=torch.long),
+            trailing_text_hiddens=torch.zeros(1, 1, 4),
+            tts_pad_embed=torch.zeros(1, 1, 4),
+            config=config,
+            max_new_tokens=0,
+            do_sample=False,
+            continuation_state=state,
+            continuation_mode="voice_clone",
+            continuation_non_streaming_mode=False,
+            continuation_max_seq_len=64,
+        )
+    )
+
+    assert result == []
