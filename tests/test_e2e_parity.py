@@ -341,6 +341,7 @@ def custom_voice_fixture():
         language=language,
         speaker=speaker,
         instruct=None,
+        non_streaming_mode=False,
     )
 
     data = dict(
@@ -387,6 +388,7 @@ def voice_design_fixture():
         language=language,
         speaker=None,
         instruct=instruct,
+        non_streaming_mode=False,
     )
 
     data = dict(
@@ -1031,10 +1033,11 @@ def test_instruct_prepends_tokens_to_voice_clone(parity_fixture):
 
     with torch.inference_mode():
         _, _, _, tie_base, tam_base, _, _, _ = fast._prepare_generation(
-            text, ref_audio, "", language=language, non_streaming_mode=False
+            text, ref_audio, "", language=language, non_streaming_mode=False, xvec_only=True
         )
         _, _, _, tie_inst, tam_inst, _, _, _ = fast._prepare_generation(
             text, ref_audio, "", language=language, non_streaming_mode=False,
+            xvec_only=True,
             instruct=instruct_str,
         )
 
@@ -1065,11 +1068,13 @@ def test_instruct_changes_generation_output(parity_fixture):
     with torch.inference_mode():
         wav_base, _ = fast.generate_voice_clone(
             text=text, language=language, ref_audio=ref_audio, ref_text="",
+            xvec_only=True,
             max_new_tokens=32, do_sample=False, top_k=0, top_p=1.0, temperature=1.0,
             repetition_penalty=1.0,
         )
         wav_inst, _ = fast.generate_voice_clone(
             text=text, language=language, ref_audio=ref_audio, ref_text="",
+            xvec_only=True,
             max_new_tokens=32, do_sample=False, top_k=0, top_p=1.0, temperature=1.0,
             repetition_penalty=1.0,
             instruct="Please speak very slowly and with a deep voice.",
