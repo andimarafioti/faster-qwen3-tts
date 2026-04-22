@@ -493,6 +493,102 @@ body {
 .wave i:nth-child(4) { height: 7px;  animation-delay: 0.3s; }
 .wave i:nth-child(5) { height: 3px;  animation-delay: 0.4s; }
 
+/* ── Continuation compare ── */
+.continuation {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.continuation-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+  flex-wrap: wrap;
+}
+.continuation-head h2 {
+  font-size: 13px; font-weight: 600; letter-spacing: -0.2px;
+}
+.continuation-sub {
+  font-size: 11px; color: var(--dim);
+}
+.continuation textarea {
+  width: 100%; min-height: 72px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+  padding: 9px 10px;
+  resize: vertical;
+  outline: none;
+}
+.continuation textarea:focus { border-color: var(--accent-ring); }
+.continuation textarea::placeholder { color: var(--dimmer); }
+.continuation textarea:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+.continuation-actions {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  flex-wrap: wrap;
+}
+.continuation-status {
+  font-size: 11px; color: var(--dim);
+}
+.compare-btn {
+  padding: 7px 14px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, opacity 0.15s;
+}
+.compare-btn:hover:not(:disabled) { background: var(--accent2); }
+.compare-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.compare-grid {
+  display: none;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+.compare-grid.show { display: grid; }
+.compare-card {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 9px 10px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.compare-title {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  font-size: 12px; font-weight: 600;
+}
+.compare-badge {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.5px;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 999px;
+}
+.compare-badge.fresh {
+  color: var(--amber);
+  background: rgba(234,179,8,0.12);
+  border: 1px solid rgba(234,179,8,0.25);
+}
+.compare-badge.cont {
+  color: var(--green);
+  background: rgba(34,197,94,0.12);
+  border: 1px solid rgba(34,197,94,0.25);
+}
+.compare-card audio {
+  width: 100%;
+  height: 32px;
+  border-radius: 4px;
+}
+:root:not([data-theme="light"]) .compare-card audio { filter: invert(0.88) hue-rotate(180deg); }
+
 /* ── Settings overlay ── */
 .sov {
   position: fixed; inset: 0;
@@ -615,6 +711,7 @@ body {
   }
   .s-grid3 .s-row { flex-direction: column; align-items: stretch; margin-bottom: 0; }
   .s-grid3 .s-row label { min-width: unset; margin-bottom: 4px; }
+  .compare-grid { grid-template-columns: repeat(2, 1fr); }
 }
 @media (max-height: 520px) {
   .app { padding: 6px 12px; gap: 6px; }
@@ -753,6 +850,44 @@ body {
       </div>
     </div>
 
+    <div class="continuation" id="continuationWrap">
+      <div class="continuation-head">
+        <h2>Continue Previous Sentence</h2>
+        <span class="continuation-sub">Render the next sentence twice: fresh and with continuation state.</span>
+      </div>
+      <textarea id="continuationText" placeholder="Enter the follow-up sentence you want to compare..." oninput="updateContinuationControls()"></textarea>
+      <div class="continuation-actions">
+        <span class="continuation-status" id="continuationStatus">Generate a first sentence to unlock this comparison.</span>
+        <button class="compare-btn" id="continuationBtn" onclick="compareContinuation()" disabled>Compare fresh vs continued</button>
+      </div>
+      <div class="compare-grid" id="continuationResults">
+        <div class="compare-card">
+          <div class="compare-title">
+            <span>Fresh second sentence</span>
+            <span class="compare-badge fresh">No continuation</span>
+          </div>
+          <audio id="cmpFreshPlayer" controls></audio>
+          <div class="metrics">
+            <div class="met"><span class="met-k">Total</span><span class="met-v" id="cmpFreshMs">&mdash;</span></div>
+            <div class="met"><span class="met-k">RTF</span><span class="met-v" id="cmpFreshRTF">&mdash;</span></div>
+            <div class="met"><span class="met-k">Dur</span><span class="met-v" id="cmpFreshDur">&mdash;</span></div>
+          </div>
+        </div>
+        <div class="compare-card">
+          <div class="compare-title">
+            <span>Continued second sentence</span>
+            <span class="compare-badge cont">Continuation</span>
+          </div>
+          <audio id="cmpContPlayer" controls></audio>
+          <div class="metrics">
+            <div class="met"><span class="met-k">Total</span><span class="met-v" id="cmpContMs">&mdash;</span></div>
+            <div class="met"><span class="met-k">RTF</span><span class="met-v" id="cmpContRTF">&mdash;</span></div>
+            <div class="met"><span class="met-k">Dur</span><span class="met-v" id="cmpContDur">&mdash;</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
   </div>
 
 </div><!-- /.app -->
@@ -865,6 +1000,7 @@ function autoGrow(el) {
 
 function setPlayBtns(disabled) {
   document.querySelectorAll('.play-btn').forEach(b => b.disabled = disabled);
+  updateContinuationControls();
 }
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -878,6 +1014,7 @@ let presetRefs = [];
 let loadedModel  = null;
 let loadingModel = null;
 let dlBlob   = null;
+let lastContinuationSessionId = null;
 
 const defaultSpeakers = [
   { id: 'Vivian',   desc: 'Chinese — Bright young female' },
@@ -907,7 +1044,9 @@ const REC_SR = 24000;
 window.addEventListener('load', async () => {
   initTheme();
   autoGrow($('voiceInstr'));
+  autoGrow($('continuationText'));
   await fetchStatus();
+  setContinuationSession(null);
   if (!loadedModel && availableModels.length > 0) {
     // Prefer CustomVoice as default (richer demo), fall back to first available
     const preferred = availableModels.find(m => m.includes('CustomVoice'))
@@ -1072,6 +1211,7 @@ async function loadModel() {
   btn.disabled = true; btn.textContent = 'Loading...';
   loadingModel = $('modelSel').value;
   loadedModel  = null;
+  setContinuationSession(null);
   setPlayBtns(true);
   setPill('loading', 'loading...');
   try {
@@ -1693,6 +1833,7 @@ async function runStream(fd) {
         setDone();
         const blob = buildFinalWav();
         if (blob) setPlayer(blob);
+        setContinuationSession(d.continuation_session_id);
 
       } else if (d.type === 'error') {
         $('queueBar').className = 'queue-bar';
@@ -1713,6 +1854,7 @@ async function runNonStream(fd) {
   const bytes = Uint8Array.from(atob(d.audio_b64), c => c.charCodeAt(0));
   const blob  = new Blob([bytes], { type: 'audio/wav' });
   setPlayer(blob);
+  setContinuationSession(d.continuation_session_id);
   $('player').play().catch(() => {}); // gracefully handle autoplay block
 }
 
@@ -1749,6 +1891,107 @@ function setPlayer(blob) {
   dlBlob = blob;
   $('player').src = URL.createObjectURL(blob);
   $('player').parentElement.style.display = '';
+}
+
+function clearAudioPlayer(id) {
+  const el = $(id);
+  if (!el) return;
+  el.pause();
+  if (el.src && el.src.startsWith('blob:')) URL.revokeObjectURL(el.src);
+  el.removeAttribute('src');
+  el.load();
+}
+
+function resetComparisonMetrics() {
+  ['cmpFreshMs', 'cmpFreshRTF', 'cmpFreshDur', 'cmpContMs', 'cmpContRTF', 'cmpContDur']
+    .forEach(id => $(id).innerHTML = '&mdash;');
+}
+
+function clearContinuationResults() {
+  clearAudioPlayer('cmpFreshPlayer');
+  clearAudioPlayer('cmpContPlayer');
+  resetComparisonMetrics();
+  $('continuationResults').classList.remove('show');
+}
+
+function setContinuationSession(sessionId) {
+  const nextSessionId = sessionId || null;
+  const changed = nextSessionId !== lastContinuationSessionId;
+  lastContinuationSessionId = nextSessionId;
+  if (changed) clearContinuationResults();
+  updateContinuationControls();
+}
+
+function updateContinuationControls() {
+  const hasSession = !!lastContinuationSessionId;
+  const hasText = !!$('continuationText').value.trim();
+  const btn = $('continuationBtn');
+  const status = $('continuationStatus');
+
+  btn.disabled = busy || !hasSession || !hasText;
+  if (!hasSession) {
+    status.textContent = 'Generate a first sentence to unlock this comparison.';
+  } else if (busy) {
+    status.textContent = 'Generation in progress…';
+  } else {
+    status.textContent = 'Uses the last completed clip as sentence 1.';
+  }
+}
+
+function setComparisonResult(kind, payload) {
+  const playerId = kind === 'fresh' ? 'cmpFreshPlayer' : 'cmpContPlayer';
+  const msId = kind === 'fresh' ? 'cmpFreshMs' : 'cmpContMs';
+  const rtfId = kind === 'fresh' ? 'cmpFreshRTF' : 'cmpContRTF';
+  const durId = kind === 'fresh' ? 'cmpFreshDur' : 'cmpContDur';
+
+  clearAudioPlayer(playerId);
+  const bytes = Uint8Array.from(atob(payload.audio_b64), c => c.charCodeAt(0));
+  const blob = new Blob([bytes], { type: 'audio/wav' });
+  $(playerId).src = URL.createObjectURL(blob);
+  $(msId).textContent = payload.metrics.total_ms + 'ms';
+  $(rtfId).textContent = payload.metrics.rtf.toFixed(2) + 'x';
+  $(durId).textContent = payload.metrics.audio_duration_s.toFixed(1) + 's';
+  $('continuationResults').classList.add('show');
+}
+
+async function compareContinuation() {
+  if (busy || !lastContinuationSessionId) return;
+  const text = $('continuationText').value.trim();
+  if (!text) {
+    showMsg('err', 'Enter the follow-up sentence first.');
+    return;
+  }
+
+  hideMsg();
+  busy = true;
+  setPlayBtns(true);
+  clearContinuationResults();
+  $('continuationStatus').textContent = 'Comparing fresh vs continued…';
+
+  const fd = new FormData();
+  fd.append('session_id', lastContinuationSessionId);
+  fd.append('text', text);
+  fd.append('temperature', $('tempSl').value);
+  fd.append('top_k', $('topkSl').value);
+  fd.append('repetition_penalty', $('repSl').value);
+
+  try {
+    const res = await fetch('/generate/compare_continuation', { method: 'POST', body: fd });
+    if (!res.ok) {
+      const e = await res.json();
+      throw new Error(e.detail || 'Comparison failed');
+    }
+    const d = await res.json();
+    setComparisonResult('fresh', d.fresh);
+    setComparisonResult('cont', d.continued);
+    setContinuationSession(d.continuation_session_id);
+  } catch (e) {
+    showMsg('err', 'Continuation comparison failed: ' + e.message);
+  } finally {
+    busy = false;
+    setPlayBtns(false);
+    updateContinuationControls();
+  }
 }
 
 // ── Messages ──────────────────────────────────────────────────────────────────

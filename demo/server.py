@@ -35,7 +35,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 try:
-    from faster_qwen3_tts import FasterQwen3TTS
+    from faster_qwen3_tts import FasterQwen3TTS, apply_continuation_state_delta
 except ImportError:
     print("Error: faster_qwen3_tts not found.")
     print("Install with:  pip install -e .  (from the repo root)")
@@ -166,6 +166,9 @@ _ref_cache_lock = threading.Lock()
 _parakeet = None
 _generation_lock = asyncio.Lock()
 _generation_waiters: int = 0  # requests waiting for or holding the generation lock
+_continuation_sessions: OrderedDict[str, dict] = OrderedDict()
+_continuation_sessions_max: int = int(os.environ.get("CONTINUATION_SESSION_CACHE_SIZE", "4"))
+_continuation_sessions_lock = threading.Lock()
 
 # Guard against inputs that would overflow the static KV cache (max_seq_len=2048).
 # At ~3-4 chars/token for English the overhead of system/ref tokens leaves room
@@ -214,6 +217,120 @@ def _get_cached_ref_path(content: bytes) -> str:
 
 def _default_non_streaming_mode_for_mode(mode: str) -> bool:
     return mode != "voice_clone"
+
+
+def _clear_continuation_sessions() -> None:
+    with _continuation_sessions_lock:
+        _continuation_sessions.clear()
+
+
+def _make_continuation_session_id() -> str:
+    token = f"{time.time_ns()}-{os.getpid()}-{threading.get_ident()}".encode()
+    return hashlib.sha1(token).hexdigest()[:16]
+
+
+def _build_continuation_template(
+    *,
+    mode: str,
+    language: str,
+    non_streaming_mode: bool,
+    ref_audio_path: str | None = None,
+    ref_text: str = "",
+    xvec_only: bool = True,
+    speaker: str = "",
+    instruct: str = "",
+) -> dict:
+    return {
+        "mode": mode,
+        "language": language,
+        "non_streaming_mode": bool(non_streaming_mode),
+        "ref_audio_path": ref_audio_path,
+        "ref_text": ref_text,
+        "xvec_only": bool(xvec_only),
+        "speaker": speaker,
+        "instruct": instruct,
+    }
+
+
+def _store_continuation_session(*, model_name: str, template: dict, state: dict) -> str:
+    session_id = _make_continuation_session_id()
+    with _continuation_sessions_lock:
+        _continuation_sessions[session_id] = {
+            "id": session_id,
+            "model_name": model_name,
+            "template": template,
+            "state": state,
+            "created_at": time.time(),
+        }
+        _continuation_sessions.move_to_end(session_id)
+        while len(_continuation_sessions) > _continuation_sessions_max:
+            _continuation_sessions.popitem(last=False)
+    return session_id
+
+
+def _get_continuation_session(session_id: str) -> dict | None:
+    with _continuation_sessions_lock:
+        session = _continuation_sessions.get(session_id)
+        if session is None:
+            return None
+        _continuation_sessions.move_to_end(session_id)
+        return session
+
+
+def _update_continuation_session(session_id: str, state: dict) -> None:
+    with _continuation_sessions_lock:
+        session = _continuation_sessions.get(session_id)
+        if session is None:
+            return
+        session["state"] = state
+        _continuation_sessions.move_to_end(session_id)
+
+
+def _run_demo_generation(
+    model: FasterQwen3TTS,
+    *,
+    template: dict,
+    text: str,
+    temperature: float,
+    top_k: int,
+    repetition_penalty: float,
+    continuation_state: dict | None = None,
+    return_continuation_state: bool | str = False,
+    max_new_tokens: int = 360,
+):
+    common = {
+        "text": text,
+        "language": template["language"],
+        "non_streaming_mode": template["non_streaming_mode"],
+        "temperature": temperature,
+        "top_k": top_k,
+        "repetition_penalty": repetition_penalty,
+        "max_new_tokens": max_new_tokens,
+    }
+    if continuation_state is not None:
+        common["continuation_state"] = continuation_state
+    if return_continuation_state:
+        common["return_continuation_state"] = return_continuation_state
+        common["continuation_state_device"] = "cpu"
+
+    mode = template["mode"]
+    if mode == "voice_clone":
+        return model.generate_voice_clone(
+            ref_audio=template["ref_audio_path"],
+            ref_text=template["ref_text"],
+            xvec_only=template["xvec_only"],
+            **common,
+        )
+    if mode == "custom":
+        return model.generate_custom_voice(
+            speaker=template["speaker"],
+            instruct=template["instruct"],
+            **common,
+        )
+    return model.generate_voice_design(
+        instruct=template["instruct"],
+        **common,
+    )
 
 
 # ─── Routes ───────────────────────────────────────────────────────────────────
@@ -300,6 +417,7 @@ async def load_model(model_id: str = Form(...)):
 
     # Already in cache — instant switch, no GPU work needed
     if model_id in _model_cache:
+        _clear_continuation_sessions()
         _active_model_name = model_id
         _model_cache.move_to_end(model_id)
         return {"status": "already_loaded", "model": model_id}
@@ -309,6 +427,7 @@ async def load_model(model_id: str = Form(...)):
     def _do_load():
         global _active_model_name, _loading
         try:
+            _clear_continuation_sessions()
             if len(_model_cache) >= _model_cache_max:
                 evicted, _ = _model_cache.popitem(last=False)
                 print(f"Model cache full — evicted: {evicted}")
@@ -380,6 +499,17 @@ async def generate_stream(
     if non_streaming_mode is None:
         non_streaming_mode = _default_non_streaming_mode_for_mode(mode)
 
+    template = _build_continuation_template(
+        mode=mode,
+        language=language,
+        non_streaming_mode=non_streaming_mode,
+        ref_audio_path=tmp_path,
+        ref_text=ref_text,
+        xvec_only=xvec_only,
+        speaker=speaker,
+        instruct=instruct,
+    )
+
     loop = asyncio.get_event_loop()
     queue: asyncio.Queue[str | None] = asyncio.Queue()
 
@@ -395,6 +525,7 @@ async def generate_stream(
             t0 = time.perf_counter()
             total_audio_s = 0.0
             voice_clone_ms = 0.0
+            running_state = None
 
             if mode == "voice_clone":
                 gen = model.generate_voice_clone_streaming(
@@ -408,6 +539,8 @@ async def generate_stream(
                     temperature=temperature,
                     top_k=top_k,
                     repetition_penalty=repetition_penalty,
+                    return_continuation_state="delta",
+                    continuation_state_device="cpu",
                     max_new_tokens=360,  # cap at 30s (12 Hz codec)
                 )
             elif mode == "custom":
@@ -423,6 +556,8 @@ async def generate_stream(
                     temperature=temperature,
                     top_k=top_k,
                     repetition_penalty=repetition_penalty,
+                    return_continuation_state="delta",
+                    continuation_state_device="cpu",
                     max_new_tokens=360,
                 )
             else:
@@ -435,6 +570,8 @@ async def generate_stream(
                     temperature=temperature,
                     top_k=top_k,
                     repetition_penalty=repetition_penalty,
+                    return_continuation_state="delta",
+                    continuation_state_device="cpu",
                     max_new_tokens=360,
                 )
 
@@ -447,6 +584,9 @@ async def generate_stream(
             first_audio = next(gen, None)
             if first_audio is not None:
                 audio_chunk, sr, timing = first_audio
+                delta = timing.get("continuation_state_delta")
+                if delta is not None:
+                    running_state = apply_continuation_state_delta(running_state, delta)
                 wall_first_ms = (time.perf_counter() - t0) * 1000
                 model_ms = timing.get("prefill_ms", 0) + timing.get("decode_ms", 0)
                 voice_clone_ms = max(0.0, wall_first_ms - model_ms)
@@ -473,6 +613,9 @@ async def generate_stream(
                 loop.call_soon_threadsafe(queue.put_nowait, json.dumps(payload))
 
             for audio_chunk, sr, timing in gen:
+                delta = timing.get("continuation_state_delta")
+                if delta is not None:
+                    running_state = apply_continuation_state_delta(running_state, delta)
                 # prefill_ms is non-zero only on the first chunk
                 total_gen_ms += timing.get('prefill_ms', 0) + timing.get('decode_ms', 0)
                 if ttfa_ms is None:
@@ -497,6 +640,13 @@ async def generate_stream(
                 loop.call_soon_threadsafe(queue.put_nowait, json.dumps(payload))
 
             rtf = total_audio_s / (total_gen_ms / 1000) if total_gen_ms > 0 else 0.0
+            session_id = None
+            if running_state is not None:
+                session_id = _store_continuation_session(
+                    model_name=_active_model_name,
+                    template=template,
+                    state=running_state,
+                )
             done_payload = {
                 "type": "done",
                 "ttfa_ms": round(ttfa_ms) if ttfa_ms else 0,
@@ -504,6 +654,7 @@ async def generate_stream(
                 "rtf": round(rtf, 3),
                 "total_audio_s": round(total_audio_s, 3),
                 "total_ms": round((time.perf_counter() - t0) * 1000),
+                "continuation_session_id": session_id,
             }
             loop.call_soon_threadsafe(queue.put_nowait, json.dumps(done_payload))
 
@@ -600,54 +751,48 @@ async def generate_non_streaming(
     if non_streaming_mode is None:
         non_streaming_mode = _default_non_streaming_mode_for_mode(mode)
 
+    template = _build_continuation_template(
+        mode=mode,
+        language=language,
+        non_streaming_mode=non_streaming_mode,
+        ref_audio_path=tmp_path,
+        ref_text=ref_text,
+        xvec_only=xvec_only,
+        speaker=speaker,
+        instruct=instruct,
+    )
+
     def run():
         # Resolve the model after the generation lock is held.
         model = _model_cache.get(_active_model_name)
         if model is None:
             raise RuntimeError("No model loaded. Please load a model first.")
         t0 = time.perf_counter()
-        if mode == "voice_clone":
-            audio_list, sr = model.generate_voice_clone(
-                text=text,
-                language=language,
-                ref_audio=tmp_path,
-                ref_text=ref_text,
-                xvec_only=xvec_only,
-                non_streaming_mode=non_streaming_mode,
-                temperature=temperature,
-                top_k=top_k,
-                repetition_penalty=repetition_penalty,
-                max_new_tokens=360,  # cap at 30s (12 Hz codec)
-            )
-        elif mode == "custom":
-            if not speaker:
-                raise ValueError("Speaker ID is required for custom voice")
-            audio_list, sr = model.generate_custom_voice(
-                text=text,
-                speaker=speaker,
-                language=language,
-                instruct=instruct,
-                non_streaming_mode=non_streaming_mode,
-                temperature=temperature,
-                top_k=top_k,
-                repetition_penalty=repetition_penalty,
-                max_new_tokens=360,
-            )
-        else:
-            audio_list, sr = model.generate_voice_design(
-                text=text,
-                instruct=instruct,
-                language=language,
-                non_streaming_mode=non_streaming_mode,
-                temperature=temperature,
-                top_k=top_k,
-                repetition_penalty=repetition_penalty,
-                max_new_tokens=360,
-            )
+        if mode == "custom" and not speaker:
+            raise ValueError("Speaker ID is required for custom voice")
+        result = _run_demo_generation(
+            model,
+            template=template,
+            text=text,
+            temperature=temperature,
+            top_k=top_k,
+            repetition_penalty=repetition_penalty,
+            return_continuation_state="full",
+            max_new_tokens=360,
+        )
+        audio_list, sr, info = result
         elapsed = time.perf_counter() - t0
         audio = _concat_audio(audio_list)
         dur = len(audio) / sr
-        return audio, sr, elapsed, dur
+        session_id = None
+        state = info.get("continuation_state") if info else None
+        if state is not None:
+            session_id = _store_continuation_session(
+                model_name=_active_model_name,
+                template=template,
+                state=state,
+            )
+        return audio, sr, elapsed, dur, session_id
 
     global _generation_waiters
     _generation_waiters += 1
@@ -656,11 +801,12 @@ async def generate_non_streaming(
         await _generation_lock.acquire()
         lock_acquired = True
         _generation_waiters -= 1
-        audio, sr, elapsed, dur = await asyncio.to_thread(run)
+        audio, sr, elapsed, dur, session_id = await asyncio.to_thread(run)
         rtf = dur / elapsed if elapsed > 0 else 0.0
         return JSONResponse({
             "audio_b64": _to_wav_b64(audio, sr),
             "sample_rate": sr,
+            "continuation_session_id": session_id,
             "metrics": {
                 "total_ms": round(elapsed * 1000),
                 "audio_duration_s": round(dur, 3),
@@ -674,6 +820,110 @@ async def generate_non_streaming(
             _generation_waiters -= 1
         if tmp_path and os.path.exists(tmp_path) and not tmp_is_cached:
             os.unlink(tmp_path)
+
+
+@app.post("/generate/compare_continuation")
+async def generate_continuation_compare(
+    session_id: str = Form(...),
+    text: str = Form(...),
+    temperature: float = Form(0.9),
+    top_k: int = Form(50),
+    repetition_penalty: float = Form(1.05),
+):
+    if not _active_model_name or _active_model_name not in _model_cache:
+        raise HTTPException(status_code=400, detail="Model not loaded. Click 'Load' first.")
+    if len(text) > MAX_TEXT_CHARS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Text too long ({len(text)} chars). Maximum is {MAX_TEXT_CHARS} characters.",
+        )
+
+    def run():
+        model = _model_cache.get(_active_model_name)
+        if model is None:
+            raise RuntimeError("No model loaded. Please load a model first.")
+
+        session = _get_continuation_session(session_id)
+        if session is None:
+            raise RuntimeError("Saved continuation state not found. Generate the first sentence again.")
+        if session["model_name"] != _active_model_name:
+            raise RuntimeError("Saved continuation state belongs to a different model. Generate the first sentence again.")
+
+        template = session["template"]
+        mode = template["mode"]
+        if mode == "custom" and not template["speaker"]:
+            raise RuntimeError("Saved continuation state is missing the custom speaker.")
+
+        t0 = time.perf_counter()
+        fresh_result = _run_demo_generation(
+            model,
+            template=template,
+            text=text,
+            temperature=temperature,
+            top_k=top_k,
+            repetition_penalty=repetition_penalty,
+            max_new_tokens=360,
+        )
+        fresh_elapsed = time.perf_counter() - t0
+        fresh_audio_list, fresh_sr = fresh_result
+        fresh_audio = _concat_audio(fresh_audio_list)
+        fresh_dur = len(fresh_audio) / fresh_sr
+
+        t1 = time.perf_counter()
+        continued_result = _run_demo_generation(
+            model,
+            template=template,
+            text=text,
+            temperature=temperature,
+            top_k=top_k,
+            repetition_penalty=repetition_penalty,
+            continuation_state=session["state"],
+            return_continuation_state="full",
+            max_new_tokens=360,
+        )
+        cont_elapsed = time.perf_counter() - t1
+        cont_audio_list, cont_sr, cont_info = continued_result
+        cont_audio = _concat_audio(cont_audio_list)
+        cont_dur = len(cont_audio) / cont_sr
+        cont_state = cont_info.get("continuation_state") if cont_info else None
+        if cont_state is not None:
+            _update_continuation_session(session_id, cont_state)
+
+        return {
+            "continuation_session_id": session_id,
+            "fresh": {
+                "audio_b64": _to_wav_b64(fresh_audio, fresh_sr),
+                "sample_rate": fresh_sr,
+                "metrics": {
+                    "total_ms": round(fresh_elapsed * 1000),
+                    "audio_duration_s": round(fresh_dur, 3),
+                    "rtf": round(fresh_dur / fresh_elapsed, 3) if fresh_elapsed > 0 else 0.0,
+                },
+            },
+            "continued": {
+                "audio_b64": _to_wav_b64(cont_audio, cont_sr),
+                "sample_rate": cont_sr,
+                "metrics": {
+                    "total_ms": round(cont_elapsed * 1000),
+                    "audio_duration_s": round(cont_dur, 3),
+                    "rtf": round(cont_dur / cont_elapsed, 3) if cont_elapsed > 0 else 0.0,
+                },
+            },
+        }
+
+    global _generation_waiters
+    _generation_waiters += 1
+    lock_acquired = False
+    try:
+        await _generation_lock.acquire()
+        lock_acquired = True
+        _generation_waiters -= 1
+        return JSONResponse(await asyncio.to_thread(run))
+    finally:
+        if lock_acquired:
+            _generation_lock.release()
+        else:
+            _generation_waiters -= 1
 
 
 # ─── Entry point ──────────────────────────────────────────────────────────────
