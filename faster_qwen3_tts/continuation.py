@@ -17,7 +17,7 @@ def normalize_return_continuation_state(value: bool | str | None) -> ReturnConti
         return "none"
     if value is True:
         return "delta"
-    if value not in {"delta", "full"}:
+    if value not in {"none", "delta", "full"}:
         raise ValueError(
             "return_continuation_state must be one of False, True, 'delta', or 'full'"
         )

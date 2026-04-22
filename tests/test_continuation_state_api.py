@@ -6,6 +6,7 @@ import torch
 from faster_qwen3_tts.continuation import (
     apply_continuation_state_delta,
     build_continuation_state_status,
+    normalize_return_continuation_state,
     validate_full_continuation_state,
 )
 from faster_qwen3_tts.model import FasterQwen3TTS
@@ -29,6 +30,37 @@ def _build_wrapper():
     model = FasterQwen3TTS(base, _dummy_graph(), _dummy_graph(), device="cpu", dtype=torch.float32)
     model._warmup = lambda _prefill_len: setattr(model, "_warmed_up", True)
     return model
+
+
+def _fake_speech_tokenizer():
+    return types.SimpleNamespace(
+        decode=lambda _payload: ([torch.arange(24, dtype=torch.float32)], 24000)
+    )
+
+
+def _fake_prepare_generation(*_args, **_kwargs):
+    return (
+        types.SimpleNamespace(speech_tokenizer=_fake_speech_tokenizer()),
+        object(),
+        object(),
+        torch.zeros(1, 1, 1),
+        torch.ones(1, 1, dtype=torch.long),
+        torch.zeros(1, 1, 1),
+        torch.zeros(1, 1, 1),
+        None,
+    )
+
+
+def _fake_prepare_generation_custom(*_args, **_kwargs):
+    return (
+        types.SimpleNamespace(speech_tokenizer=_fake_speech_tokenizer()),
+        object(),
+        object(),
+        torch.zeros(1, 1, 1),
+        torch.ones(1, 1, dtype=torch.long),
+        torch.zeros(1, 1, 1),
+        torch.zeros(1, 1, 1),
+    )
 
 
 def _delta(*, base_seq_len, added_seq_len, value):
@@ -147,6 +179,10 @@ def test_validate_full_continuation_state_rejects_cache_layer_count_mismatch():
         )
 
 
+def test_normalize_return_continuation_state_accepts_internal_none_mode():
+    assert normalize_return_continuation_state("none") == "none"
+
+
 def test_generate_voice_clone_returns_info_when_continuation_requested(monkeypatch):
     model = _build_wrapper()
     timing = {
@@ -245,6 +281,184 @@ def test_generate_custom_voice_streaming_keeps_continuation_delta_in_timing(monk
     assert chunk.ndim == 1
     assert timing["continuation_state_delta"] == {"delta": True}
     assert timing["continuation_state_status"] == {"remaining_tokens": 55}
+
+
+def test_generate_custom_voice_default_return_mode_still_works(monkeypatch):
+    model = _build_wrapper()
+    model.model.model.tts_model_type = "custom_voice"
+
+    monkeypatch.setattr(
+        model,
+        "_prepare_generation_custom",
+        lambda **_kwargs: (
+            types.SimpleNamespace(
+                speech_tokenizer=types.SimpleNamespace(
+                    decode=lambda _payload: ([torch.arange(16, dtype=torch.float32)], 24000)
+                )
+            ),
+            object(),
+            object(),
+            torch.zeros(1, 1, 1),
+            torch.ones(1, 1, dtype=torch.long),
+            torch.zeros(1, 1, 1),
+            torch.zeros(1, 1, 1),
+        ),
+    )
+
+    captured = {}
+
+    def _fake_generate(**kwargs):
+        captured["return_continuation_state"] = kwargs["return_continuation_state"]
+        return torch.zeros(2, 16, dtype=torch.long), {
+            "prefill_ms": 0.0,
+            "decode_s": 0.01,
+            "steps": 2,
+            "ms_per_step": 5.0,
+            "steps_per_s": 200.0,
+        }
+
+    monkeypatch.setattr("faster_qwen3_tts.generate.fast_generate", _fake_generate)
+
+    audio, sr = model.generate_custom_voice(
+        text="hello",
+        speaker="speaker_a",
+        language="English",
+        do_sample=False,
+    )
+
+    assert sr == 24000
+    assert len(audio) == 1
+    assert captured["return_continuation_state"] == "none"
+
+
+@pytest.mark.parametrize(
+    ("method_name", "model_type", "kwargs"),
+    [
+        (
+            "generate_voice_clone",
+            "base",
+            {
+                "text": "hello",
+                "language": "English",
+                "voice_clone_prompt": {"ref_spk_embedding": [torch.zeros(1, 4)]},
+                "do_sample": False,
+            },
+        ),
+        (
+            "generate_custom_voice",
+            "custom_voice",
+            {
+                "text": "hello",
+                "speaker": "speaker_a",
+                "language": "English",
+                "do_sample": False,
+            },
+        ),
+        (
+            "generate_voice_design",
+            "voice_design",
+            {
+                "text": "hello",
+                "instruct": "Warm and natural.",
+                "language": "English",
+                "do_sample": False,
+            },
+        ),
+    ],
+)
+def test_nonstream_wrappers_default_return_mode_contract(monkeypatch, method_name, model_type, kwargs):
+    model = _build_wrapper()
+    model.model.model.tts_model_type = model_type
+
+    monkeypatch.setattr(model, "_prepare_generation", _fake_prepare_generation)
+    monkeypatch.setattr(model, "_prepare_generation_custom", _fake_prepare_generation_custom)
+
+    captured = {}
+
+    def _fake_generate(**call_kwargs):
+        captured["return_continuation_state"] = call_kwargs["return_continuation_state"]
+        return torch.zeros(2, 16, dtype=torch.long), {
+            "prefill_ms": 0.0,
+            "decode_s": 0.01,
+            "steps": 2,
+            "ms_per_step": 5.0,
+            "steps_per_s": 200.0,
+        }
+
+    monkeypatch.setattr("faster_qwen3_tts.generate.fast_generate", _fake_generate)
+
+    result = getattr(model, method_name)(**kwargs)
+
+    assert len(result) == 2
+    audio, sr = result
+    assert len(audio) == 1
+    assert sr == 24000
+    assert captured["return_continuation_state"] == "none"
+
+
+@pytest.mark.parametrize(
+    ("method_name", "model_type", "kwargs"),
+    [
+        (
+            "generate_voice_clone_streaming",
+            "base",
+            {
+                "text": "hello",
+                "language": "English",
+                "voice_clone_prompt": {"ref_spk_embedding": [torch.zeros(1, 4)]},
+                "do_sample": False,
+            },
+        ),
+        (
+            "generate_custom_voice_streaming",
+            "custom_voice",
+            {
+                "text": "hello",
+                "speaker": "speaker_a",
+                "language": "English",
+                "do_sample": False,
+            },
+        ),
+        (
+            "generate_voice_design_streaming",
+            "voice_design",
+            {
+                "text": "hello",
+                "instruct": "Warm and natural.",
+                "language": "English",
+                "do_sample": False,
+            },
+        ),
+    ],
+)
+def test_streaming_wrappers_default_return_mode_contract(monkeypatch, method_name, model_type, kwargs):
+    model = _build_wrapper()
+    model.model.model.tts_model_type = model_type
+
+    monkeypatch.setattr(model, "_prepare_generation", _fake_prepare_generation)
+    monkeypatch.setattr(model, "_prepare_generation_custom", _fake_prepare_generation_custom)
+
+    captured = {}
+
+    def _fake_stream(**call_kwargs):
+        captured["return_continuation_state"] = call_kwargs["return_continuation_state"]
+        yield torch.zeros(2, 16, dtype=torch.long), {
+            "chunk_index": 0,
+            "chunk_steps": 2,
+            "prefill_ms": 0.0,
+            "decode_ms": 1.0,
+            "total_steps_so_far": 2,
+            "is_final": True,
+        }
+
+    monkeypatch.setattr("faster_qwen3_tts.streaming.fast_generate_streaming", _fake_stream)
+
+    chunk, sr, timing = next(getattr(model, method_name)(**kwargs))
+
+    assert chunk.ndim == 1
+    assert sr == 24000
+    assert timing["is_final"] is True
+    assert captured["return_continuation_state"] is False
 
 
 def test_parity_generate_streaming_smoke_with_continuation(monkeypatch):
