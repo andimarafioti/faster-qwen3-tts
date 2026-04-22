@@ -259,6 +259,49 @@ The public API uses `non_streaming_mode=None` as a sentinel, which preserves eac
 
 **Performance impact (RTX 4090, 1.7B, ICL, chunk_size=8):** TTFA is unchanged (≈159ms ± 1ms), and RTF is effectively the same (nsm=False: 4.87 ± 0.01, nsm=True: 4.85 ± 0.01).
 
+### Continuation state
+
+All public generation methods can now return caller-owned continuation tensors and accept them again on a later request:
+
+- `generate_voice_clone`
+- `generate_voice_clone_streaming`
+- `generate_custom_voice`
+- `generate_custom_voice_streaming`
+- `generate_voice_design`
+- `generate_voice_design_streaming`
+
+Use `return_continuation_state="full"` on the first turn to capture the full talker state, then pass that state back as `continuation_state` on later turns. For streaming or long-lived sessions, request `return_continuation_state="delta"` and merge it with `apply_continuation_state_delta(...)` so the caller only appends newly generated cache rows.
+
+```python
+from faster_qwen3_tts import FasterQwen3TTS, apply_continuation_state_delta
+
+audio1, sr, info1 = model.generate_custom_voice(
+    text="The first sentence sets the rhythm.",
+    speaker="aiden",
+    language="English",
+    return_continuation_state="full",
+)
+state = info1["continuation_state"]
+
+audio2, sr, info2 = model.generate_custom_voice(
+    text="The second sentence should continue naturally.",
+    speaker="aiden",
+    language="English",
+    continuation_state=state,
+    return_continuation_state="delta",
+)
+state = apply_continuation_state_delta(state, info2["continuation_state_delta"])
+```
+
+The same API works for Base voice clone and VoiceDesign, and for both audio-output modes. Continuation states are mode-specific and must match the same model configuration and `non_streaming_mode`. If the saved state grows too close to `max_seq_len`, start a fresh session.
+When continuation metadata is returned, `info["continuation_state_status"]` reports the current `seq_len`, remaining token budget, and a warning when the session is getting close to the limit. Streaming yields the same field inside each chunk's `timing` dict.
+
+To reproduce the latency impact on follow-up turns, run `benchmarks/continuation.py`. Example:
+
+```bash
+./.venv/bin/python benchmarks/continuation.py --mode custom_voice --runs 5 --max-new-tokens 96 --chunk-size 8
+```
+
 ### Base-model instruct
 
 `instruct` is available on Base voice cloning, but treat it as experimental when used with `xvec_only=True`. In local testing and upstream-core probing, instruction-following behaved much more predictably in ICL mode (`xvec_only=False`) than in x-vector-only mode.

@@ -10,8 +10,16 @@ from typing import Generator, Tuple
 
 import torch
 
+from .continuation import (
+    attach_continuation_result,
+    continuation_state_first_token_history,
+    model_signature,
+    normalize_return_continuation_state,
+    prefill_with_continuation,
+    validate_full_continuation_state,
+)
 from .predictor_graph import PredictorGraph
-from .sampling import apply_repetition_penalty, sample_logits
+from .sampling import apply_repetition_penalty, build_suppress_mask, sample_logits
 from .talker_graph import TalkerGraph
 
 
@@ -33,6 +41,12 @@ def fast_generate_streaming(
     do_sample: bool = True,
     repetition_penalty: float = 1.05,
     chunk_size: int = 12,
+    continuation_state: dict | None = None,
+    return_continuation_state: bool | str = False,
+    continuation_mode: str = "voice_clone",
+    continuation_non_streaming_mode: bool = False,
+    continuation_state_device: str = "cpu",
+    continuation_max_seq_len: int | None = None,
 ) -> Generator[Tuple[torch.Tensor, dict], None, None]:
     """
     Streaming autoregressive generation with CUDA-graphed predictor and talker.
@@ -45,11 +59,31 @@ def fast_generate_streaming(
     vocab_size = config.vocab_size
     device = talker_input_embeds.device
 
-    suppress_mask = torch.zeros(vocab_size, dtype=torch.bool, device=device)
-    suppress_start = max(0, vocab_size - 1024)
-    for i in range(suppress_start, vocab_size):
-        if i != eos_id:
-            suppress_mask[i] = True
+    suppress_mask = build_suppress_mask(vocab_size, eos_id, device=device)
+
+    continuation_return_mode = normalize_return_continuation_state(return_continuation_state)
+    continuation_active = continuation_state is not None or continuation_return_mode != "none"
+    signature = None
+    if continuation_active:
+        signature = model_signature(
+            num_layers=talker_graph.num_layers,
+            max_seq_len=talker_graph.max_seq_len,
+            hidden_size=talker_graph.hidden_size,
+        )
+        validate_full_continuation_state(
+            continuation_state,
+            mode=continuation_mode,
+            expected_signature=signature,
+        )
+        if (
+            continuation_state is not None
+            and continuation_state["non_streaming_mode"] != continuation_non_streaming_mode
+        ):
+            raise ValueError(
+                "continuation_state non_streaming_mode does not match the current request"
+            )
+    base_seq_len = 0 if continuation_state is None else int(continuation_state["seq_len"])
+    running_state = continuation_state
 
     predictor = talker.code_predictor
     talker_codec_embed = talker.get_input_embeddings()
@@ -59,18 +93,15 @@ def fast_generate_streaming(
 
     # === PREFILL (still uses HF forward for variable-length prefill) ===
     t_start = time.time()
-
-    out = talker.forward(
-        inputs_embeds=talker_input_embeds,
+    out, full_attention_mask, base_seq_len = prefill_with_continuation(
+        talker=talker,
+        talker_input_embeds=talker_input_embeds,
         attention_mask=attention_mask,
-        use_cache=True,
-        output_hidden_states=True,
-        return_dict=True,
-        trailing_text_hidden=trailing_text_hiddens,
+        trailing_text_hiddens=trailing_text_hiddens,
         tts_pad_embed=tts_pad_embed,
-        generation_step=None,
-        past_hidden=None,
-        past_key_values=None,
+        continuation_state=continuation_state,
+        max_seq_len=talker_graph.max_seq_len,
+        device=device,
     )
 
     talker_past_kv = out.past_key_values
@@ -91,17 +122,22 @@ def fast_generate_streaming(
 
     prefill_len = talker_graph.prefill_kv(talker_past_kv)
     rope_deltas = getattr(talker, "rope_deltas", None)
-    talker_graph.set_generation_state(attention_mask, rope_deltas)
+    talker_graph.set_generation_state(full_attention_mask, rope_deltas)
 
     torch.cuda.synchronize()
     t_prefill = time.time() - t_start
 
     # === DECODE LOOP — yield chunks ===
     chunk_buffer = []
-    all_first_tokens = []  # for repetition penalty across chunks
+    pending_first_tokens = []
+    all_first_tokens = continuation_state_first_token_history(
+        continuation_state,
+        device=device,
+    )
     total_steps = 0
     chunk_count = 0
     chunk_start = time.time()
+    last_export_seq_len = base_seq_len
 
     for step_idx in range(max_new_tokens):
         if token.item() == eos_id:
@@ -115,6 +151,7 @@ def fast_generate_streaming(
         all_cb = torch.cat([token.view(1), codebook_token_ids])
         chunk_buffer.append(all_cb.detach())
         all_first_tokens.append(token.detach())
+        pending_first_tokens.append(token.detach())
 
         # --- Build input embedding for talker ---
         codec_hiddens = [last_id_hidden]
@@ -158,8 +195,7 @@ def fast_generate_streaming(
             torch.cuda.synchronize()
             chunk_decode_time = time.time() - chunk_start
             total_steps += len(chunk_buffer)
-
-            yield torch.stack(chunk_buffer), {
+            timing = {
                 'chunk_index': chunk_count,
                 'chunk_steps': len(chunk_buffer),
                 'prefill_ms': t_prefill * 1000 if chunk_count == 0 else 0,
@@ -167,8 +203,30 @@ def fast_generate_streaming(
                 'total_steps_so_far': total_steps,
                 'is_final': False,
             }
+            if continuation_return_mode != "none":
+                seq_len = prefill_len + total_steps
+                running_state = attach_continuation_result(
+                    timing=timing,
+                    continuation_return_mode=continuation_return_mode,
+                    running_state=running_state,
+                    cache_source=talker_graph.static_cache,
+                    base_seq_len=last_export_seq_len,
+                    seq_len=seq_len,
+                    rope_deltas=talker_graph.rope_deltas,
+                    first_codebook_history_delta=pending_first_tokens,
+                    codec_ids_delta=chunk_buffer,
+                    mode=continuation_mode,
+                    non_streaming_mode=continuation_non_streaming_mode,
+                    model_signature_dict=signature,
+                    device=continuation_state_device,
+                    max_seq_len=talker_graph.max_seq_len,
+                )
+                last_export_seq_len = seq_len
+
+            yield torch.stack(chunk_buffer), timing
 
             chunk_buffer = []
+            pending_first_tokens = []
             chunk_count += 1
             chunk_start = time.time()
 
@@ -177,8 +235,7 @@ def fast_generate_streaming(
         torch.cuda.synchronize()
         chunk_decode_time = time.time() - chunk_start
         total_steps += len(chunk_buffer)
-
-        yield torch.stack(chunk_buffer), {
+        timing = {
             'chunk_index': chunk_count,
             'chunk_steps': len(chunk_buffer),
             'prefill_ms': t_prefill * 1000 if chunk_count == 0 else 0,
@@ -186,6 +243,26 @@ def fast_generate_streaming(
             'total_steps_so_far': total_steps,
             'is_final': True,
         }
+        if continuation_return_mode != "none":
+            seq_len = prefill_len + total_steps
+            running_state = attach_continuation_result(
+                timing=timing,
+                continuation_return_mode=continuation_return_mode,
+                running_state=running_state,
+                cache_source=talker_graph.static_cache,
+                base_seq_len=last_export_seq_len,
+                seq_len=seq_len,
+                rope_deltas=talker_graph.rope_deltas,
+                first_codebook_history_delta=pending_first_tokens,
+                codec_ids_delta=chunk_buffer,
+                mode=continuation_mode,
+                non_streaming_mode=continuation_non_streaming_mode,
+                model_signature_dict=signature,
+                device=continuation_state_device,
+                max_seq_len=talker_graph.max_seq_len,
+            )
+
+        yield torch.stack(chunk_buffer), timing
 
 
 @torch.inference_mode()
@@ -204,6 +281,12 @@ def parity_generate_streaming(
     do_sample: bool = True,
     repetition_penalty: float = 1.05,
     chunk_size: int = 12,
+    continuation_state: dict | None = None,
+    return_continuation_state: bool | str = False,
+    continuation_mode: str = "voice_clone",
+    continuation_non_streaming_mode: bool = False,
+    continuation_state_device: str = "cpu",
+    continuation_max_seq_len: int | None = None,
 ) -> Generator[Tuple[torch.Tensor, dict], None, None]:
     """
     Streaming generation without CUDA graphs (dynamic cache).
@@ -218,26 +301,49 @@ def parity_generate_streaming(
     vocab_size = config.vocab_size
     device = talker_input_embeds.device
 
-    suppress_mask = torch.zeros(vocab_size, dtype=torch.bool, device=device)
-    suppress_start = max(0, vocab_size - 1024)
-    for i in range(suppress_start, vocab_size):
-        if i != eos_id:
-            suppress_mask[i] = True
+    suppress_mask = build_suppress_mask(vocab_size, eos_id, device=device)
+
+    continuation_return_mode = normalize_return_continuation_state(return_continuation_state)
+    continuation_active = continuation_state is not None or continuation_return_mode != "none"
+    signature = None
+    if continuation_active:
+        if continuation_max_seq_len is None:
+            continuation_max_seq_len = (
+                continuation_state["model_signature"]["max_seq_len"]
+                if continuation_state is not None
+                else int(talker_input_embeds.shape[1] + max_new_tokens + 1)
+            )
+        signature = model_signature(
+            num_layers=talker.config.num_hidden_layers,
+            max_seq_len=continuation_max_seq_len,
+            hidden_size=talker.config.hidden_size,
+        )
+        validate_full_continuation_state(
+            continuation_state,
+            mode=continuation_mode,
+            expected_signature=signature,
+        )
+        if (
+            continuation_state is not None
+            and continuation_state["non_streaming_mode"] != continuation_non_streaming_mode
+        ):
+            raise ValueError(
+                "continuation_state non_streaming_mode does not match the current request"
+            )
+    base_seq_len = 0 if continuation_state is None else int(continuation_state["seq_len"])
+    running_state = continuation_state
 
     # === PREFILL ===
     t_start = time.time()
-
-    out = talker.forward(
-        inputs_embeds=talker_input_embeds,
+    out, full_attention_mask, base_seq_len = prefill_with_continuation(
+        talker=talker,
+        talker_input_embeds=talker_input_embeds,
         attention_mask=attention_mask,
-        use_cache=True,
-        output_hidden_states=True,
-        return_dict=True,
-        trailing_text_hidden=trailing_text_hiddens,
+        trailing_text_hiddens=trailing_text_hiddens,
         tts_pad_embed=tts_pad_embed,
-        generation_step=None,
-        past_hidden=None,
-        past_key_values=None,
+        continuation_state=continuation_state,
+        max_seq_len=continuation_max_seq_len,
+        device=device,
     )
 
     talker_past_kv = out.past_key_values
@@ -256,18 +362,22 @@ def parity_generate_streaming(
         suppress_tokens=[eos_id] if suppress_eos else None,
     )
 
-    if attention_mask is not None:
-        attention_mask = attention_mask.clone()
+    attention_mask = full_attention_mask.clone() if full_attention_mask is not None else None
 
     torch.cuda.synchronize()
     t_prefill = time.time() - t_start
 
     # === DECODE LOOP — yield chunks ===
     chunk_buffer = []
-    all_first_tokens = []
+    pending_first_tokens = []
+    all_first_tokens = continuation_state_first_token_history(
+        continuation_state,
+        device=device,
+    )
     total_steps = 0
     chunk_count = 0
     chunk_start = time.time()
+    last_export_seq_len = base_seq_len
 
     for _ in range(max_new_tokens):
         if token.item() == eos_id:
@@ -305,6 +415,7 @@ def parity_generate_streaming(
 
         chunk_buffer.append(codec_ids.squeeze(0).detach())
         all_first_tokens.append(token.detach())
+        pending_first_tokens.append(token.detach())
 
         logits = out.logits[:, -1, :]
         if repetition_penalty != 1.0 and all_first_tokens:
@@ -330,8 +441,7 @@ def parity_generate_streaming(
             torch.cuda.synchronize()
             chunk_decode_time = time.time() - chunk_start
             total_steps += len(chunk_buffer)
-
-            yield torch.stack(chunk_buffer), {
+            timing = {
                 'chunk_index': chunk_count,
                 'chunk_steps': len(chunk_buffer),
                 'prefill_ms': t_prefill * 1000 if chunk_count == 0 else 0,
@@ -339,8 +449,30 @@ def parity_generate_streaming(
                 'total_steps_so_far': total_steps,
                 'is_final': False,
             }
+            if continuation_return_mode != "none":
+                seq_len = int(attention_mask.shape[1]) if attention_mask is not None else base_seq_len + total_steps
+                running_state = attach_continuation_result(
+                    timing=timing,
+                    continuation_return_mode=continuation_return_mode,
+                    running_state=running_state,
+                    cache_source=talker_past_kv,
+                    base_seq_len=last_export_seq_len,
+                    seq_len=seq_len,
+                    rope_deltas=talker.rope_deltas,
+                    first_codebook_history_delta=pending_first_tokens,
+                    codec_ids_delta=chunk_buffer,
+                    mode=continuation_mode,
+                    non_streaming_mode=continuation_non_streaming_mode,
+                    model_signature_dict=signature,
+                    device=continuation_state_device,
+                    max_seq_len=continuation_max_seq_len,
+                )
+                last_export_seq_len = seq_len
+
+            yield torch.stack(chunk_buffer), timing
 
             chunk_buffer = []
+            pending_first_tokens = []
             chunk_count += 1
             chunk_start = time.time()
 
@@ -348,8 +480,7 @@ def parity_generate_streaming(
         torch.cuda.synchronize()
         chunk_decode_time = time.time() - chunk_start
         total_steps += len(chunk_buffer)
-
-        yield torch.stack(chunk_buffer), {
+        timing = {
             'chunk_index': chunk_count,
             'chunk_steps': len(chunk_buffer),
             'prefill_ms': t_prefill * 1000 if chunk_count == 0 else 0,
@@ -357,3 +488,23 @@ def parity_generate_streaming(
             'total_steps_so_far': total_steps,
             'is_final': True,
         }
+        if continuation_return_mode != "none":
+            seq_len = int(attention_mask.shape[1]) if attention_mask is not None else base_seq_len + total_steps
+            running_state = attach_continuation_result(
+                timing=timing,
+                continuation_return_mode=continuation_return_mode,
+                running_state=running_state,
+                cache_source=talker_past_kv,
+                base_seq_len=last_export_seq_len,
+                seq_len=seq_len,
+                rope_deltas=talker.rope_deltas,
+                first_codebook_history_delta=pending_first_tokens,
+                codec_ids_delta=chunk_buffer,
+                mode=continuation_mode,
+                non_streaming_mode=continuation_non_streaming_mode,
+                model_signature_dict=signature,
+                device=continuation_state_device,
+                max_seq_len=continuation_max_seq_len,
+            )
+
+        yield torch.stack(chunk_buffer), timing
