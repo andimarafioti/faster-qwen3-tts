@@ -176,6 +176,9 @@ _continuation_sessions_lock = threading.Lock()
 MAX_TEXT_CHARS = 1000
 # ~10 MB covers 1 minute of 44.1 kHz stereo 16-bit WAV.
 MAX_AUDIO_BYTES = 10 * 1024 * 1024
+CONTINUATION_COMPARE_CONTEXT_SECONDS = float(
+    os.environ.get("CONTINUATION_COMPARE_CONTEXT_SECONDS", "2.0")
+)
 _AUDIO_TOO_LARGE_MSG = (
     "Audio file too large ({size_mb:.1f} MB). "
     "Voice cloning works best with short clips under 1 minute — please upload a shorter recording."
@@ -200,6 +203,45 @@ def _concat_audio(audio_list) -> np.ndarray:
         return audio_list.astype(np.float32).squeeze()
     parts = [np.array(a, dtype=np.float32).squeeze() for a in audio_list if len(a) > 0]
     return np.concatenate(parts) if parts else np.zeros(0, dtype=np.float32)
+
+
+def _trim_audio_tail(audio: np.ndarray, sr: int, seconds: float = CONTINUATION_COMPARE_CONTEXT_SECONDS) -> np.ndarray:
+    audio = np.array(audio, dtype=np.float32).squeeze()
+    if sr <= 0 or seconds <= 0 or audio.size == 0:
+        return np.zeros(0, dtype=np.float32)
+    keep = max(1, int(round(sr * seconds)))
+    if audio.size <= keep:
+        return audio
+    return audio[-keep:]
+
+
+def _append_audio_tail(
+    current_tail: np.ndarray | None,
+    chunk: np.ndarray,
+    sr: int,
+    seconds: float = CONTINUATION_COMPARE_CONTEXT_SECONDS,
+) -> np.ndarray:
+    chunk = np.array(chunk, dtype=np.float32).squeeze()
+    if current_tail is None or current_tail.size == 0:
+        return _trim_audio_tail(chunk, sr, seconds)
+    if chunk.size == 0:
+        return _trim_audio_tail(current_tail, sr, seconds)
+    combined = np.concatenate([current_tail, chunk])
+    return _trim_audio_tail(combined, sr, seconds)
+
+
+def _prepend_context_audio(context_audio: np.ndarray, context_sr: int, audio: np.ndarray, sr: int) -> np.ndarray:
+    audio = np.array(audio, dtype=np.float32).squeeze()
+    context_audio = np.array(context_audio, dtype=np.float32).squeeze()
+    if context_audio.size == 0:
+        return audio
+    if context_sr != sr:
+        context_audio = torchaudio.functional.resample(
+            torch.from_numpy(context_audio).unsqueeze(0),
+            context_sr,
+            sr,
+        ).squeeze(0).cpu().numpy()
+    return np.concatenate([context_audio.astype(np.float32), audio])
 
 def _get_cached_ref_path(content: bytes) -> str:
     digest = hashlib.sha1(content).hexdigest()
@@ -252,7 +294,14 @@ def _build_continuation_template(
     }
 
 
-def _store_continuation_session(*, model_name: str, template: dict, state: dict) -> str:
+def _store_continuation_session(
+    *,
+    model_name: str,
+    template: dict,
+    state: dict,
+    audio_tail: np.ndarray,
+    sample_rate: int,
+) -> str:
     session_id = _make_continuation_session_id()
     with _continuation_sessions_lock:
         _continuation_sessions[session_id] = {
@@ -260,6 +309,8 @@ def _store_continuation_session(*, model_name: str, template: dict, state: dict)
             "model_name": model_name,
             "template": template,
             "state": state,
+            "audio_tail": np.array(audio_tail, dtype=np.float32).copy(),
+            "sample_rate": int(sample_rate),
             "created_at": time.time(),
         }
         _continuation_sessions.move_to_end(session_id)
@@ -275,15 +326,6 @@ def _get_continuation_session(session_id: str) -> dict | None:
             return None
         _continuation_sessions.move_to_end(session_id)
         return session
-
-
-def _update_continuation_session(session_id: str, state: dict) -> None:
-    with _continuation_sessions_lock:
-        session = _continuation_sessions.get(session_id)
-        if session is None:
-            return
-        session["state"] = state
-        _continuation_sessions.move_to_end(session_id)
 
 
 def _run_demo_generation(
@@ -526,6 +568,8 @@ async def generate_stream(
             total_audio_s = 0.0
             voice_clone_ms = 0.0
             running_state = None
+            running_tail = np.zeros(0, dtype=np.float32)
+            running_sr = None
 
             if mode == "voice_clone":
                 gen = model.generate_voice_clone_streaming(
@@ -595,6 +639,8 @@ async def generate_stream(
                     ttfa_ms = total_gen_ms
 
                 audio_chunk = _concat_audio(audio_chunk)
+                running_sr = sr
+                running_tail = _append_audio_tail(running_tail, audio_chunk, sr)
                 dur = len(audio_chunk) / sr
                 total_audio_s += dur
                 rtf = total_audio_s / (total_gen_ms / 1000) if total_gen_ms > 0 else 0.0
@@ -622,6 +668,8 @@ async def generate_stream(
                     ttfa_ms = total_gen_ms  # already in ms
 
                 audio_chunk = _concat_audio(audio_chunk)
+                running_sr = sr
+                running_tail = _append_audio_tail(running_tail, audio_chunk, sr)
                 dur = len(audio_chunk) / sr
                 total_audio_s += dur
                 rtf = total_audio_s / (total_gen_ms / 1000) if total_gen_ms > 0 else 0.0
@@ -646,6 +694,8 @@ async def generate_stream(
                     model_name=_active_model_name,
                     template=template,
                     state=running_state,
+                    audio_tail=running_tail,
+                    sample_rate=running_sr or 24000,
                 )
             done_payload = {
                 "type": "done",
@@ -791,6 +841,8 @@ async def generate_non_streaming(
                 model_name=_active_model_name,
                 template=template,
                 state=state,
+                audio_tail=_trim_audio_tail(audio, sr),
+                sample_rate=sr,
             )
         return audio, sr, elapsed, dur, session_id
 
@@ -853,6 +905,8 @@ async def generate_continuation_compare(
         mode = template["mode"]
         if mode == "custom" and not template["speaker"]:
             raise RuntimeError("Saved continuation state is missing the custom speaker.")
+        context_audio = np.array(session.get("audio_tail", np.zeros(0, dtype=np.float32)), dtype=np.float32)
+        context_sr = int(session.get("sample_rate", 24000))
 
         t0 = time.perf_counter()
         fresh_result = _run_demo_generation(
@@ -867,6 +921,7 @@ async def generate_continuation_compare(
         fresh_elapsed = time.perf_counter() - t0
         fresh_audio_list, fresh_sr = fresh_result
         fresh_audio = _concat_audio(fresh_audio_list)
+        fresh_compare_audio = _prepend_context_audio(context_audio, context_sr, fresh_audio, fresh_sr)
         fresh_dur = len(fresh_audio) / fresh_sr
 
         t1 = time.perf_counter()
@@ -878,21 +933,19 @@ async def generate_continuation_compare(
             top_k=top_k,
             repetition_penalty=repetition_penalty,
             continuation_state=session["state"],
-            return_continuation_state="full",
             max_new_tokens=360,
         )
         cont_elapsed = time.perf_counter() - t1
-        cont_audio_list, cont_sr, cont_info = continued_result
+        cont_audio_list, cont_sr = continued_result
         cont_audio = _concat_audio(cont_audio_list)
+        cont_compare_audio = _prepend_context_audio(context_audio, context_sr, cont_audio, cont_sr)
         cont_dur = len(cont_audio) / cont_sr
-        cont_state = cont_info.get("continuation_state") if cont_info else None
-        if cont_state is not None:
-            _update_continuation_session(session_id, cont_state)
 
         return {
             "continuation_session_id": session_id,
+            "context_seconds": CONTINUATION_COMPARE_CONTEXT_SECONDS,
             "fresh": {
-                "audio_b64": _to_wav_b64(fresh_audio, fresh_sr),
+                "audio_b64": _to_wav_b64(fresh_compare_audio, fresh_sr),
                 "sample_rate": fresh_sr,
                 "metrics": {
                     "total_ms": round(fresh_elapsed * 1000),
@@ -901,7 +954,7 @@ async def generate_continuation_compare(
                 },
             },
             "continued": {
-                "audio_b64": _to_wav_b64(cont_audio, cont_sr),
+                "audio_b64": _to_wav_b64(cont_compare_audio, cont_sr),
                 "sample_rate": cont_sr,
                 "metrics": {
                     "total_ms": round(cont_elapsed * 1000),

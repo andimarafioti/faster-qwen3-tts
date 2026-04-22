@@ -853,7 +853,7 @@ body {
     <div class="continuation" id="continuationWrap">
       <div class="continuation-head">
         <h2>Continue Previous Sentence</h2>
-        <span class="continuation-sub">Render the next sentence twice: fresh and with continuation state.</span>
+        <span class="continuation-sub">Each player starts with the tail of sentence 1, then plays sentence 2 fresh or continued. Re-run compare to test different sentence 2 options against the same sentence 1.</span>
       </div>
       <textarea id="continuationText" placeholder="Enter the follow-up sentence you want to compare..." oninput="updateContinuationControls()"></textarea>
       <div class="continuation-actions">
@@ -870,7 +870,7 @@ body {
           <div class="metrics">
             <div class="met"><span class="met-k">Total</span><span class="met-v" id="cmpFreshMs">&mdash;</span></div>
             <div class="met"><span class="met-k">RTF</span><span class="met-v" id="cmpFreshRTF">&mdash;</span></div>
-            <div class="met"><span class="met-k">Dur</span><span class="met-v" id="cmpFreshDur">&mdash;</span></div>
+            <div class="met"><span class="met-k">Gen dur</span><span class="met-v" id="cmpFreshDur">&mdash;</span></div>
           </div>
         </div>
         <div class="compare-card">
@@ -882,7 +882,7 @@ body {
           <div class="metrics">
             <div class="met"><span class="met-k">Total</span><span class="met-v" id="cmpContMs">&mdash;</span></div>
             <div class="met"><span class="met-k">RTF</span><span class="met-v" id="cmpContRTF">&mdash;</span></div>
-            <div class="met"><span class="met-k">Dur</span><span class="met-v" id="cmpContDur">&mdash;</span></div>
+            <div class="met"><span class="met-k">Gen dur</span><span class="met-v" id="cmpContDur">&mdash;</span></div>
           </div>
         </div>
       </div>
@@ -1934,7 +1934,7 @@ function updateContinuationControls() {
   } else if (busy) {
     status.textContent = 'Generation in progress…';
   } else {
-    status.textContent = 'Uses the last completed clip as sentence 1.';
+    status.textContent = 'Uses the last generated first sentence as sentence 1 until you generate a new one.';
   }
 }
 
