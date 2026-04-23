@@ -20,6 +20,9 @@ spec:
   strategy:
     type: Recreate
   replicas: 1
+  {{- if .Values.progressDeadlineSeconds }}
+  progressDeadlineSeconds: {{ .Values.progressDeadlineSeconds }}
+  {{- end }}
   selector:
     matchLabels:
       app: faster-qwen3-tts

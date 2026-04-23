@@ -73,3 +73,7 @@ extraVolumeMounts: []
 gcs:
   voiceCacheBucket: ""
   voiceCachePrefix: ""
+
+# Deployment progress deadline (in seconds)
+# This is how long Kubernetes will wait for the deployment to make progress before marking it as failed
+progressDeadlineSeconds: 600
