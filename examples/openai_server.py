@@ -36,6 +36,7 @@ API usage:
 """
 import argparse
 import asyncio
+from collections import deque
 import io
 import json
 import logging
@@ -44,6 +45,7 @@ import queue
 import struct
 import sys
 import threading
+from pathlib import Path
 from typing import AsyncGenerator, Optional
 
 import numpy as np
@@ -58,6 +60,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+HF_MODEL_DIR = Path(os.environ.get("HF_MODEL_DIR", "/repository"))
+DEFAULT_MODEL_ID = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+DEFAULT_QUEUE_SIZE = int(os.environ.get("QWEN_TTS_MAX_PENDING", "8"))
+DEFAULT_CHUNK_SIZE = int(os.environ.get("QWEN_TTS_CHUNK_SIZE", "12"))
+
 # ---------------------------------------------------------------------------
 # Global state
 # ---------------------------------------------------------------------------
@@ -69,6 +76,74 @@ voices: dict = {}
 default_voice: Optional[str] = None
 SAMPLE_RATE = 24000  # updated once the model loads
 _model_lock = threading.Lock()  # prevent concurrent GPU inference
+
+
+class QueueFullError(RuntimeError):
+    """Raised when the bounded inference queue has no capacity left."""
+
+
+class InferenceLease:
+    def __init__(self, queue_: "InferenceQueue"):
+        self._queue = queue_
+        self._released = False
+
+    async def release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        await self._queue.release()
+
+
+class InferenceQueue:
+    """
+    Async FIFO queue that allows a single active inference and bounded waiting.
+
+    The queue stays at the HTTP layer: requests do not receive a response status
+    until they either acquire a lease or are rejected as queue-full. That lets
+    HF Endpoint autoscaling react to pending requests.
+    """
+
+    def __init__(self, max_pending: int):
+        if max_pending < 1:
+            raise ValueError("max_pending must be >= 1")
+        self.max_pending = max_pending
+        self._condition = asyncio.Condition()
+        self._waiting: deque[object] = deque()
+        self._active = False
+
+    @property
+    def depth(self) -> int:
+        return len(self._waiting) + int(self._active)
+
+    @property
+    def waiting(self) -> int:
+        return len(self._waiting)
+
+    async def acquire(self) -> InferenceLease:
+        token = object()
+        async with self._condition:
+            if self.depth >= self.max_pending:
+                raise QueueFullError
+            self._waiting.append(token)
+            try:
+                while self._active or self._waiting[0] is not token:
+                    await self._condition.wait()
+                self._waiting.popleft()
+                self._active = True
+                return InferenceLease(self)
+            except BaseException:
+                if token in self._waiting:
+                    self._waiting.remove(token)
+                    self._condition.notify_all()
+                raise
+
+    async def release(self) -> None:
+        async with self._condition:
+            self._active = False
+            self._condition.notify_all()
+
+
+_inference_queue = InferenceQueue(DEFAULT_QUEUE_SIZE)
 
 # ---------------------------------------------------------------------------
 # Request / response models
@@ -143,6 +218,72 @@ def _to_mp3_bytes(pcm: np.ndarray, sample_rate: int) -> bytes:
 # ---------------------------------------------------------------------------
 
 
+def _default_model_location() -> str:
+    if HF_MODEL_DIR.exists():
+        return str(HF_MODEL_DIR)
+    return DEFAULT_MODEL_ID
+
+
+def _resolve_path(path_value: str, *, base_dir: Optional[Path] = None) -> str:
+    path = Path(path_value).expanduser()
+    candidates = []
+    if path.is_absolute():
+        candidates.append(path)
+    else:
+        if base_dir is not None:
+            candidates.append((base_dir / path).resolve())
+        if HF_MODEL_DIR.exists():
+            candidates.append((HF_MODEL_DIR / path).resolve())
+        candidates.append((Path.cwd() / path).resolve())
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return str(candidates[0] if candidates else path)
+
+
+def _normalize_voice_cfg(name: str, voice_cfg: dict, *, base_dir: Optional[Path] = None) -> dict:
+    if "ref_audio" not in voice_cfg:
+        raise ValueError(f"Voice {name!r} is missing required key 'ref_audio'")
+    normalized = dict(voice_cfg)
+    normalized["ref_audio"] = _resolve_path(normalized["ref_audio"], base_dir=base_dir)
+    normalized.setdefault("language", "Auto")
+    normalized.setdefault("chunk_size", DEFAULT_CHUNK_SIZE)
+    return normalized
+
+
+def _load_voices_file(path_value: str) -> tuple[dict, str]:
+    resolved = Path(_resolve_path(path_value))
+    with resolved.open() as f:
+        raw_voices = json.load(f)
+    if not isinstance(raw_voices, dict) or not raw_voices:
+        raise ValueError(f"Voices config {resolved} must contain a non-empty object")
+    normalized = {
+        name: _normalize_voice_cfg(name, cfg, base_dir=resolved.parent)
+        for name, cfg in raw_voices.items()
+    }
+    return normalized, next(iter(normalized))
+
+
+def _default_voices_path() -> Optional[str]:
+    candidate = HF_MODEL_DIR / "voices.json"
+    if candidate.exists():
+        return str(candidate)
+    return None
+
+
+async def _acquire_inference_lease() -> InferenceLease:
+    try:
+        return await _inference_queue.acquire()
+    except QueueFullError as exc:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                "Inference queue is full. "
+                f"Try again shortly; max pending requests is {_inference_queue.max_pending}."
+            ),
+        ) from exc
+
+
 def resolve_voice(voice_name: str) -> dict:
     """Return voice config dict or fall back to default, else raise 400."""
     if voice_name in voices:
@@ -213,7 +354,13 @@ async def _stream_chunks(voice_cfg: dict, text: str) -> AsyncGenerator[bytes, No
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "model_loaded": tts_model is not None}
+    return {
+        "status": "ok",
+        "model_loaded": tts_model is not None,
+        "queue_depth": _inference_queue.depth,
+        "waiting_requests": _inference_queue.waiting,
+        "max_pending_requests": _inference_queue.max_pending,
+    }
 
 
 @app.post("/v1/audio/speech")
@@ -240,27 +387,35 @@ async def create_speech(req: SpeechRequest):
 
     # --- MP3: generate all audio, then encode (non-streaming) ---
     if fmt == "mp3":
+        lease = await _acquire_inference_lease()
         loop = asyncio.get_event_loop()
+        try:
+            def _generate():
+                with _model_lock:
+                    return tts_model.generate_voice_clone(
+                        text=req.input,
+                        language=voice_cfg.get("language", "Auto"),
+                        ref_audio=voice_cfg["ref_audio"],
+                        ref_text=voice_cfg.get("ref_text", ""),
+                    )
 
-        def _generate():
-            with _model_lock:
-                return tts_model.generate_voice_clone(
-                    text=req.input,
-                    language=voice_cfg.get("language", "Auto"),
-                    ref_audio=voice_cfg["ref_audio"],
-                    ref_text=voice_cfg.get("ref_text", ""),
-                )
-
-        audio_arrays, sr = await loop.run_in_executor(None, _generate)
-        audio = audio_arrays[0] if audio_arrays else np.zeros(1, dtype=np.float32)
-        return Response(content=_to_mp3_bytes(audio, sr), media_type=content_type)
+            audio_arrays, sr = await loop.run_in_executor(None, _generate)
+            audio = audio_arrays[0] if audio_arrays else np.zeros(1, dtype=np.float32)
+            return Response(content=_to_mp3_bytes(audio, sr), media_type=content_type)
+        finally:
+            await lease.release()
 
     # --- WAV / PCM: stream chunks as they are generated ---
+    lease = await _acquire_inference_lease()
+
     async def audio_stream():
-        if fmt == "wav":
-            yield _wav_header(SAMPLE_RATE)  # stream with unknown data length
-        async for raw_chunk in _stream_chunks(voice_cfg, req.input):
-            yield raw_chunk
+        try:
+            if fmt == "wav":
+                yield _wav_header(SAMPLE_RATE)  # stream with unknown data length
+            async for raw_chunk in _stream_chunks(voice_cfg, req.input):
+                yield raw_chunk
+        finally:
+            await lease.release()
 
     return StreamingResponse(audio_stream(), media_type=content_type)
 
@@ -278,12 +433,12 @@ def _parse_args():
     )
     p.add_argument(
         "--model",
-        default=os.environ.get("QWEN_TTS_MODEL", "Qwen/Qwen3-TTS-12Hz-1.7B-Base"),
-        help="HuggingFace model ID or local path (default: Qwen/Qwen3-TTS-12Hz-1.7B-Base)",
+        default=os.environ.get("QWEN_TTS_MODEL", _default_model_location()),
+        help="HuggingFace model ID or local path (defaults to /repository on HF, else the upstream 1.7B Base model)",
     )
     p.add_argument(
         "--voices",
-        default=os.environ.get("QWEN_TTS_VOICES"),
+        default=os.environ.get("QWEN_TTS_VOICES", _default_voices_path()),
         metavar="FILE",
         help="JSON file mapping voice names to {ref_audio, ref_text, language}",
     )
@@ -305,27 +460,37 @@ def _parse_args():
     )
     p.add_argument("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)")
     p.add_argument("--port", type=int, default=8000, help="Bind port (default: 8000)")
-    p.add_argument("--device", default="cuda", help="Torch device (default: cuda)")
+    p.add_argument(
+        "--device",
+        default=os.environ.get("QWEN_TTS_DEVICE", "cuda"),
+        help="Torch device (default: cuda)",
+    )
+    p.add_argument(
+        "--max-pending",
+        type=int,
+        default=int(os.environ.get("QWEN_TTS_MAX_PENDING", str(DEFAULT_QUEUE_SIZE))),
+        help="Maximum number of pending requests, including the active one (default: 8)",
+    )
     return p.parse_args()
 
 
 def main():
-    global tts_model, voices, default_voice, SAMPLE_RATE
+    global tts_model, voices, default_voice, SAMPLE_RATE, _inference_queue
 
     args = _parse_args()
+    _inference_queue = InferenceQueue(args.max_pending)
 
     # Build voice registry
     if args.voices:
-        with open(args.voices) as f:
-            voices = json.load(f)
-        default_voice = next(iter(voices))
+        voices, default_voice = _load_voices_file(args.voices)
         logger.info("Loaded %d voice(s) from %s", len(voices), args.voices)
     elif args.ref_audio:
         voices = {
             "default": {
-                "ref_audio": args.ref_audio,
+                "ref_audio": _resolve_path(args.ref_audio),
                 "ref_text": args.ref_text,
                 "language": args.language,
+                "chunk_size": DEFAULT_CHUNK_SIZE,
             }
         }
         default_voice = "default"
@@ -347,6 +512,7 @@ def main():
     )
     SAMPLE_RATE = tts_model.sample_rate
     logger.info("Model ready. Sample rate: %d Hz", SAMPLE_RATE)
+    logger.info("Inference queue capacity: %d pending request(s)", args.max_pending)
     logger.info("Server listening on http://%s:%d", args.host, args.port)
 
     uvicorn.run(app, host=args.host, port=args.port)

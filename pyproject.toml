@@ -32,7 +32,7 @@ dependencies = [
     "torch>=2.5.1",
     "numpy",
     "soundfile",
-    "huggingface-hub",
+    "huggingface-hub>=0.36.2",
 ]
 
 [project.optional-dependencies]
