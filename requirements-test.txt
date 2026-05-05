@@ -14,3 +14,4 @@ google-cloud-storage
 python-multipart
 pyyaml
 audiooop-lts; python_version >= "3.13"
+redis>=5.0
