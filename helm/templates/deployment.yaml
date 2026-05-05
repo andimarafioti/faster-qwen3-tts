@@ -19,10 +19,10 @@ metadata:
 spec:
   strategy:
     type: Recreate
-  replicas: 1
   {{- if .Values.progressDeadlineSeconds }}
   progressDeadlineSeconds: {{ .Values.progressDeadlineSeconds }}
   {{- end }}
+  replicas: {{ .Values.replicas | default 1 }}
   selector:
     matchLabels:
       app: faster-qwen3-tts
@@ -51,8 +51,6 @@ spec:
           - -c
           - "nvidia-smi && echo 'GPU verification successful'"
         env:
-        - name: NVIDIA_VISIBLE_DEVICES
-          value: {{ .Values.envVars.NVIDIA_VISIBLE_DEVICES | quote }}
         - name: NVIDIA_DRIVER_CAPABILITIES
           value: {{ .Values.envVars.NVIDIA_DRIVER_CAPABILITIES | quote }}
         resources:
@@ -72,8 +70,6 @@ spec:
         env:
         - name: MODEL_NAME
           value: {{ .Values.model.name | quote }}
-        - name: DEVICE
-          value: {{ .Values.model.device | quote }}
         - name: DTYPE
           value: {{ .Values.model.dtype | quote }}
         - name: ATTN_IMPLEMENTATION
