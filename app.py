@@ -20,6 +20,7 @@ from opentelemetry import trace, metrics
 from opentelemetry.propagate import extract
 from config import DEVICE, DTYPE, MODEL_NAME, ATTN_IMPLEMENTATION, VOICES_DIR, CHUNK_SIZE, VOICE_CACHE_BUCKET, VOICE_CACHE_PREFIX
 from otel_setup import init_otel, current_task_id
+from tts_registry import TTSRegistry
 
 # Initialize OTel before logging.basicConfig (init_otel sets root logger level)
 shutdown_otel = init_otel()
@@ -77,6 +78,7 @@ meter.create_observable_gauge("tts.gpu.memory_percent", callbacks=[_gpu_mem_cb])
 # Global model instance
 model = None
 model_ready = False
+registry: Optional["TTSRegistry"] = None
 # Voice metadata: maps voice name to (ref_audio_path, ref_text, vcp)
 # vcp is a pre-loaded voice_clone_prompt dict (or None if not yet extracted)
 voices = {}
@@ -420,6 +422,23 @@ async def lifespan(app: FastAPI):
             logging.warning(f"Warmup failed (non-fatal): {e}")
             model_ready = True
 
+    # Register this pod with Valkey so the qarl-backend-api allocator can hand
+    # it out one-job-at-a-time. Only registers if VALKEY_URL is set, so local
+    # dev / non-cluster runs are unaffected.
+    global registry
+    valkey_url = os.environ.get("VALKEY_URL")
+    if valkey_url and model_ready:
+        pod_ip = os.environ.get("POD_IP", "127.0.0.1")
+        port = os.environ.get("PORT", "8000")
+        ws_url = f"ws://{pod_ip}:{port}"
+        registry = TTSRegistry(valkey_url=valkey_url)
+        try:
+            await registry.initialize(ws_url=ws_url)
+            logging.info(f"TTS pod registered at {ws_url}")
+        except Exception as e:
+            logging.error(f"Failed to register TTS pod with Valkey: {e}")
+            registry = None
+
     logging.info("=" * 80)
     logging.info("Faster Qwen3 TTS API Server Ready!")
     logging.info(f"Available voices: {list(voices.keys())}")
@@ -427,6 +446,14 @@ async def lifespan(app: FastAPI):
     logging.info("=" * 80)
 
     yield
+
+    # Unregister from Valkey before tearing down the model so the allocator
+    # stops handing this pod out the moment we begin shutdown.
+    if registry is not None:
+        try:
+            await registry.unregister()
+        except Exception as e:
+            logging.error(f"Failed to unregister TTS pod from Valkey: {e}")
 
     # Flush OTel before cleanup
     shutdown_otel()
@@ -689,6 +716,12 @@ async def tts_websocket(websocket: WebSocket):
     await websocket.accept()
     logging.info("WebSocket connection established")
 
+    if registry is not None:
+        try:
+            await registry.mark_busy()
+        except Exception as e:
+            logging.error(f"Failed to mark TTS pod busy: {e}")
+
     try:
         while True:
             data = await websocket.receive_text()
@@ -829,6 +862,12 @@ async def tts_websocket(websocket: WebSocket):
             await websocket.close()
         except:
             pass
+    finally:
+        if registry is not None:
+            try:
+                await registry.mark_idle()
+            except Exception as e:
+                logging.error(f"Failed to mark TTS pod idle: {e}")
 
 
 @app.post("/tts")

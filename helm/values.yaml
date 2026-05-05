@@ -12,11 +12,12 @@ imagePullSecrets:
 # must collectively expose at least this many `nvidia.com/gpu` resources.
 replicas: 1
 
-# Service configuration
+# Service configuration. Use ClusterIP — pipeline traffic is now routed
+# per-pod by the qarl-backend-api allocator, and voice validation hits the
+# service VIP for in-cluster load balancing across all pods.
 service:
-  type: NodePort
+  type: ClusterIP
   port: 8000
-  nodePort: 30800
 
 # GPU resources (0 = bypass K8s GPU scheduling, use NVIDIA runtime directly)
 resources:
@@ -42,6 +43,13 @@ model:
 envVars:
   NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
 
+# Valkey URL for pod registration. When set, each pod registers itself in the
+# `tts:idle` / `tts:all` Valkey sets so the qarl-backend-api allocator can
+# hand out one TTS pod per pipeqarl job. Leave empty to disable registration
+# (e.g. for local dev or non-cluster runs).
+valkey:
+  url: ""
+
 # Health check configuration
 healthCheck:
   initialDelaySeconds: 30  # 30 seconds to allow container to start
@@ -53,12 +61,13 @@ healthCheck:
 # Shared memory size (for PyTorch operations)
 shmSize: "4Gi"
 
-# Persistent volume for model cache
-persistence:
-  enabled: true
-  size: "20Gi"  # Qwen3 TTS models are larger
-  storageClass: "mdx-local-path"
-  accessMode: "ReadWriteOnce"
+# Per-pod ephemeral PVC for the HuggingFace model cache. Each replica gets
+# its own dynamically-provisioned volume tied to its lifecycle, so the
+# deployment scales horizontally without volume node-affinity conflicts.
+# Mirrors the pattern used by ditto (model-benchmarking).
+storage:
+  size: 20Gi
+  storageClassName: mdx-local-path
 
 # HuggingFace token configuration
 hfToken:
@@ -79,3 +88,8 @@ gcs:
 # Deployment progress deadline (in seconds)
 # This is how long Kubernetes will wait for the deployment to make progress before marking it as failed
 progressDeadlineSeconds: 600
+
+# Time K8s waits for graceful shutdown. Mirrors the renderer pattern: the
+# preStop hook polls for /tmp/busy removal, so this needs to be long enough
+# for an in-flight TTS job to finish.
+terminationGracePeriodSeconds: 600
