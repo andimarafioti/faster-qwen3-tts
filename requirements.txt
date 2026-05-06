@@ -12,3 +12,5 @@ opentelemetry-exporter-otlp
 opentelemetry-instrumentation-logging
 opentelemetry-instrumentation-fastapi
 pynvml
+redis>=5.0
+
