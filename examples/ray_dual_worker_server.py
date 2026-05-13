@@ -29,6 +29,7 @@ import numpy as np
 import ray
 import uvicorn
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -80,7 +81,7 @@ def _silence_pcm(sample_rate: int, milliseconds: int) -> bytes:
 class SpeechRequest(BaseModel):
     model: str = "tts-1"
     input: str = Field(..., min_length=1)
-    voice: str = "Vivian"
+    voice: str = "Serena"
     response_format: str = "wav"
     speed: float = 1.0
     instruction: str | None = None
@@ -105,6 +106,13 @@ class CapsWriterSpeakRequest(BaseModel):
     speed: float = 1.0
     instruction: str | None = None
     language: str | None = None
+
+
+class TTSPlanRequest(BaseModel):
+    text: str = Field(..., min_length=1)
+    trace_id: str | None = None
+    max_chars_per_chunk: int | None = None
+    lang_hint: str | None = None
 
 
 def _split_sentences(text: str) -> list[str]:
@@ -172,6 +180,69 @@ def _split_playback_first(
         {"index": 0, "role": "head", "text": head_text},
         {"index": 1, "role": "tail", "text": tail_text},
     ]
+
+
+def _split_tts_text_into_chunks(
+    text: str,
+    *,
+    max_chars: int,
+    min_chars: int,
+    max_segments: int,
+) -> tuple[list[str], bool]:
+    content = re.sub(r"\s+", " ", (text or "").strip())
+    if not content:
+        return [], False
+
+    max_chars = max(20, int(max_chars))
+    min_chars = max(1, min(int(min_chars), max_chars))
+    max_segments = max(1, int(max_segments))
+    sentences = _split_sentences(content) or [content]
+
+    chunks: list[str] = []
+    current = ""
+    truncated = False
+
+    def push(value: str) -> None:
+        nonlocal truncated
+        item = value.strip()
+        if not item:
+            return
+        if len(chunks) >= max_segments:
+            truncated = True
+            return
+        chunks.append(item)
+
+    for sentence in sentences:
+        remaining = sentence
+        while len(remaining) > max_chars:
+            if current:
+                push(current)
+                current = ""
+            push(remaining[:max_chars])
+            remaining = remaining[max_chars:].strip()
+            if truncated:
+                return chunks, True
+
+        candidate = (current + remaining).strip()
+        if not current:
+            current = remaining
+        elif len(candidate) <= max_chars:
+            current = candidate
+        else:
+            push(current)
+            current = remaining
+            if truncated:
+                return chunks, True
+
+        if len(current) >= min_chars and _estimate_audio_s(current) >= 3.0:
+            push(current)
+            current = ""
+            if truncated:
+                return chunks, True
+
+    if current:
+        push(current)
+    return chunks, truncated
 
 
 @ray.remote(num_gpus=1)
@@ -314,6 +385,15 @@ class TTSWorker:
         audio_s = len(audio) / int(sr)
         rtf = audio_s / elapsed_s if elapsed_s > 0 else 0.0
         wav_bytes = _to_wav_bytes(audio, int(sr))
+        print(
+            "[TTS] "
+            f"worker={self.worker_id} gpu={','.join(str(x) for x in self.gpu_ids)} "
+            f"text_len={len(content)} speaker={resolved_speaker} "
+            f"max_new_tokens={max_new_tokens or self._estimate_max_tokens(content)} "
+            f"audio_s={audio_s:.3f} elapsed_s={elapsed_s:.3f} "
+            f"rtf={rtf:.3f} ttfa_s={(first_audio_s or 0.0):.3f}",
+            flush=True,
+        )
 
         return {
             "worker_id": self.worker_id,
@@ -382,6 +462,22 @@ class AppState:
 
 
 app = FastAPI(title="Ray dual-worker faster-qwen3-tts")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=[
+        "X-TTS-Worker-Id",
+        "X-TTS-GPU-Ids",
+        "X-TTS-Audio-Seconds",
+        "X-TTS-Elapsed-Seconds",
+        "X-TTS-RTF",
+        "X-TTS-TTFA-Seconds",
+        "X-TTS-Speaker",
+    ],
+)
 state: AppState | None = None
 
 
@@ -395,6 +491,82 @@ async def health() -> dict[str, Any]:
         raise HTTPException(status_code=503, detail="Server not initialized")
     rows = await asyncio.gather(*[_ray_get(worker.health.remote()) for worker in state.workers])
     return {"status": "ok", "workers": rows}
+
+
+@app.get("/api/status")
+async def api_status() -> dict[str, Any]:
+    if state is None:
+        return {
+            "success": False,
+            "status": "loading",
+            "tts_enabled": True,
+            "tts_model_loaded": False,
+            "error": "Server not initialized",
+        }
+    rows = await asyncio.gather(*[_ray_get(worker.health.remote()) for worker in state.workers])
+    return {
+        "success": True,
+        "status": "ready",
+        "tts_enabled": True,
+        "tts_model_loaded": True,
+        "tts_backend": "ray_dual_worker",
+        "default_speaker": rows[0].get("default_speaker") if rows else None,
+        "workers_ready": len(rows),
+        "workers": rows,
+    }
+
+
+@app.post("/api/tts/load")
+async def tts_load() -> dict[str, Any]:
+    if state is None:
+        raise HTTPException(status_code=503, detail="Server not initialized")
+    return {"success": True, "status": "ready", "already_loaded": True}
+
+
+@app.post("/api/tts/plan")
+async def tts_plan(req: TTSPlanRequest) -> JSONResponse:
+    content = (req.text or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="No text provided")
+
+    max_chars = req.max_chars_per_chunk or int(os.getenv("QWEN_TTS_PLAN_MAX_CHARS", "90"))
+    max_chars = max(20, min(int(max_chars), int(os.getenv("QWEN_TTS_PLAN_MAX_CHARS_LIMIT", "240"))))
+    min_chars = max(1, min(int(os.getenv("QWEN_TTS_PLAN_MIN_CHARS", "28")), max_chars))
+    max_segments = max(1, int(os.getenv("QWEN_TTS_PLAN_MAX_SEGMENTS", "120")))
+
+    chunks, truncated = _split_tts_text_into_chunks(
+        content,
+        max_chars=max_chars,
+        min_chars=min_chars,
+        max_segments=max_segments,
+    )
+    payload_chunks = [
+        {
+            "index": idx,
+            "text": chunk,
+            "est_chars": len(chunk),
+            "estimated_audio_s": _estimate_audio_s(chunk),
+            "max_new_tokens": _estimate_max_new_tokens(chunk, 512),
+        }
+        for idx, chunk in enumerate(chunks)
+    ]
+    longest = max((len(chunk) for chunk in chunks), default=0)
+    print(
+        "[TTS] "
+        f"plan trace_id={req.trace_id or '-'} text_len={len(content)} "
+        f"chunks={len(chunks)} max_chars={max_chars} longest={longest} "
+        f"truncated={truncated}",
+        flush=True,
+    )
+    return JSONResponse(
+        {
+            "success": True,
+            "trace_id": req.trace_id or "",
+            "chunks": payload_chunks,
+            "total_chunks": len(payload_chunks),
+            "truncated": truncated,
+        }
+    )
 
 
 @app.post("/v1/audio/speech")
@@ -673,7 +845,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--attn", default=os.getenv("QWEN_TTS_ATTN", "sdpa"), choices=["sdpa", "eager", "flash_attention_2"])
     parser.add_argument("--dtype", default=os.getenv("QWEN_TTS_DTYPE", "bfloat16"), choices=["bfloat16", "float16", "float32"])
     parser.add_argument("--language", default=os.getenv("QWEN_TTS_LANGUAGE", "Chinese"))
-    parser.add_argument("--speaker", default=os.getenv("QWEN_TTS_SPEAKER", "Vivian"))
+    parser.add_argument("--speaker", default=os.getenv("QWEN_TTS_SPEAKER", "Serena"))
     parser.add_argument("--chunk-size", type=int, default=int(os.getenv("QWEN_TTS_CHUNK_SIZE", "8")))
     parser.add_argument("--max-new-tokens", type=int, default=int(os.getenv("QWEN_TTS_MAX_NEW_TOKENS", "512")))
     parser.add_argument("--max-seq-len", type=int, default=int(os.getenv("QWEN_TTS_MAX_SEQ_LEN", "2048")))
