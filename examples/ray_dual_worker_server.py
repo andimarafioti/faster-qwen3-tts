@@ -5,7 +5,7 @@ This server is designed for hosts with two usable CUDA GPUs. Start it with a
 filtered CUDA device list, for example:
 
     CUDA_VISIBLE_DEVICES=1,2 python examples/ray_dual_worker_server.py \
-      --model /home/ivan/models/Qwen3-TTS-12Hz-0.6B-CustomVoice
+      --model /home/ivan/models/Qwen3-TTS-12Hz-1.7B-CustomVoice
 
 Each Ray actor reserves one GPU and loads one hot TTS model instance. Requests
 are routed round-robin across actors to improve concurrent throughput.
@@ -840,7 +840,7 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default=os.getenv("QWEN_TTS_HOST", "0.0.0.0"))
     parser.add_argument("--port", type=int, default=int(os.getenv("QWEN_TTS_PORT", "8091")))
-    parser.add_argument("--model", default=os.getenv("QWEN_TTS_MODEL", "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"))
+    parser.add_argument("--model", default=os.getenv("QWEN_TTS_MODEL", "/home/ivan/models/Qwen3-TTS-12Hz-1.7B-CustomVoice"))
     parser.add_argument("--workers", type=int, default=int(os.getenv("QWEN_TTS_WORKERS", "2")))
     parser.add_argument("--attn", default=os.getenv("QWEN_TTS_ATTN", "sdpa"), choices=["sdpa", "eager", "flash_attention_2"])
     parser.add_argument("--dtype", default=os.getenv("QWEN_TTS_DTYPE", "bfloat16"), choices=["bfloat16", "float16", "float32"])
