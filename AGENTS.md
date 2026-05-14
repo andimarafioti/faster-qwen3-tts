@@ -6,8 +6,9 @@
   - Python: `/home/ivan/.venvs/qwen3-tts-ray/bin/python`
   - CLI: `/home/ivan/.venvs/qwen3-tts-ray/bin/faster-qwen3-tts`
   - Hugging Face CLI: `/home/ivan/.venvs/qwen3-tts-ray/bin/hf`
-- 当前默认后台服务使用 user systemd transient unit：`qwen3-tts-ray.service`。
-- 2026-05-14 已切换为 1.7B CustomVoice 双 worker，端口仍为 `8091`，启动参数：
+- 当前默认外部入口使用 user systemd transient unit：`qwen3-tts-gateway.service`，监听 `0.0.0.0:8091`。
+- 主机 Ray TTS 建议作为内部 primary，监听 `127.0.0.1:8092`；如果主机 GPU 被其他服务占用，Gateway 会自动切到 Edge。
+- 2026-05-14 之前的 Ray 直连启动参数如下；现在若要作为 Gateway primary，必须把 host/port 改成 `127.0.0.1:8092`：
   ```bash
   systemd-run --user --unit="qwen3-tts-ray" \
     --property="Restart=on-failure" \
@@ -17,8 +18,8 @@
     /home/ivan/.venvs/qwen3-tts-ray/bin/python \
     /home/ivan/github/faster-qwen3-tts/examples/ray_dual_worker_server.py \
     --model /home/ivan/models/Qwen3-TTS-12Hz-1.7B-CustomVoice \
-    --host 0.0.0.0 \
-    --port 8091 \
+    --host 127.0.0.1 \
+    --port 8092 \
     --workers 2 \
     --attn sdpa \
     --dtype float16 \
@@ -42,7 +43,7 @@
   然后重新执行上面的 `systemd-run --user` 命令。
 - 一键启动脚本：
   ```bash
-  ./start_qwen3_tts_ray.sh
+  QWEN_TTS_HOST=127.0.0.1 QWEN_TTS_PORT=8092 ./start_qwen3_tts_ray.sh
   ```
   该脚本会停止同名 user service、清理 Ray 进程，然后以 transient user systemd service 方式启动 1.7B 双 worker。
 - 安装为开机后 user systemd 常驻服务：
@@ -116,9 +117,58 @@ CUDA_VISIBLE_DEVICES=2 /home/ivan/.venvs/qwen3-tts-ray/bin/faster-qwen3-tts \
 
 ## 2026-05-14 后台状态
 
-- `/health` 已确认两个 worker 都加载 `/home/ivan/models/Qwen3-TTS-12Hz-1.7B-CustomVoice`。
-- worker 使用 GPU `1` 和 `2`，`dtype=float16`，默认 speaker 为 `serena`。
-- API wav 验证文件：`/tmp/qwen3_tts_1_7b_service_check.wav`。
+- 主机外部 `8091` 已改为 Gateway：`qwen3-tts-gateway.service`。
+- Gateway primary：`http://127.0.0.1:8092`。
+- Gateway backup-1：`http://100.101.54.115:8091`，即 Edge `edgexpert-4353`。
+- Edge 单卡备机已验证运行：`qwen3-tts-single.service`，模型 `/home/admin/models/Qwen3-TTS-12Hz-1.7B-CustomVoice`，GPU `NVIDIA GB10`，端口 `8091`。
+- 2026-05-14 15:57 已在主机 GPU 被 `llama-server` / Ray VL 服务占用、primary `127.0.0.1:8092` 不可用时验证自动切到 Edge：
+  ```text
+  x-tts-backend: backup-1
+  x-tts-backend-url: http://100.101.54.115:8091
+  x-tts-failover: true
+  ```
+- Failover API wav 验证文件：`/tmp/qwen3_tts_failover_edge_check.wav`。
+
+## 2026-05-14 Edge 备机与透明切换方案
+
+- 新增单卡非 Ray 备机服务：`examples/single_gpu_custom_voice_server.py`。
+  - 目标是 Edge 单 GPU 机器，不启动 Ray。
+  - 默认模型路径：`/home/admin/models/Qwen3-TTS-12Hz-1.7B-CustomVoice`
+  - 默认端口：`8091`
+  - 默认 speaker：`Serena`
+  - 对外接口兼容当前主服务的 `/health`、`/api/status`、`/api/tts/load`、`/api/tts/plan`、`/api/tts/speak`、`/api/tts/speak_json`、`/v1/audio/speech`。
+- Edge 临时启动脚本：
+  ```bash
+  ./start_qwen3_tts_single.sh
+  ```
+- Edge 安装为 user systemd 常驻服务：
+  ```bash
+  ./install_qwen3_tts_single_user_service.sh
+  ```
+- 新增透明切换网关：`examples/tts_failover_gateway.py`。
+  - 设计用途：客户端仍调用主机原来的 `:8091`，网关优先转发到本机主服务，主服务失败、5xx 或超时后自动切到 Edge。
+  - 默认主服务地址：`http://127.0.0.1:8092`
+  - 当前已验证 Edge 候选：`http://100.101.54.115:8091`
+  - 旧 Edge 候选保留参考：`http://192.168.31.72:8091,http://192.168.31.74:8091,http://edge.taild500c8.ts.net:8091`
+  - 响应诊断头：`X-TTS-Backend`、`X-TTS-Backend-Url`、`X-TTS-Failover`
+- 主机临时启动网关：
+  ```bash
+  ./start_qwen3_tts_gateway.sh
+  ```
+- 主机安装为 user systemd 常驻网关：
+  ```bash
+  ./install_qwen3_tts_gateway_user_service.sh
+  ```
+- 正式切换端口时，主机 Ray TTS 应改为只监听内部端口，例如：
+  ```bash
+  QWEN_TTS_HOST=127.0.0.1 QWEN_TTS_PORT=8092 ./start_qwen3_tts_ray.sh
+  ```
+  然后让 gateway 监听外部 `8091`。停止现有 `qwen3-tts-ray.service`、安装 user service、切换端口都属于有运行影响的操作，需要用户明确确认后再执行。
+- 当前 Edge 模型同步经验：
+  - Spark 与 AMD 均未找到可直接复用的 `Qwen3-TTS-12Hz-1.7B-CustomVoice` safetensors 模型；Spark 只有 0.6B Base，AMD 只有 0.6B 和 GGUF TTS。
+  - 通过 AMD 跳板到 Edge 的 `192.168.100.148` 实测只有几十到几百 KB/s，不适合传 4.3G 模型。
+  - 已使用 Tailscale 地址 `100.101.54.115` 从本机 rsync 同步模型到 Edge，速度约 `6-7MB/s`。
+  - Edge 仓库路径：`/home/admin/github/faster-qwen3-tts`；Edge 可用 Python：`/home/admin/github/faster-qwen3-tts/.venv/bin/python`。
 
 ## 2026-05-14 长文本卡顿/持续杂音排障经验
 
