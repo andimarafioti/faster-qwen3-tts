@@ -86,6 +86,7 @@ class SpeechRequest(BaseModel):
     speed: float = 1.0
     instruction: str | None = None
     language: str | None = None
+    max_new_tokens: int | None = Field(default=None, ge=1)
 
 
 class JsonSpeechRequest(SpeechRequest):
@@ -106,6 +107,7 @@ class CapsWriterSpeakRequest(BaseModel):
     speed: float = 1.0
     instruction: str | None = None
     language: str | None = None
+    max_new_tokens: int | None = Field(default=None, ge=1)
 
 
 class TTSPlanRequest(BaseModel):
@@ -132,9 +134,19 @@ def _estimate_audio_s(text: str) -> float:
 
 
 def _estimate_max_new_tokens(text: str, hard_cap: int) -> int:
+    hard_cap = max(1, int(hard_cap))
+    min_cap = min(64, hard_cap)
     estimated_steps = _estimate_audio_s(text) * 12.0
     value = int(math.ceil(estimated_steps * 1.35 + 24))
-    return max(64, min(hard_cap, value))
+    return max(min_cap, min(hard_cap, value))
+
+
+def _resolve_max_new_tokens(text: str, requested: int | None, hard_cap: int) -> int:
+    hard_cap = max(1, int(hard_cap))
+    min_cap = min(64, hard_cap)
+    if requested is None:
+        return _estimate_max_new_tokens(text, hard_cap)
+    return max(min_cap, min(hard_cap, int(requested)))
 
 
 def _split_playback_first(
@@ -329,12 +341,7 @@ class TTSWorker:
         return self.speakers[0]
 
     def _estimate_max_tokens(self, text: str) -> int:
-        text_len = len(text or "")
-        if text_len <= 20:
-            return min(self.max_new_tokens, 384)
-        if text_len <= 60:
-            return min(self.max_new_tokens, 512)
-        return self.max_new_tokens
+        return _estimate_max_new_tokens(text, self.max_new_tokens)
 
     def _synthesize(
         self,
@@ -357,6 +364,8 @@ class TTSWorker:
         timings: list[dict[str, Any]] = []
         first_audio_s: float | None = None
 
+        effective_max_new_tokens = _resolve_max_new_tokens(content, max_new_tokens, self.max_new_tokens)
+
         torch.cuda.synchronize()
         start = time.perf_counter()
         for chunk, sr, timing in self.model.generate_custom_voice_streaming(
@@ -364,7 +373,7 @@ class TTSWorker:
             speaker=resolved_speaker,
             language=resolved_language,
             instruct=(instruction or None),
-            max_new_tokens=max_new_tokens or self._estimate_max_tokens(content),
+            max_new_tokens=effective_max_new_tokens,
             temperature=self.temperature,
             top_p=self.top_p,
             do_sample=self.do_sample,
@@ -384,14 +393,19 @@ class TTSWorker:
         audio = np.concatenate(chunks)
         audio_s = len(audio) / int(sr)
         rtf = audio_s / elapsed_s if elapsed_s > 0 else 0.0
+        estimated_audio_s = _estimate_audio_s(content)
+        expected_cap_s = effective_max_new_tokens / 12.0
+        hit_token_cap = audio_s >= max(0.0, expected_cap_s - 0.08)
+        suspicious_duration = audio_s > max(12.0, estimated_audio_s * 2.5)
         wav_bytes = _to_wav_bytes(audio, int(sr))
         print(
             "[TTS] "
             f"worker={self.worker_id} gpu={','.join(str(x) for x in self.gpu_ids)} "
             f"text_len={len(content)} speaker={resolved_speaker} "
-            f"max_new_tokens={max_new_tokens or self._estimate_max_tokens(content)} "
+            f"max_new_tokens={effective_max_new_tokens} "
             f"audio_s={audio_s:.3f} elapsed_s={elapsed_s:.3f} "
-            f"rtf={rtf:.3f} ttfa_s={(first_audio_s or 0.0):.3f}",
+            f"rtf={rtf:.3f} ttfa_s={(first_audio_s or 0.0):.3f} "
+            f"hit_token_cap={hit_token_cap} suspicious_duration={suspicious_duration}",
             flush=True,
         )
 
@@ -407,7 +421,10 @@ class TTSWorker:
             "ttfa_s": first_audio_s,
             "rtf": rtf,
             "text_len": len(content),
-            "max_new_tokens": max_new_tokens or self._estimate_max_tokens(content),
+            "max_new_tokens": effective_max_new_tokens,
+            "estimated_audio_s": estimated_audio_s,
+            "hit_token_cap": hit_token_cap,
+            "suspicious_duration": suspicious_duration,
             "bytes": wav_bytes,
             "timings": timings,
         }
@@ -476,9 +493,28 @@ app.add_middleware(
         "X-TTS-RTF",
         "X-TTS-TTFA-Seconds",
         "X-TTS-Speaker",
+        "X-TTS-Hit-Token-Cap",
+        "X-TTS-Suspicious-Duration",
     ],
 )
 state: AppState | None = None
+
+
+def _tts_response_headers(result: dict[str, Any]) -> dict[str, str]:
+    headers = {
+        "X-TTS-Worker-Id": str(result["worker_id"]),
+        "X-TTS-GPU-Ids": ",".join(str(x) for x in result["gpu_ids"]),
+        "X-TTS-Audio-Seconds": f"{result['audio_s']:.6f}",
+        "X-TTS-Elapsed-Seconds": f"{result['elapsed_s']:.6f}",
+        "X-TTS-RTF": f"{result['rtf']:.6f}",
+        "X-TTS-Hit-Token-Cap": str(bool(result.get("hit_token_cap"))).lower(),
+        "X-TTS-Suspicious-Duration": str(bool(result.get("suspicious_duration"))).lower(),
+    }
+    if result.get("ttfa_s") is not None:
+        headers["X-TTS-TTFA-Seconds"] = f"{result['ttfa_s']:.6f}"
+    if result.get("speaker"):
+        headers["X-TTS-Speaker"] = result["speaker"]
+    return headers
 
 
 async def _ray_get(ref: Any) -> Any:
@@ -580,21 +616,18 @@ async def create_speech(req: SpeechRequest) -> Response:
     worker = state.pick_worker()
     try:
         result = await _ray_get(
-            worker.synthesize.remote(req.input, req.voice, req.language, req.instruction)
+            worker.synthesize.remote(
+                req.input,
+                req.voice,
+                req.language,
+                req.instruction,
+                req.max_new_tokens,
+            )
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
 
-    headers = {
-        "X-TTS-Worker-Id": str(result["worker_id"]),
-        "X-TTS-GPU-Ids": ",".join(str(x) for x in result["gpu_ids"]),
-        "X-TTS-Audio-Seconds": f"{result['audio_s']:.6f}",
-        "X-TTS-Elapsed-Seconds": f"{result['elapsed_s']:.6f}",
-        "X-TTS-RTF": f"{result['rtf']:.6f}",
-    }
-    if result.get("ttfa_s") is not None:
-        headers["X-TTS-TTFA-Seconds"] = f"{result['ttfa_s']:.6f}"
-    return Response(content=result["bytes"], media_type="audio/wav", headers=headers)
+    return Response(content=result["bytes"], media_type="audio/wav", headers=_tts_response_headers(result))
 
 
 @app.post("/api/tts/speak_json")
@@ -604,7 +637,13 @@ async def speak_json(req: JsonSpeechRequest) -> JSONResponse:
     worker = state.pick_worker()
     try:
         result = await _ray_get(
-            worker.synthesize.remote(req.input, req.voice, req.language, req.instruction)
+            worker.synthesize.remote(
+                req.input,
+                req.voice,
+                req.language,
+                req.instruction,
+                req.max_new_tokens,
+            )
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
@@ -628,22 +667,13 @@ async def capswriter_speak(req: CapsWriterSpeakRequest) -> Response:
                 req.speaker or "Serena",
                 req.language,
                 req.instruction,
+                req.max_new_tokens,
             )
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
 
-    headers = {
-        "X-TTS-Worker-Id": str(result["worker_id"]),
-        "X-TTS-GPU-Ids": ",".join(str(x) for x in result["gpu_ids"]),
-        "X-TTS-Audio-Seconds": f"{result['audio_s']:.6f}",
-        "X-TTS-Elapsed-Seconds": f"{result['elapsed_s']:.6f}",
-        "X-TTS-RTF": f"{result['rtf']:.6f}",
-        "X-TTS-Speaker": result["speaker"],
-    }
-    if result.get("ttfa_s") is not None:
-        headers["X-TTS-TTFA-Seconds"] = f"{result['ttfa_s']:.6f}"
-    return Response(content=result["bytes"], media_type="audio/wav", headers=headers)
+    return Response(content=result["bytes"], media_type="audio/wav", headers=_tts_response_headers(result))
 
 
 async def _run_playback_first(req: PlaybackFirstRequest) -> dict[str, Any]:
