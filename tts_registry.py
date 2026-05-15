@@ -56,22 +56,15 @@ class TTSRegistry:
         await self.register(ws_url)
 
     async def mark_busy(self):
-        if not self.redis_client:
-            logger.warning("Cannot mark busy: not connected to Valkey")
-            return
-        await self.redis_client.hset(f"tts:{self.tts_id}", "status", "busy")
-        await self.redis_client.srem("tts:idle", self.tts_id)
+        # WS-lifecycle only — the preStop hook polls /tmp/busy to gate graceful
+        # shutdown. Allocation state in Valkey is owned by qarl-backend-api via
+        # the `tts:lease:{tts_id}` key; the pod no longer mutates tts:idle.
         BUSY_FLAG.touch()
-        logger.info(f"TTS pod {self.tts_id} marked busy")
+        logger.info(f"TTS pod {self.tts_id} touched busy flag")
 
     async def mark_idle(self):
-        if not self.redis_client:
-            logger.warning("Cannot mark idle: not connected to Valkey")
-            return
-        await self.redis_client.hset(f"tts:{self.tts_id}", "status", "idle")
-        await self.redis_client.sadd("tts:idle", self.tts_id)
         BUSY_FLAG.unlink(missing_ok=True)
-        logger.info(f"TTS pod {self.tts_id} marked idle")
+        logger.info(f"TTS pod {self.tts_id} cleared busy flag")
 
     async def unregister(self):
         if not self.redis_client:
