@@ -33,6 +33,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
+from examples.tts_text_normalizer import has_readable_text, normalize_for_tts
+
+DEFAULT_SPEAKER = "Serena"
+
 
 def _to_pcm16(audio: np.ndarray) -> bytes:
     arr = np.asarray(audio, dtype=np.float32).reshape(-1)
@@ -81,7 +85,7 @@ def _silence_pcm(sample_rate: int, milliseconds: int) -> bytes:
 class SpeechRequest(BaseModel):
     model: str = "tts-1"
     input: str = Field(..., min_length=1)
-    voice: str = "Serena"
+    voice: str = DEFAULT_SPEAKER
     response_format: str = "wav"
     speed: float = 1.0
     instruction: str | None = None
@@ -117,12 +121,16 @@ class TTSPlanRequest(BaseModel):
     lang_hint: str | None = None
 
 
+def _sanitize_tts_text(text: str, lang_hint: str | None = None) -> str:
+    return normalize_for_tts(text, lang_hint=lang_hint).text
+
+
 def _split_sentences(text: str) -> list[str]:
-    normalized = re.sub(r"\s+", " ", (text or "").strip())
+    normalized = _sanitize_tts_text(text)
     if not normalized:
         return []
-    parts = re.split(r"(?<=[。！？!?；;])\s*", normalized)
-    return [part.strip() for part in parts if part.strip()]
+    parts = re.split(r"(?<=[。.!！？?；;])\s*", normalized)
+    return [part.strip() for part in parts if has_readable_text(part)]
 
 
 def _estimate_audio_s(text: str) -> float:
@@ -156,7 +164,9 @@ def _split_playback_first(
     min_chars: int,
     max_chars: int,
 ) -> list[dict[str, Any]]:
-    content = (text or "").strip()
+    content = _sanitize_tts_text(text)
+    if not has_readable_text(content):
+        return []
     if len(content) <= max(min_chars, 80):
         return [{"index": 0, "role": "full", "text": content}]
 
@@ -201,23 +211,36 @@ def _split_tts_text_into_chunks(
     min_chars: int,
     max_segments: int,
 ) -> tuple[list[str], bool]:
-    content = re.sub(r"\s+", " ", (text or "").strip())
+    content = _sanitize_tts_text(text)
     if not content:
         return [], False
 
     max_chars = max(20, int(max_chars))
     min_chars = max(1, min(int(min_chars), max_chars))
     max_segments = max(1, int(max_segments))
+    if len(content) <= max_chars:
+        return [content], False
     sentences = _split_sentences(content) or [content]
 
     chunks: list[str] = []
     current = ""
     truncated = False
 
+    def split_long_text(value: str) -> tuple[str, str]:
+        window = value[:max_chars]
+        boundary = -1
+        for pattern in (r"[。.!！？?；;，,]\s*", r"\s+"):
+            matches = list(re.finditer(pattern, window))
+            if matches:
+                boundary = max(boundary, matches[-1].end())
+        if boundary < max(12, min_chars // 2):
+            boundary = max_chars
+        return value[:boundary].strip(), value[boundary:].strip()
+
     def push(value: str) -> None:
         nonlocal truncated
         item = value.strip()
-        if not item:
+        if not has_readable_text(item):
             return
         if len(chunks) >= max_segments:
             truncated = True
@@ -230,8 +253,8 @@ def _split_tts_text_into_chunks(
             if current:
                 push(current)
                 current = ""
-            push(remaining[:max_chars])
-            remaining = remaining[max_chars:].strip()
+            head, remaining = split_long_text(remaining)
+            push(head)
             if truncated:
                 return chunks, True
 
@@ -493,6 +516,7 @@ app.add_middleware(
         "X-TTS-RTF",
         "X-TTS-TTFA-Seconds",
         "X-TTS-Speaker",
+        "X-TTS-Normalizer",
         "X-TTS-Hit-Token-Cap",
         "X-TTS-Suspicious-Duration",
     ],
@@ -514,6 +538,8 @@ def _tts_response_headers(result: dict[str, Any]) -> dict[str, str]:
         headers["X-TTS-TTFA-Seconds"] = f"{result['ttfa_s']:.6f}"
     if result.get("speaker"):
         headers["X-TTS-Speaker"] = result["speaker"]
+    if result.get("normalizer"):
+        headers["X-TTS-Normalizer"] = result["normalizer"]
     return headers
 
 
@@ -561,9 +587,24 @@ async def tts_load() -> dict[str, Any]:
 
 @app.post("/api/tts/plan")
 async def tts_plan(req: TTSPlanRequest) -> JSONResponse:
-    content = (req.text or "").strip()
-    if not content:
+    original_content = (req.text or "").strip()
+    normalized = normalize_for_tts(original_content, lang_hint=req.lang_hint)
+    content = normalized.text
+    if not original_content:
         raise HTTPException(status_code=400, detail="No text provided")
+    if not has_readable_text(content):
+        return JSONResponse(
+            {
+                "success": True,
+                "trace_id": req.trace_id or "",
+                "text": "",
+                "chunks": [],
+                "total_chunks": 0,
+                "truncated": False,
+                "sanitized": True,
+                "normalizer": normalized.normalizer,
+            }
+        )
 
     max_chars = req.max_chars_per_chunk or int(os.getenv("QWEN_TTS_PLAN_MAX_CHARS", "90"))
     max_chars = max(20, min(int(max_chars), int(os.getenv("QWEN_TTS_PLAN_MAX_CHARS_LIMIT", "240"))))
@@ -591,16 +632,20 @@ async def tts_plan(req: TTSPlanRequest) -> JSONResponse:
         "[TTS] "
         f"plan trace_id={req.trace_id or '-'} text_len={len(content)} "
         f"chunks={len(chunks)} max_chars={max_chars} longest={longest} "
-        f"truncated={truncated}",
+        f"truncated={truncated} sanitized={normalized.changed} "
+        f"normalizer={normalized.normalizer}",
         flush=True,
     )
     return JSONResponse(
         {
             "success": True,
             "trace_id": req.trace_id or "",
+            "text": content,
             "chunks": payload_chunks,
             "total_chunks": len(payload_chunks),
             "truncated": truncated,
+            "sanitized": normalized.changed,
+            "normalizer": normalized.normalizer,
         }
     )
 
@@ -614,10 +659,14 @@ async def create_speech(req: SpeechRequest) -> Response:
         raise HTTPException(status_code=400, detail="Only response_format='wav' is supported")
 
     worker = state.pick_worker()
+    normalized = normalize_for_tts(req.input, lang_hint=req.language)
+    content = normalized.text
+    if not has_readable_text(content):
+        raise HTTPException(status_code=400, detail="No readable TTS text after sanitization")
     try:
         result = await _ray_get(
             worker.synthesize.remote(
-                req.input,
+                content,
                 req.voice,
                 req.language,
                 req.instruction,
@@ -627,6 +676,7 @@ async def create_speech(req: SpeechRequest) -> Response:
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
 
+    result["normalizer"] = normalized.normalizer
     return Response(content=result["bytes"], media_type="audio/wav", headers=_tts_response_headers(result))
 
 
@@ -635,10 +685,14 @@ async def speak_json(req: JsonSpeechRequest) -> JSONResponse:
     if state is None:
         raise HTTPException(status_code=503, detail="Server not initialized")
     worker = state.pick_worker()
+    normalized = normalize_for_tts(req.input, lang_hint=req.language)
+    content = normalized.text
+    if not has_readable_text(content):
+        raise HTTPException(status_code=400, detail="No readable TTS text after sanitization")
     try:
         result = await _ray_get(
             worker.synthesize.remote(
-                req.input,
+                content,
                 req.voice,
                 req.language,
                 req.instruction,
@@ -648,6 +702,7 @@ async def speak_json(req: JsonSpeechRequest) -> JSONResponse:
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
 
+    result["normalizer"] = normalized.normalizer
     wav_bytes = result.pop("bytes")
     if req.include_audio_b64:
         result["audio_b64"] = base64.b64encode(wav_bytes).decode("ascii")
@@ -660,11 +715,15 @@ async def capswriter_speak(req: CapsWriterSpeakRequest) -> Response:
     if state is None:
         raise HTTPException(status_code=503, detail="Server not initialized")
     worker = state.pick_worker()
+    normalized = normalize_for_tts(req.text, lang_hint=req.language)
+    content = normalized.text
+    if not has_readable_text(content):
+        raise HTTPException(status_code=400, detail="No readable TTS text after sanitization")
     try:
         result = await _ray_get(
             worker.synthesize.remote(
-                req.text,
-                req.speaker or "Serena",
+                content,
+                req.speaker or DEFAULT_SPEAKER,
                 req.language,
                 req.instruction,
                 req.max_new_tokens,
@@ -673,6 +732,7 @@ async def capswriter_speak(req: CapsWriterSpeakRequest) -> Response:
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
 
+    result["normalizer"] = normalized.normalizer
     return Response(content=result["bytes"], media_type="audio/wav", headers=_tts_response_headers(result))
 
 
@@ -680,8 +740,12 @@ async def _run_playback_first(req: PlaybackFirstRequest) -> dict[str, Any]:
     if state is None:
         raise HTTPException(status_code=503, detail="Server not initialized")
 
+    normalized = normalize_for_tts(req.input, lang_hint=req.language)
+    content = normalized.text
+    if not has_readable_text(content):
+        raise HTTPException(status_code=400, detail="No readable TTS text after sanitization")
     segments = _split_playback_first(
-        req.input,
+        content,
         target_audio_s=req.head_target_audio_s,
         min_chars=req.head_min_chars,
         max_chars=req.head_max_chars,
@@ -805,8 +869,12 @@ async def playback_first_wav(req: PlaybackFirstRequest) -> StreamingResponse:
         if state is None:
             raise HTTPException(status_code=503, detail="Server not initialized")
 
+        normalized = normalize_for_tts(req.input, lang_hint=req.language)
+        content = normalized.text
+        if not has_readable_text(content):
+            raise HTTPException(status_code=400, detail="No readable TTS text after sanitization")
         segments = _split_playback_first(
-            req.input,
+            content,
             target_audio_s=req.head_target_audio_s,
             min_chars=req.head_min_chars,
             max_chars=req.head_max_chars,
@@ -875,7 +943,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--attn", default=os.getenv("QWEN_TTS_ATTN", "sdpa"), choices=["sdpa", "eager", "flash_attention_2"])
     parser.add_argument("--dtype", default=os.getenv("QWEN_TTS_DTYPE", "bfloat16"), choices=["bfloat16", "float16", "float32"])
     parser.add_argument("--language", default=os.getenv("QWEN_TTS_LANGUAGE", "Auto"))
-    parser.add_argument("--speaker", default=os.getenv("QWEN_TTS_SPEAKER", "Serena"))
+    parser.add_argument("--speaker", default=os.getenv("QWEN_TTS_SPEAKER", DEFAULT_SPEAKER))
     parser.add_argument("--chunk-size", type=int, default=int(os.getenv("QWEN_TTS_CHUNK_SIZE", "8")))
     parser.add_argument("--max-new-tokens", type=int, default=int(os.getenv("QWEN_TTS_MAX_NEW_TOKENS", "512")))
     parser.add_argument("--max-seq-len", type=int, default=int(os.getenv("QWEN_TTS_MAX_SEQ_LEN", "2048")))

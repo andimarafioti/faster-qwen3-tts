@@ -33,6 +33,8 @@ dependencies = [
     "numpy",
     "soundfile",
     "huggingface-hub",
+    "wetext>=0.1.2",
+    "markdown-it-py>=3.0",
 ]
 
 [project.optional-dependencies]
