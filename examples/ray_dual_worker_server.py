@@ -357,7 +357,7 @@ class TTSWorker:
         if not content:
             raise ValueError("Text is empty")
         resolved_speaker = self._resolve_speaker(speaker)
-        resolved_language = (language or self.language or "Chinese").strip()
+        resolved_language = (language or self.language or "Auto").strip()
 
         chunks: list[np.ndarray] = []
         sr = 24000
@@ -874,7 +874,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--workers", type=int, default=int(os.getenv("QWEN_TTS_WORKERS", "2")))
     parser.add_argument("--attn", default=os.getenv("QWEN_TTS_ATTN", "sdpa"), choices=["sdpa", "eager", "flash_attention_2"])
     parser.add_argument("--dtype", default=os.getenv("QWEN_TTS_DTYPE", "bfloat16"), choices=["bfloat16", "float16", "float32"])
-    parser.add_argument("--language", default=os.getenv("QWEN_TTS_LANGUAGE", "Chinese"))
+    parser.add_argument("--language", default=os.getenv("QWEN_TTS_LANGUAGE", "Auto"))
     parser.add_argument("--speaker", default=os.getenv("QWEN_TTS_SPEAKER", "Serena"))
     parser.add_argument("--chunk-size", type=int, default=int(os.getenv("QWEN_TTS_CHUNK_SIZE", "8")))
     parser.add_argument("--max-new-tokens", type=int, default=int(os.getenv("QWEN_TTS_MAX_NEW_TOKENS", "512")))
