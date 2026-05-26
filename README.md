@@ -16,6 +16,9 @@ pip install faster-qwen3-tts
 
 ## Quick Start
 
+See [docs/api.md](docs/api.md) for the HTTP gateway API, including client-side playback recommendations.
+
+
 ### Python
 
 ```python
