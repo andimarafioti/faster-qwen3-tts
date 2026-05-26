@@ -28,7 +28,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
-from examples.tts_text_normalizer import has_readable_text, normalize_for_tts
+try:
+    from examples.tts_text_normalizer import has_readable_text, normalize_for_tts
+except ModuleNotFoundError:
+    from tts_text_normalizer import has_readable_text, normalize_for_tts
 
 DEFAULT_SPEAKER = "Serena"
 
