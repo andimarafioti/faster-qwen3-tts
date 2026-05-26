@@ -53,9 +53,14 @@ Response:
   ],
   "total_chunks": 1,
   "truncated": false,
-  "sanitized": false
+  "sanitized": false,
+  "normalizer": "wetext"
 }
 ```
+
+`text` is the normalized text that was planned. `normalizer` is `wetext` when
+the standard text normalizer handled the request, or `basic` when the service
+fell back to minimal cleanup.
 
 ## Synthesis
 
@@ -86,6 +91,10 @@ curl -o chunk.wav \
 ```
 
 Clients should play the returned WAV locally, for example with `paplay`, `aplay`, `ffplay`, `afplay`, Web Audio, or a native audio API.
+
+Useful diagnostic response headers include `X-TTS-Normalizer`,
+`X-TTS-Hit-Token-Cap`, `X-TTS-Suspicious-Duration`, `X-TTS-Audio-Seconds`,
+`X-TTS-Elapsed-Seconds`, and `X-TTS-RTF`.
 
 ### Recommended Remote Client Flow
 
