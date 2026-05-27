@@ -891,6 +891,11 @@ const defaultSpeakers = [
   { id: 'Sohee',    desc: 'Korean — Warm female' },
 ];
 
+const defaultSpeakerByLanguage = {
+  English: 'Aiden',
+  Chinese: 'Serena',
+};
+
 // Web Audio
 let actx = null, sproc = null, pcmQueue = [], rawPcmParts = [], rawPcmSr = 24000;
 let chunkQ = Promise.resolve();
@@ -1257,6 +1262,40 @@ function populateSpeakers(list) {
   }
 }
 
+function inferTextLanguage(text) {
+  const cjkCount = (text.match(/[\u3400-\u9fff]/g) || []).length;
+  const latinCount = (text.match(/[A-Za-z]/g) || []).length;
+  if (cjkCount > 0 && cjkCount >= latinCount * 0.25) return 'Chinese';
+  if (latinCount >= 8 && cjkCount === 0) return 'English';
+  return null;
+}
+
+function resolveGenerationLanguage(text) {
+  const selected = $('langSel').value;
+  const inferred = inferTextLanguage(text);
+  if (!inferred) return selected;
+  if (selected === 'Auto' || selected === 'Chinese' || selected === 'English') return inferred;
+  return selected;
+}
+
+function speakerLanguage(speakerId) {
+  const info = defaultSpeakers.find(s => s.id.toLowerCase() === String(speakerId).toLowerCase());
+  if (!info) return null;
+  if (info.desc.includes('English')) return 'English';
+  if (info.desc.includes('Chinese')) return 'Chinese';
+  return null;
+}
+
+function resolveGenerationSpeaker(language) {
+  const selected = $('speakerId').value;
+  const selectedLanguage = speakerLanguage(selected);
+  if (!selectedLanguage || selectedLanguage === language) return selected;
+
+  const preferred = defaultSpeakerByLanguage[language];
+  const options = Array.from($('speakerId').options).map(o => o.value).filter(Boolean);
+  return options.find(id => id.toLowerCase() === preferred?.toLowerCase()) || selected;
+}
+
 // ── Mic devices ───────────────────────────────────────────────────────────────
 async function loadMics() {
   if (!navigator.mediaDevices?.enumerateDevices) return;
@@ -1609,10 +1648,12 @@ async function generate(mode) {
   pb.style.width = ''; pb.classList.add('spin');
   resetMetrics();
 
+  const text = $('textIn').value;
+  const language = resolveGenerationLanguage(text);
   const fd = new FormData();
-  fd.append('text',               $('textIn').value);
+  fd.append('text',               text);
   fd.append('mode',               mode);
-  fd.append('language',           $('langSel').value);
+  fd.append('language',           language);
   fd.append('temperature',        $('tempSl').value);
   fd.append('top_k',              $('topkSl').value);
   fd.append('repetition_penalty', $('repSl').value);
@@ -1627,7 +1668,7 @@ async function generate(mode) {
     fd.append('xvec_only',  xvecOnly ? 'true' : 'false');
     if (!xvecOnly) fd.append('ref_text', $('refTextIn').value);
   } else if (mode === 'custom') {
-    fd.append('speaker',  $('speakerId').value); // value is already the bare ID
+    fd.append('speaker',  resolveGenerationSpeaker(language)); // value is already the bare ID
     fd.append('instruct', $('customInstr').value);
   } else {
     fd.append('instruct', $('voiceInstr').value);
