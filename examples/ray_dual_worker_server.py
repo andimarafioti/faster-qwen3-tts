@@ -243,7 +243,7 @@ async def _synthesize_split_fallback(
 ) -> dict[str, Any] | None:
     if state is None:
         return None
-    chunks, truncated = _split_tts_text_into_chunks(text, max_chars=24, min_chars=6, max_segments=8)
+    chunks, truncated = _split_tts_text_into_chunks(text, max_chars=12, min_chars=3, max_segments=16)
     if truncated or len(chunks) < 2:
         return None
 
@@ -273,7 +273,7 @@ async def _synthesize_split_fallback(
                 "issues": issues,
             }
         )
-        if _blocking_quality_issues(issues):
+        if issues:
             return None
         results.append(result)
 
