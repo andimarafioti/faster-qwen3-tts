@@ -183,6 +183,10 @@ or returns a 5xx response. Responses include `X-TTS-Backend`,
 `X-TTS-Backend-Url`, and `X-TTS-Failover` headers so callers can tell which
 backend served a request.
 
+For client and agent integrations, see [`docs/api.md`](docs/api.md). It covers
+the recommended `/api/tts/plan` -> `/api/tts/speak` flow, request fields,
+diagnostic headers, timeouts, and playback responsibilities.
+
 ## Results
 
 Benchmarks include tokenization + inference (apples-to-apples with baseline). RTF > 1.0 = faster than real-time. TTFA measured as time to first playable audio chunk using streaming (chunk_size=8).
