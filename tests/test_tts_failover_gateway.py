@@ -61,6 +61,16 @@ def test_gateway_retries_backup_when_primary_returns_5xx(monkeypatch):
             self.content = content
             self.headers = {"content-type": "audio/wav"}
 
+    class Lease:
+        async def release(self):
+            pass
+
+    async def fake_acquire_model(*_args, **_kwargs):
+        return Lease()
+
+    async def fake_ensure_primary_loaded():
+        return None
+
     args = argparse.Namespace(
         primary_url="http://primary:8092",
         backup_urls="http://edge:8091",
@@ -78,6 +88,8 @@ def test_gateway_retries_backup_when_primary_returns_5xx(monkeypatch):
         return Response(200, b"wav")
 
     monkeypatch.setattr(gateway.requests, "request", fake_request)
+    monkeypatch.setattr(gateway, "acquire_model", fake_acquire_model)
+    monkeypatch.setattr(gateway, "_ensure_primary_loaded", fake_ensure_primary_loaded)
     monkeypatch.setattr(gateway, "state", GatewayState(_build_config(args)))
 
     class Request:

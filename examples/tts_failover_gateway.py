@@ -21,6 +21,21 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
+try:
+    from examples.tts_output_validator import (
+        enqueue_validation,
+        get_validation_result,
+        recent_validation_results,
+        validation_enabled,
+    )
+except ModuleNotFoundError:
+    from tts_output_validator import (
+        enqueue_validation,
+        get_validation_result,
+        recent_validation_results,
+        validation_enabled,
+    )
+
 LLAMA_LOCAL_SCRIPTS = Path("/home/ivan/github/llama.cpp/scripts/local")
 if str(LLAMA_LOCAL_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(LLAMA_LOCAL_SCRIPTS))
@@ -466,6 +481,26 @@ async def _run_playback_job(
                 ensure_chunk(index)
                 task = in_flight.pop(index)
             wav_bytes = await task
+            validation_id = enqueue_validation(
+                expected_text=str(chunks[index].get("text") or ""),
+                wav_bytes=wav_bytes,
+                trace_id=f"{trace_id}-c{index + 1}",
+                endpoint="/api/tts/play",
+                speaker=speaker or "",
+                language=language,
+                metadata={
+                    "job_id": job_id,
+                    "chunk_index": index,
+                    "total_chunks": len(chunks),
+                },
+            )
+            if validation_id:
+                chunks[index]["validation_id"] = validation_id
+                print(
+                    f"[TTS-GW] play validation queued job_id={job_id} "
+                    f"chunk={index + 1} validation_id={validation_id}",
+                    flush=True,
+                )
             ensure_chunk(index + prefetch_window)
             if stop_event.is_set():
                 break
@@ -719,6 +754,26 @@ async def health() -> JSONResponse:
     )
 
 
+@app.get("/api/tts/validation/recent")
+async def tts_validation_recent(request: Request, limit: int = 20) -> Response:
+    local_results = recent_validation_results(limit)
+    if local_results:
+        return JSONResponse({"success": True, "enabled": validation_enabled(), "results": local_results})
+    return await _proxy(request, "/api/tts/validation/recent")
+
+
+@app.get("/api/tts/validation/{validation_id}")
+async def tts_validation_result(request: Request, validation_id: str, wait_ms: int = 0) -> Response:
+    deadline = time.monotonic() + max(0, min(wait_ms, 30000)) / 1000.0
+    result = get_validation_result(validation_id)
+    while result is not None and result.get("status") in {"queued", "running"} and time.monotonic() < deadline:
+        await asyncio.sleep(0.1)
+        result = get_validation_result(validation_id)
+    if result is not None:
+        return JSONResponse(result)
+    return await _proxy(request, f"/api/tts/validation/{validation_id}")
+
+
 @app.post("/api/tts/play")
 async def tts_play(request: Request) -> JSONResponse:
     if state is None:
@@ -822,7 +877,7 @@ def _parse_args() -> argparse.Namespace:
             "http://192.168.31.72:8091,http://192.168.31.74:8091,http://edge.taild500c8.ts.net:8091",
         ),
     )
-    parser.add_argument("--primary-timeout-s", type=float, default=float(os.getenv("QWEN_TTS_PRIMARY_TIMEOUT_S", "20")))
+    parser.add_argument("--primary-timeout-s", type=float, default=float(os.getenv("QWEN_TTS_PRIMARY_TIMEOUT_S", "60")))
     parser.add_argument("--backup-timeout-s", type=float, default=float(os.getenv("QWEN_TTS_BACKUP_TIMEOUT_S", "120")))
     parser.add_argument("--health-timeout-s", type=float, default=float(os.getenv("QWEN_TTS_HEALTH_TIMEOUT_S", "2")))
     parser.add_argument("--circuit-break-s", type=float, default=float(os.getenv("QWEN_TTS_CIRCUIT_BREAK_S", "60")))
