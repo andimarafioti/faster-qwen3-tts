@@ -14,13 +14,13 @@
     --property="Restart=on-failure" \
     --property="RestartSec=5" \
     --working-directory="/home/ivan/github/faster-qwen3-tts" \
-    /usr/bin/env CUDA_VISIBLE_DEVICES=1,2 \
+    /usr/bin/env CUDA_VISIBLE_DEVICES=0,1,2 \
     /home/ivan/.venvs/qwen3-tts-ray/bin/python \
     /home/ivan/github/faster-qwen3-tts/examples/ray_dual_worker_server.py \
     --model /home/ivan/models/Qwen3-TTS-12Hz-1.7B-CustomVoice \
     --host 127.0.0.1 \
     --port 8092 \
-    --workers 2 \
+    --workers 3 \
     --attn sdpa \
     --dtype float16 \
     --language Chinese \
@@ -45,7 +45,7 @@
   ```bash
   QWEN_TTS_HOST=127.0.0.1 QWEN_TTS_PORT=8092 ./start_qwen3_tts_ray.sh
   ```
-  该脚本会停止同名 user service、清理 Ray 进程，然后以 transient user systemd service 方式启动 1.7B 双 worker。
+  该脚本会停止同名 user service、清理 Ray 进程，然后以 transient user systemd service 方式启动 1.7B 三 worker。
 - 安装为开机后 user systemd 常驻服务：
   ```bash
   ./install_qwen3_tts_ray_user_service.sh
@@ -201,6 +201,6 @@ CUDA_VISIBLE_DEVICES=2 /home/ivan/.venvs/qwen3-tts-ray/bin/faster-qwen3-tts \
 
 ## 注意事项
 
-- 当前后台 Ray 双 worker 服务的 GPU 占用和模型路径以 `GET /health` 返回为准。
+- 当前后台 Ray 三 worker 服务的 GPU 占用和模型路径以 `GET /health` 返回为准。
 - 如果明确要加载 1.7B，先检查后台服务和显存占用，避免抢占当前服务。
 - 不要在没有用户要求时重建环境、安装依赖或切换分支；先从正在运行的进程确认解释器、模型路径和启动参数。
