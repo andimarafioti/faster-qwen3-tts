@@ -703,6 +703,7 @@ def _enqueue_result_validation(
         "retry_count": result.get("retry_count"),
         "quality_issues": result.get("quality_issues"),
         "retry_history": result.get("retry_history"),
+        "normalization_trace": result.get("normalization_trace"),
     }
     return enqueue_validation(
         expected_text=expected_text,
@@ -783,6 +784,7 @@ async def _synthesize(req: SpeechRequest, endpoint: str) -> dict[str, Any]:
             result["retry_count"] = len(retry_history)
             result["retry_history"] = retry_history
         result["normalizer"] = normalized.normalizer
+        result["normalization_trace"] = list(normalized.normalization_trace)
         result["trace_id"] = req.trace_id or ""
         result["validation_id"] = _enqueue_result_validation(
             result,
@@ -869,6 +871,7 @@ async def tts_plan(req: TTSPlanRequest) -> JSONResponse:
                 "truncated": False,
                 "sanitized": True,
                 "normalizer": normalized.normalizer,
+                "normalization_trace": list(normalized.normalization_trace),
             }
         )
 
@@ -899,7 +902,8 @@ async def tts_plan(req: TTSPlanRequest) -> JSONResponse:
         f"plan trace_id={req.trace_id or '-'} text_len={len(content)} "
         f"chunks={len(chunks)} max_chars={max_chars} longest={longest} "
         f"truncated={truncated} sanitized={normalized.changed} "
-        f"normalizer={normalized.normalizer}",
+        f"normalizer={normalized.normalizer} "
+        f"normalization_tokens={len(normalized.normalization_trace)}",
         flush=True,
     )
     return JSONResponse(
@@ -912,6 +916,7 @@ async def tts_plan(req: TTSPlanRequest) -> JSONResponse:
             "truncated": truncated,
             "sanitized": normalized.changed,
             "normalizer": normalized.normalizer,
+            "normalization_trace": list(normalized.normalization_trace),
         }
     )
 
