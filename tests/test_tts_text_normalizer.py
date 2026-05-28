@@ -64,3 +64,63 @@ def test_full_user_report_keeps_chinese_content():
     assert "上面这整段好像还是处理不好" in result.text
     assert "中间会有跳过很多文字" in result.text
     assert all(len(chunk) > 12 for chunk in chunks)
+
+
+def test_pinyin_like_unknown_token_uses_chinese_syllable_fallback(monkeypatch):
+    monkeypatch.setenv("QWEN_TTS_NORMALIZER", "basic")
+
+    result = normalize_for_tts("siyuan resume 019e63c7")
+
+    assert "斯 元" in result.text
+    assert any(item["kind"] == "pinyin_fallback" and item["source"] == "siyuan" for item in result.normalization_trace)
+
+
+def test_uppercase_ambiguous_token_defaults_to_letter_spelling(monkeypatch):
+    monkeypatch.setenv("QWEN_TTS_NORMALIZER", "basic")
+
+    result = normalize_for_tts("设备 MI，API 和 GPU 正常。")
+
+    assert "M I" in result.text
+    assert "A P I" in result.text
+    assert "G P U" in result.text
+    assert "米" not in result.text
+
+
+def test_technical_identifiers_are_verbalized_by_shape(monkeypatch):
+    monkeypatch.setenv("QWEN_TTS_NORMALIZER", "basic")
+
+    result = normalize_for_tts("README、WebUI、ESP32-screen、QWEN_TTS_PORT=8092、--max-new-tokens。")
+
+    assert "R E A D M E" in result.text
+    assert "Web U I" in result.text
+    assert "E S P 三 二 screen" in result.text
+    assert "环境变量 Q W E N T T S P O R T 等于 八 零 九 二" in result.text
+    assert "参数 max new tokens" in result.text
+    assert {item["kind"] for item in result.normalization_trace} >= {
+        "acronym",
+        "mixed_identifier",
+        "hyphen",
+        "env_assignment",
+        "cli_flag",
+    }
+
+
+def test_code_symbols_paths_and_colon_none_are_verbalized(monkeypatch):
+    monkeypatch.setenv("QWEN_TTS_NORMALIZER", "basic")
+
+    result = normalize_for_tts("风险:无，a != b，/v1/audio/speech。")
+
+    assert "风险，无" in result.text
+    assert "不等于" in result.text
+    assert "路径 v 一 audio speech" in result.text
+    assert "风险五" not in result.text
+
+
+def test_normalizer_can_disable_technical_verbalizer(monkeypatch):
+    monkeypatch.setenv("QWEN_TTS_NORMALIZER", "basic")
+    monkeypatch.setenv("QWEN_TTS_TECH_NORMALIZER", "0")
+
+    result = normalize_for_tts("siyuan MI --max-new-tokens")
+
+    assert result.text == "siyuan MI --max-new-tokens"
+    assert result.normalization_trace == ()

@@ -35,6 +35,8 @@ dependencies = [
     "huggingface-hub",
     "wetext>=0.1.2",
     "markdown-it-py>=3.0",
+    "py-pinyin-split>=5.0.0",
+    "wordfreq>=3.1.1",
 ]
 
 [project.optional-dependencies]
