@@ -21,6 +21,11 @@ from urllib import error, request
 
 import numpy as np
 
+try:
+    from examples.tts_pronunciation_advisor import enqueue_from_validation
+except ImportError:  # pragma: no cover - direct script execution fallback
+    from tts_pronunciation_advisor import enqueue_from_validation
+
 
 DEFAULT_ASR_BASE_URL = "http://agx.taild500c8.ts.net:8001"
 
@@ -395,6 +400,10 @@ def _worker_loop() -> None:
                 "updated_at": time.time(),
             }
         _record_pronunciation_candidates(job, record)
+        try:
+            enqueue_from_validation(record)
+        except Exception:
+            pass
         _store.upsert(job.validation_id, record)
         print(
             "[TTS-VALIDATION] "

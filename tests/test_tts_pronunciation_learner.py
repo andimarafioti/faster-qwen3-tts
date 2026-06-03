@@ -1,6 +1,5 @@
-import json
-
 from examples import tts_pronunciation_learner as learner
+import json
 
 
 def test_learner_accepts_high_confidence_default_term(monkeypatch, tmp_path):

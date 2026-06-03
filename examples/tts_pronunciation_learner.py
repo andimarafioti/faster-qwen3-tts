@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline pronunciation lexicon learner for lowercase technical terms."""
+"""Pronunciation lexicon learner for lowercase technical terms."""
 
 from __future__ import annotations
 
@@ -52,7 +52,6 @@ COMMON_WORDS = {
     "video",
     "with",
 }
-
 
 def _config_dir() -> Path:
     return Path(os.getenv("QWEN_TTS_CONFIG_DIR", "~/.config/faster-qwen3-tts")).expanduser()

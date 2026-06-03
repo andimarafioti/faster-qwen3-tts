@@ -1,5 +1,7 @@
 from examples.ray_dual_worker_server import _split_tts_text_into_chunks
 from examples.tts_text_normalizer import has_readable_text, normalize_for_tts
+import json
+import os
 
 
 def test_normalizer_removes_markdown_separator_without_dropping_tail(monkeypatch):
@@ -124,6 +126,22 @@ def test_mixed_tokens_split_uppercase_runs(monkeypatch):
     assert "Open A I" in result.text
     assert "Web U I" in result.text
     assert "Qwen T T S" in result.text
+
+
+def test_pronunciation_terms_reload_when_file_changes(monkeypatch, tmp_path):
+    monkeypatch.setenv("QWEN_TTS_NORMALIZER", "basic")
+    monkeypatch.setenv("QWEN_TTS_PRONUNCIATION_TERMS", str(tmp_path / "terms.json"))
+    path = tmp_path / "terms.json"
+
+    path.write_text(json.dumps({"qwen": "Q wen"}), encoding="utf-8")
+    first = normalize_for_tts("qwen 服务正常。")
+    assert "Q wen 服务正常" in first.text
+
+    path.write_text(json.dumps({"qwen": "Q w e n", "faster-qwen3-tts": "faster Q wen three T T S"}), encoding="utf-8")
+    os.utime(path, None)
+    second = normalize_for_tts("qwen 和 faster-qwen3-tts 服务正常。")
+
+    assert "Q w e n 和 faster Q wen three T T S 服务正常" in second.text
 
 
 def test_code_symbols_paths_and_colon_none_are_verbalized(monkeypatch):

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import unicodedata
-import json
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -215,8 +215,18 @@ def _pronunciation_terms_path() -> Path:
     return Path(os.getenv("QWEN_TTS_PRONUNCIATION_TERMS", str(_config_dir() / "pronunciation_terms.json"))).expanduser()
 
 
-@lru_cache(maxsize=8)
-def _load_user_pronunciation_terms(path_value: str) -> tuple[tuple[str, str], ...]:
+def _pronunciation_terms_signature(path: Path) -> tuple[str, int | None, int | None]:
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return str(path), None, None
+    except Exception:
+        return str(path), None, None
+    return str(path), int(stat.st_mtime_ns), int(stat.st_size)
+
+
+@lru_cache(maxsize=16)
+def _load_user_pronunciation_terms(path_value: str, mtime_ns: int | None, size: int | None) -> tuple[tuple[str, str], ...]:
     path = Path(path_value).expanduser()
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -230,14 +240,16 @@ def _load_user_pronunciation_terms(path_value: str) -> tuple[tuple[str, str], ..
     for key, value in payload.items():
         source = str(key).strip().lower()
         replacement = str(value).strip()
-        if re.fullmatch(r"[a-z]{2,12}", source) and replacement:
+        if re.fullmatch(r"[a-z][a-z0-9]*(?:[-._/][a-z0-9]+)*", source) and len(source) <= 48 and replacement:
             rows.append((source, replacement))
     return tuple(sorted(rows))
 
 
 def pronunciation_terms() -> dict[str, str]:
     terms = dict(DEFAULT_PRONUNCIATION_TERMS)
-    terms.update(dict(_load_user_pronunciation_terms(str(_pronunciation_terms_path()))))
+    path = _pronunciation_terms_path()
+    path_value, mtime_ns, size = _pronunciation_terms_signature(path)
+    terms.update(dict(_load_user_pronunciation_terms(path_value, mtime_ns, size)))
     return terms
 
 
