@@ -53,6 +53,23 @@ def test_single_gpu_quality_issues_detect_token_cap_and_long_silence():
     assert "long_silence" in issues
 
 
+def test_single_gpu_quality_issues_detect_mid_length_early_stop():
+    sample_rate = 24000
+    t = np.arange(int(sample_rate * 1.55), dtype=np.float32) / sample_rate
+    tone = 0.08 * np.sin(2 * np.pi * 220 * t)
+
+    issues = _result_quality_issues(
+        {
+            "bytes": _to_wav_bytes(tone, sample_rate),
+            "hit_token_cap": False,
+            "suspicious_duration": False,
+            "estimated_audio_s": 4.72,
+        }
+    )
+
+    assert "suspicious_short_duration" in issues
+
+
 def test_single_gpu_next_retry_tokens_grows_with_hard_cap():
     assert _next_retry_tokens(147, 512) == 221
     assert _next_retry_tokens(400, 512) == 512

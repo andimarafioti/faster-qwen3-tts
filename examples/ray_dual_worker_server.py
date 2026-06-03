@@ -244,7 +244,7 @@ def _result_quality_issues(result: dict[str, Any]) -> list[str]:
 
     if duration_s <= 0.05 or peak < 0.002 or rms < 0.001:
         issues.append("empty_audio")
-    if expected_audio_s >= 6.0 and duration_s < max(2.5, expected_audio_s * 0.55):
+    if expected_audio_s >= 3.0 and duration_s < max(1.5, expected_audio_s * 0.5):
         issues.append("suspicious_short_duration")
     if duration_s >= 2.5 and voice_ratio < 0.18:
         issues.append("low_voice_ratio")

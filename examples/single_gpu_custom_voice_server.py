@@ -201,9 +201,12 @@ def _result_quality_issues(result: dict[str, Any]) -> list[str]:
     rms = float(audio.get("rms") or 0.0)
     voice_ratio = float(audio.get("voice_ratio") or 0.0)
     max_silence_s = float(audio.get("max_silence_s") or 0.0)
+    expected_audio_s = float(result.get("estimated_audio_s") or 0.0)
 
     if duration_s <= 0.05 or peak < 0.002 or rms < 0.001:
         issues.append("empty_audio")
+    if expected_audio_s >= 3.0 and duration_s < max(1.5, expected_audio_s * 0.5):
+        issues.append("suspicious_short_duration")
     if duration_s >= 2.5 and voice_ratio < 0.18:
         issues.append("low_voice_ratio")
     if max_silence_s >= max(2.5, duration_s * 0.45):
