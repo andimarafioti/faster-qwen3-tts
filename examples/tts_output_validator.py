@@ -15,6 +15,7 @@ import uuid
 import wave
 from collections import deque
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 from urllib import error, request
 
@@ -67,6 +68,16 @@ def _sample_rate() -> float:
     return max(0.0, min(1.0, float(os.getenv("QWEN_TTS_VALIDATION_SAMPLE_RATE", "1.0"))))
 
 
+def _config_dir() -> Path:
+    return Path(os.getenv("QWEN_TTS_CONFIG_DIR", "~/.config/faster-qwen3-tts")).expanduser()
+
+
+def _candidate_log_path() -> Path:
+    return Path(
+        os.getenv("QWEN_TTS_PRONUNCIATION_CANDIDATES", str(_config_dir() / "pronunciation_candidates.jsonl"))
+    ).expanduser()
+
+
 def normalize_compare_text(text: str) -> str:
     value = (text or "").lower()
     value = re.sub(r"[\s\W_]+", "", value, flags=re.UNICODE)
@@ -90,6 +101,45 @@ def _tail_similarity(expected: str, actual: str) -> float:
         return 1.0
     tail_len = max(6, min(40, len(left) // 3))
     return text_similarity(left[-tail_len:], right[-tail_len:])
+
+
+def _lowercase_candidate_tokens(text: str) -> list[str]:
+    tokens = re.findall(r"(?<![A-Za-z0-9_])([a-z]{2,8})(?![A-Za-z0-9_])", text or "")
+    return sorted(set(token.lower() for token in tokens))
+
+
+def _record_pronunciation_candidates(job: ValidationJob, record: dict[str, Any]) -> None:
+    issues = set(record.get("issues") or [])
+    if not ({"text_mismatch", "possible_truncation"} & issues):
+        return
+    expected_tokens = _lowercase_candidate_tokens(job.expected_text)
+    if not expected_tokens:
+        return
+    asr_tokens = set(_lowercase_candidate_tokens(str(record.get("asr_text") or "")))
+    rows = []
+    for token in expected_tokens:
+        rows.append(
+            {
+                "ts": int(time.time()),
+                "validation_id": job.validation_id,
+                "trace_id": job.trace_id,
+                "endpoint": job.endpoint,
+                "token": token,
+                "present_in_asr": token in asr_tokens,
+                "issues": sorted(issues),
+                "similarity": record.get("similarity"),
+                "expected_text": job.expected_text[:240],
+                "asr_text": str(record.get("asr_text") or "")[:240],
+            }
+        )
+    try:
+        path = _candidate_log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            for row in rows:
+                fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+    except Exception:
+        return
 
 
 def analyze_wav_bytes(wav_bytes: bytes) -> dict[str, Any]:
@@ -344,6 +394,7 @@ def _worker_loop() -> None:
                 "error": f"{type(exc).__name__}: {exc}",
                 "updated_at": time.time(),
             }
+        _record_pronunciation_candidates(job, record)
         _store.upsert(job.validation_id, record)
         print(
             "[TTS-VALIDATION] "

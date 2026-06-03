@@ -78,11 +78,12 @@ def test_pinyin_like_unknown_token_uses_chinese_syllable_fallback(monkeypatch):
 def test_uppercase_ambiguous_token_defaults_to_letter_spelling(monkeypatch):
     monkeypatch.setenv("QWEN_TTS_NORMALIZER", "basic")
 
-    result = normalize_for_tts("设备 MI，API 和 GPU 正常。")
+    result = normalize_for_tts("设备 MI，API 和 GPU 正常，读AI和AI助手。")
 
     assert "M I" in result.text
     assert "A P I" in result.text
     assert "G P U" in result.text
+    assert "读 A I 和 A I 助手" in result.text
     assert "米" not in result.text
 
 
@@ -103,6 +104,26 @@ def test_technical_identifiers_are_verbalized_by_shape(monkeypatch):
         "env_assignment",
         "cli_flag",
     }
+
+
+def test_lowercase_pronunciation_terms_are_verbalized_without_splitting_words(monkeypatch):
+    monkeypatch.setenv("QWEN_TTS_NORMALIZER", "basic")
+
+    result = normalize_for_tts("设备 ai 正常，video analyzer 和 open 保持英文。")
+
+    assert "设备 A I 正常" in result.text
+    assert "video analyzer" in result.text
+    assert "open" in result.text
+
+
+def test_mixed_tokens_split_uppercase_runs(monkeypatch):
+    monkeypatch.setenv("QWEN_TTS_NORMALIZER", "basic")
+
+    result = normalize_for_tts("OpenAI WebUI QwenTTS")
+
+    assert "Open A I" in result.text
+    assert "Web U I" in result.text
+    assert "Qwen T T S" in result.text
 
 
 def test_code_symbols_paths_and_colon_none_are_verbalized(monkeypatch):

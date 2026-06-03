@@ -87,3 +87,24 @@ def test_validate_job_skips_when_asr_unavailable(monkeypatch):
     assert result["verdict"] == "skipped"
     assert "asr_unavailable" in result["issues"]
     assert result["audio"]["duration_s"] == 1.0
+
+
+def test_validation_records_lowercase_pronunciation_candidates(monkeypatch, tmp_path):
+    monkeypatch.setenv("QWEN_TTS_CONFIG_DIR", str(tmp_path))
+
+    job = validator.ValidationJob(
+        validation_id="val-test",
+        expected_text="设备 ai 需要调用 tts。",
+        wav_bytes=_wav_bytes(np.ones(24000, dtype=np.float32) * 0.02),
+    )
+    record = {
+        "issues": ["text_mismatch"],
+        "asr_text": "设备 A 需要调用。",
+        "similarity": 0.5,
+    }
+
+    validator._record_pronunciation_candidates(job, record)
+
+    content = (tmp_path / "pronunciation_candidates.jsonl").read_text(encoding="utf-8")
+    assert '"token": "ai"' in content
+    assert '"token": "tts"' in content

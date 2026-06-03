@@ -5,8 +5,10 @@ from __future__ import annotations
 import os
 import re
 import unicodedata
+import json
 from dataclasses import dataclass
 from functools import lru_cache
+from pathlib import Path
 
 READABLE_RE = re.compile(r"[A-Za-z0-9\u4e00-\u9fff]")
 IMAGE_PLACEHOLDER_RE = re.compile(r"\[\s*image\s*#?\s*\d+\s*\]", re.IGNORECASE)
@@ -22,7 +24,7 @@ TECH_TOKEN_RE = re.compile(
     r"|(?P<dotted>\b[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)+\b)"
     r"|(?P<hyphen>\b[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+\b)"
     r"|(?P<mixed>\b(?=[A-Za-z0-9]*[A-Z])(?=[A-Za-z0-9]*[a-z])[A-Za-z]+[A-Za-z0-9]*\b)"
-    r"|(?P<upper>\b[A-Z]{2,}\b)"
+    r"|(?P<upper>(?<![A-Za-z0-9_])[A-Z]{2,}(?![A-Za-z0-9_]))"
     r"|(?P<pinyin>\b[a-z]{4,}\b)"
 )
 
@@ -52,6 +54,16 @@ PINYIN_CARRIER_OVERRIDES = {
     "xiao": "肖",
     "hong": "红",
     "shu": "书",
+}
+DEFAULT_PRONUNCIATION_TERMS = {
+    "ai": "A I",
+    "api": "A P I",
+    "asr": "A S R",
+    "gpu": "G P U",
+    "llm": "L L M",
+    "ocr": "O C R",
+    "tts": "T T S",
+    "ui": "U I",
 }
 
 
@@ -195,6 +207,40 @@ def _verbalize_identifier(text: str) -> str:
     return " ".join(fragments)
 
 
+def _config_dir() -> Path:
+    return Path(os.getenv("QWEN_TTS_CONFIG_DIR", "~/.config/faster-qwen3-tts")).expanduser()
+
+
+def _pronunciation_terms_path() -> Path:
+    return Path(os.getenv("QWEN_TTS_PRONUNCIATION_TERMS", str(_config_dir() / "pronunciation_terms.json"))).expanduser()
+
+
+@lru_cache(maxsize=8)
+def _load_user_pronunciation_terms(path_value: str) -> tuple[tuple[str, str], ...]:
+    path = Path(path_value).expanduser()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return ()
+    except Exception:
+        return ()
+    if not isinstance(payload, dict):
+        return ()
+    rows: list[tuple[str, str]] = []
+    for key, value in payload.items():
+        source = str(key).strip().lower()
+        replacement = str(value).strip()
+        if re.fullmatch(r"[a-z]{2,12}", source) and replacement:
+            rows.append((source, replacement))
+    return tuple(sorted(rows))
+
+
+def pronunciation_terms() -> dict[str, str]:
+    terms = dict(DEFAULT_PRONUNCIATION_TERMS)
+    terms.update(dict(_load_user_pronunciation_terms(str(_pronunciation_terms_path()))))
+    return terms
+
+
 def _is_likely_english_word(token: str) -> bool:
     return _english_zipf_frequency(token) >= float(os.getenv("QWEN_TTS_ENGLISH_WORD_ZIPF_MIN", "2.7"))
 
@@ -225,6 +271,31 @@ def _trace(source: str, kind: str, strategy: str, replacement: str, confidence: 
         "replacement": replacement,
         "confidence": confidence,
     }
+
+
+def _apply_pronunciation_terms(text: str) -> tuple[str, tuple[dict[str, str], ...]]:
+    if not _enabled_env("QWEN_TTS_PRONUNCIATION_TERMS_ENABLED", "1"):
+        return text, ()
+    terms = pronunciation_terms()
+    if not terms:
+        return text, ()
+
+    trace: list[dict[str, str]] = []
+
+    def replace(match: re.Match[str]) -> str:
+        source = match.group(0)
+        replacement = terms.get(source.lower())
+        if not replacement:
+            return source
+        trace.append(_trace(source, "pronunciation_term", "lexicon", replacement, "high"))
+        return f" {replacement} "
+
+    pattern = re.compile(
+        r"(?<![A-Za-z0-9_])(" + "|".join(re.escape(key) for key in sorted(terms, key=len, reverse=True)) + r")(?![A-Za-z0-9_])",
+        re.IGNORECASE,
+    )
+    content = pattern.sub(replace, text)
+    return re.sub(r"\s+", " ", content).strip(), tuple(trace)
 
 
 def _verbalize_tech_match(match: re.Match[str]) -> tuple[str, dict[str, str] | None]:
@@ -264,6 +335,7 @@ def _verbalize_tech_match(match: re.Match[str]) -> tuple[str, dict[str, str] | N
 def _normalize_technical_tokens(text: str) -> tuple[str, tuple[dict[str, str], ...]]:
     if not _enabled_env("QWEN_TTS_TECH_NORMALIZER", "1"):
         return text, ()
+    text, term_trace = _apply_pronunciation_terms(text)
     trace: list[dict[str, str]] = []
     parts: list[str] = []
     last = 0
@@ -276,7 +348,7 @@ def _normalize_technical_tokens(text: str) -> tuple[str, tuple[dict[str, str], .
         last = match.end()
     parts.append(text[last:])
     content = re.sub(r"\s+", " ", "".join(parts)).strip()
-    return content, tuple(trace)
+    return content, term_trace + tuple(trace)
 
 
 def normalize_for_tts(text: str, lang_hint: str | None = None) -> NormalizedText:
