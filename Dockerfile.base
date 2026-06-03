@@ -43,10 +43,6 @@ RUN pip install --no-cache-dir \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY pyproject.toml .
-COPY faster_qwen3_tts/ /app/faster_qwen3_tts/
-RUN pip install --no-cache-dir -e .
-
 # Download model weights at build time so the runtime image starts without
 # hitting HuggingFace. HF_HOME is set above; from_pretrained will find the
 # cache on startup without any network access.

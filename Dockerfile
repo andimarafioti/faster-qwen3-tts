@@ -24,7 +24,12 @@
 #     --output output.wav
 # ============================================================
 
-FROM faster-qwen3-tts-base:1.0.0
+FROM faster-qwen3-tts-base:1.0.1
+
+# Install the faster_qwen3_tts package
+COPY pyproject.toml .
+COPY faster_qwen3_tts/ /app/faster_qwen3_tts/
+RUN pip install --no-cache-dir -e .
 
 # Copy application code
 COPY config.yaml .

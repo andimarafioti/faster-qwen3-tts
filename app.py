@@ -349,6 +349,7 @@ async def lifespan(app: FastAPI):
     logging.info(f"Device: {DEVICE}")
     logging.info(f"DType: {DTYPE}")
     logging.info(f"Attention: {ATTN_IMPLEMENTATION}")
+    logging.info(f"HF_HOME: {os.environ.get('HF_HOME', '~/.cache/huggingface')}")
     logging.info("=" * 80)
 
     # Download voices from GCS if configured
