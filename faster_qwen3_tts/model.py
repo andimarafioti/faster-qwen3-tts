@@ -110,7 +110,28 @@ class FasterQwen3TTS:
             raise ValueError("CUDA graphs require CUDA device")
         
         logger.info(f"Loading Qwen3-TTS model: {model_name}")
-        
+
+        # Log whether model weights are served from the baked-in image cache or
+        # will be fetched from HuggingFace at runtime. Dockerfile.base bakes the
+        # model into HF_HOME at build time so from_pretrained never hits the network.
+        import os as _os
+        hf_home = _os.environ.get("HF_HOME", _os.path.expanduser("~/.cache/huggingface"))
+        try:
+            from huggingface_hub import try_to_load_from_cache
+            _cache_probe = try_to_load_from_cache(model_name, "config.json")
+            if isinstance(_cache_probe, str):
+                logger.info(
+                    f"Model weights found in local HF cache (HF_HOME={hf_home}) "
+                    "— loading from baked-in image, no network download needed"
+                )
+            else:
+                logger.warning(
+                    f"Model weights NOT found in local HF cache (HF_HOME={hf_home}) "
+                    "— weights will be downloaded from HuggingFace at runtime"
+                )
+        except Exception:
+            logger.info(f"HF cache location: HF_HOME={hf_home}")
+
         # Import here to avoid dependency issues (and suppress flash-attn warning)
         with suppress_flash_attn_warning():
             from qwen_tts import Qwen3TTSModel
