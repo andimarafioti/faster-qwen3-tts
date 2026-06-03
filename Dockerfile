@@ -24,7 +24,7 @@
 #     --output output.wav
 # ============================================================
 
-FROM faster-qwen3-tts-base:1.0.1
+FROM us-docker.pkg.dev/qarlproductionregistries/dockerimg/faster-qwen3-tts-base:1.0.1
 
 # Install the faster_qwen3_tts package
 COPY pyproject.toml .
