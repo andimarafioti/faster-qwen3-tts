@@ -89,6 +89,26 @@ def _to_wav_bytes(audio: np.ndarray, sample_rate: int) -> bytes:
     return _wav_header(sample_rate, len(pcm)) + pcm
 
 
+def _trim_trailing_silence(audio: np.ndarray, sample_rate: int, *, keep_s: float = 0.5) -> tuple[np.ndarray, float]:
+    arr = np.asarray(audio, dtype=np.float32).reshape(-1)
+    if arr.size == 0 or sample_rate <= 0:
+        return arr, 0.0
+    frame_size = max(1, int(sample_rate * 0.05))
+    rms = float(np.sqrt(float(np.mean(arr * arr)))) if arr.size else 0.0
+    threshold = max(0.003, rms * 0.22)
+    last_voiced_end = len(arr)
+    for start in range(0, len(arr), frame_size):
+        frame = arr[start : start + frame_size]
+        if frame.size and float(np.sqrt(float(np.mean(frame * frame)))) > threshold:
+            last_voiced_end = min(len(arr), start + frame_size)
+    keep_samples = max(0, int(sample_rate * keep_s))
+    trim_at = min(len(arr), last_voiced_end + keep_samples)
+    trimmed_s = max(0.0, (len(arr) - trim_at) / sample_rate)
+    if trimmed_s < 1.0:
+        return arr, 0.0
+    return arr[:trim_at], trimmed_s
+
+
 def _wav_payload(wav_bytes: bytes) -> bytes:
     if len(wav_bytes) < 44 or wav_bytes[:4] != b"RIFF" or wav_bytes[8:12] != b"WAVE":
         raise ValueError("Expected 16-bit PCM WAV bytes")
@@ -220,9 +240,12 @@ def _result_quality_issues(result: dict[str, Any]) -> list[str]:
     rms = float(audio.get("rms") or 0.0)
     voice_ratio = float(audio.get("voice_ratio") or 0.0)
     max_silence_s = float(audio.get("max_silence_s") or 0.0)
+    expected_audio_s = float(result.get("estimated_audio_s") or 0.0)
 
     if duration_s <= 0.05 or peak < 0.002 or rms < 0.001:
         issues.append("empty_audio")
+    if expected_audio_s >= 6.0 and duration_s < max(2.5, expected_audio_s * 0.55):
+        issues.append("suspicious_short_duration")
     if duration_s >= 2.5 and voice_ratio < 0.18:
         issues.append("low_voice_ratio")
     if max_silence_s >= max(2.5, duration_s * 0.45):
@@ -234,6 +257,25 @@ def _blocking_quality_issues(issues: list[str]) -> list[str]:
     return [issue for issue in issues if issue != "hit_token_cap"]
 
 
+def _contains_chinese(text: str) -> bool:
+    return bool(re.search(r"[\u4e00-\u9fff]", text or ""))
+
+
+def _stable_language_for_tts(text: str, requested: str | None) -> str | None:
+    value = (requested or "").strip()
+    if value:
+        return value
+    stable_chinese = os.getenv("QWEN_TTS_STABLE_CHINESE_DEFAULT", "1").strip().lower() not in {
+        "0",
+        "false",
+        "off",
+        "no",
+    }
+    if stable_chinese and _contains_chinese(text):
+        return "Chinese"
+    return requested
+
+
 async def _synthesize_split_fallback(
     *,
     text: str,
@@ -243,7 +285,9 @@ async def _synthesize_split_fallback(
 ) -> dict[str, Any] | None:
     if state is None:
         return None
-    chunks, truncated = _split_tts_text_into_chunks(text, max_chars=12, min_chars=3, max_segments=16)
+    max_chars = int(os.getenv("QWEN_TTS_QUALITY_SPLIT_MAX_CHARS", "45"))
+    min_chars = int(os.getenv("QWEN_TTS_QUALITY_SPLIT_MIN_CHARS", "8"))
+    chunks, truncated = _split_tts_text_into_chunks(text, max_chars=max_chars, min_chars=min_chars, max_segments=16)
     if truncated or len(chunks) < 2:
         return None
 
@@ -255,7 +299,7 @@ async def _synthesize_split_fallback(
             worker.synthesize.remote(
                 chunk,
                 speaker,
-                language,
+                _stable_language_for_tts(chunk, language),
                 instruction,
                 _estimate_max_new_tokens(chunk, 512),
             )
@@ -632,6 +676,7 @@ class TTSWorker:
             raise RuntimeError("faster-qwen3-tts returned empty audio")
 
         audio = np.concatenate(chunks)
+        audio, trimmed_tail_s = _trim_trailing_silence(audio, int(sr))
         audio_s = len(audio) / int(sr)
         rtf = audio_s / elapsed_s if elapsed_s > 0 else 0.0
         estimated_audio_s = _estimate_audio_s(content)
@@ -663,6 +708,7 @@ class TTSWorker:
             "text_len": len(content),
             "max_new_tokens": effective_max_new_tokens,
             "estimated_audio_s": estimated_audio_s,
+            "trimmed_tail_s": trimmed_tail_s,
             "hit_token_cap": hit_token_cap,
             "suspicious_duration": suspicious_duration,
             "bytes": wav_bytes,
@@ -790,6 +836,7 @@ def _enqueue_result_validation(
         "ttfa_s": result.get("ttfa_s"),
         "max_new_tokens": result.get("max_new_tokens"),
         "estimated_audio_s": result.get("estimated_audio_s"),
+        "trimmed_tail_s": result.get("trimmed_tail_s"),
         "hit_token_cap": result.get("hit_token_cap"),
         "suspicious_duration": result.get("suspicious_duration"),
         "retry_count": result.get("retry_count"),
@@ -848,6 +895,7 @@ async def _synthesize_with_quality_retry(
         if not issues:
             return result
 
+        blocking_issues = _blocking_quality_issues(issues)
         retry_history.append(
             {
                 "attempt": attempt + 1,
@@ -858,6 +906,14 @@ async def _synthesize_with_quality_retry(
                 "issues": issues,
             }
         )
+        if blocking_issues:
+            print(
+                "[TTS] quality fallback "
+                f"trace_id={trace_id or '-'} attempt={attempt + 1} "
+                f"worker={result.get('worker_id')} blocking_issues={','.join(blocking_issues)}",
+                flush=True,
+            )
+            break
         if attempt == attempts - 1:
             break
         current_tokens = int(result.get("max_new_tokens") or _estimate_max_new_tokens(text, 512))
@@ -1031,11 +1087,12 @@ async def create_speech(req: SpeechRequest) -> Response:
     content = normalized.text
     if not has_readable_text(content):
         raise HTTPException(status_code=400, detail="No readable TTS text after sanitization")
+    tts_language = _stable_language_for_tts(content, req.language)
     try:
         result = await _synthesize_with_quality_retry(
             text=content,
             speaker=req.voice,
-            language=req.language,
+            language=tts_language,
             instruction=req.instruction,
             max_new_tokens=req.max_new_tokens,
             trace_id=req.trace_id or "",
@@ -1052,7 +1109,7 @@ async def create_speech(req: SpeechRequest) -> Response:
         endpoint="/v1/audio/speech",
         trace_id=req.trace_id or "",
         speaker=req.voice,
-        language=req.language,
+        language=tts_language,
     )
     return Response(content=result["bytes"], media_type="audio/wav", headers=_tts_response_headers(result))
 
@@ -1065,11 +1122,12 @@ async def speak_json(req: JsonSpeechRequest) -> JSONResponse:
     content = normalized.text
     if not has_readable_text(content):
         raise HTTPException(status_code=400, detail="No readable TTS text after sanitization")
+    tts_language = _stable_language_for_tts(content, req.language)
     try:
         result = await _synthesize_with_quality_retry(
             text=content,
             speaker=req.voice,
-            language=req.language,
+            language=tts_language,
             instruction=req.instruction,
             max_new_tokens=req.max_new_tokens,
             trace_id=req.trace_id or "",
@@ -1086,7 +1144,7 @@ async def speak_json(req: JsonSpeechRequest) -> JSONResponse:
         endpoint="/api/tts/speak_json",
         trace_id=req.trace_id or "",
         speaker=req.voice,
-        language=req.language,
+        language=tts_language,
     )
     wav_bytes = result.pop("bytes")
     if req.include_audio_b64:
@@ -1103,11 +1161,12 @@ async def capswriter_speak(req: CapsWriterSpeakRequest) -> Response:
     content = normalized.text
     if not has_readable_text(content):
         raise HTTPException(status_code=400, detail="No readable TTS text after sanitization")
+    tts_language = _stable_language_for_tts(content, req.language)
     try:
         result = await _synthesize_with_quality_retry(
             text=content,
             speaker=req.speaker or DEFAULT_SPEAKER,
-            language=req.language,
+            language=tts_language,
             instruction=req.instruction,
             max_new_tokens=req.max_new_tokens,
             trace_id=req.trace_id or "",
@@ -1124,7 +1183,7 @@ async def capswriter_speak(req: CapsWriterSpeakRequest) -> Response:
         endpoint="/api/tts/speak",
         trace_id=req.trace_id or "",
         speaker=req.speaker or DEFAULT_SPEAKER,
-        language=req.language,
+        language=tts_language,
     )
     return Response(content=result["bytes"], media_type="audio/wav", headers=_tts_response_headers(result))
 
@@ -1137,6 +1196,7 @@ async def _run_playback_first(req: PlaybackFirstRequest) -> dict[str, Any]:
     content = normalized.text
     if not has_readable_text(content):
         raise HTTPException(status_code=400, detail="No readable TTS text after sanitization")
+    tts_language = _stable_language_for_tts(content, req.language)
     segments = _split_playback_first(
         content,
         target_audio_s=req.head_target_audio_s,
@@ -1155,7 +1215,7 @@ async def _run_playback_first(req: PlaybackFirstRequest) -> dict[str, Any]:
             worker.synthesize.remote(
                 segments[0]["text"],
                 req.voice,
-                req.language,
+                tts_language,
                 req.instruction,
                 segments[0]["max_new_tokens"],
             )
@@ -1170,14 +1230,14 @@ async def _run_playback_first(req: PlaybackFirstRequest) -> dict[str, Any]:
         first_ref = first_worker.synthesize.remote(
             segments[0]["text"],
             req.voice,
-            req.language,
+            tts_language,
             req.instruction,
             segments[0]["max_new_tokens"],
         )
         second_ref = second_worker.synthesize.remote(
             segments[1]["text"],
             req.voice,
-            req.language,
+            tts_language,
             req.instruction,
             segments[1]["max_new_tokens"],
         )
@@ -1258,7 +1318,7 @@ async def playback_first_json(req: PlaybackFirstRequest) -> JSONResponse:
         trace_id=req.trace_id or "",
         endpoint="/api/tts/playback_first_json",
         speaker=req.voice,
-        language=req.language or "",
+        language=_stable_language_for_tts(str(result.get("expected_text") or req.input), req.language) or "",
         metadata={
             "mode": result.get("mode"),
             "audio_s": result.get("audio_s"),
@@ -1285,6 +1345,7 @@ async def playback_first_wav(req: PlaybackFirstRequest) -> StreamingResponse:
         content = normalized.text
         if not has_readable_text(content):
             raise HTTPException(status_code=400, detail="No readable TTS text after sanitization")
+        tts_language = _stable_language_for_tts(content, req.language)
         segments = _split_playback_first(
             content,
             target_audio_s=req.head_target_audio_s,
@@ -1304,7 +1365,7 @@ async def playback_first_wav(req: PlaybackFirstRequest) -> StreamingResponse:
                 worker.synthesize.remote(
                     segments[0]["text"],
                     req.voice,
-                    req.language,
+                    tts_language,
                     req.instruction,
                     segments[0]["max_new_tokens"],
                 )
@@ -1315,7 +1376,7 @@ async def playback_first_wav(req: PlaybackFirstRequest) -> StreamingResponse:
                 endpoint="/api/tts/playback_first_wav",
                 trace_id=req.trace_id or "",
                 speaker=req.voice,
-                language=req.language,
+                language=tts_language,
             )
             yield _wav_payload(result["bytes"])
             return
@@ -1326,7 +1387,7 @@ async def playback_first_wav(req: PlaybackFirstRequest) -> StreamingResponse:
                 first_worker.synthesize.remote(
                     segments[0]["text"],
                     req.voice,
-                    req.language,
+                    tts_language,
                     req.instruction,
                     segments[0]["max_new_tokens"],
                 )
@@ -1337,7 +1398,7 @@ async def playback_first_wav(req: PlaybackFirstRequest) -> StreamingResponse:
                 second_worker.synthesize.remote(
                     segments[1]["text"],
                     req.voice,
-                    req.language,
+                    tts_language,
                     req.instruction,
                     segments[1]["max_new_tokens"],
                 )
@@ -1351,7 +1412,7 @@ async def playback_first_wav(req: PlaybackFirstRequest) -> StreamingResponse:
             endpoint="/api/tts/playback_first_wav",
             trace_id=req.trace_id or "",
             speaker=req.voice,
-            language=req.language,
+            language=tts_language,
         )
         yield _wav_payload(first_result["bytes"])
         if req.join_silence_ms > 0:
@@ -1363,7 +1424,7 @@ async def playback_first_wav(req: PlaybackFirstRequest) -> StreamingResponse:
             endpoint="/api/tts/playback_first_wav",
             trace_id=req.trace_id or "",
             speaker=req.voice,
-            language=req.language,
+            language=tts_language,
         )
         yield _wav_payload(second_result["bytes"])
 

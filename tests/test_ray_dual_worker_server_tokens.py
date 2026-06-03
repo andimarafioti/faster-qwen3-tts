@@ -4,9 +4,11 @@ from examples.ray_dual_worker_server import (
     _hit_token_cap,
     _next_retry_tokens,
     _result_quality_issues,
+    _stable_language_for_tts,
     _status_payload,
     _estimate_max_new_tokens,
     _resolve_max_new_tokens,
+    _trim_trailing_silence,
     _to_wav_bytes,
 )
 import numpy as np
@@ -53,9 +55,47 @@ def test_quality_issues_detect_token_cap_and_long_silence():
     assert "long_silence" in issues
 
 
+def test_quality_issues_detect_suspicious_short_duration():
+    sample_rate = 24000
+    t = np.arange(sample_rate * 3, dtype=np.float32) / sample_rate
+    tone = 0.08 * np.sin(2 * np.pi * 220 * t)
+
+    issues = _result_quality_issues(
+        {
+            "bytes": _to_wav_bytes(tone, sample_rate),
+            "hit_token_cap": False,
+            "suspicious_duration": False,
+            "estimated_audio_s": 12.0,
+        }
+    )
+
+    assert "suspicious_short_duration" in issues
+
+
 def test_next_retry_tokens_grows_with_hard_cap():
     assert _next_retry_tokens(147, 512) == 221
     assert _next_retry_tokens(400, 512) == 512
+
+
+def test_stable_language_defaults_chinese_for_chinese_text(monkeypatch):
+    monkeypatch.delenv("QWEN_TTS_STABLE_CHINESE_DEFAULT", raising=False)
+
+    assert _stable_language_for_tts("请读 A I。", None) == "Chinese"
+    assert _stable_language_for_tts("Please read AI.", None) is None
+    assert _stable_language_for_tts("请读 A I。", "Auto") == "Auto"
+
+
+def test_trim_trailing_silence_keeps_voice_and_short_pause():
+    sample_rate = 24000
+    t = np.arange(sample_rate, dtype=np.float32) / sample_rate
+    tone = 0.1 * np.sin(2 * np.pi * 440 * t)
+    silence = np.zeros(sample_rate * 3, dtype=np.float32)
+    audio = np.concatenate([tone, silence])
+
+    trimmed, trimmed_s = _trim_trailing_silence(audio, sample_rate, keep_s=0.5)
+
+    assert trimmed_s >= 2.0
+    assert len(trimmed) <= int(sample_rate * 1.6)
 
 
 def test_speech_requests_accept_optional_max_new_tokens():

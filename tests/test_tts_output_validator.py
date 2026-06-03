@@ -57,6 +57,16 @@ def test_audio_analysis_accepts_tone():
     assert "empty_audio" not in issues
 
 
+def test_audio_issues_detect_suspicious_short_duration():
+    t = np.arange(24000 * 3, dtype=np.float32) / 24000.0
+    tone = 0.1 * np.sin(2 * math.pi * 440 * t)
+
+    audio = validator.analyze_wav_bytes(_wav_bytes(tone))
+    issues = validator._audio_issues(audio, expected_audio_s=12.0)
+
+    assert "suspicious_short_duration" in issues
+
+
 def test_text_similarity_ignores_punctuation_and_case():
     assert validator.text_similarity("Hello，世界！", "hello 世界") > 0.95
 
