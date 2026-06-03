@@ -17,6 +17,18 @@ from urllib import error, request
 DEFAULT_BASE_URL = "http://agx.taild500c8.ts.net:11434"
 DEFAULT_MODEL = "caps-voice-edit-qwen3-4b:latest"
 DEFAULT_AUTO_ACCEPT_CONFIDENCE = 0.92
+DIGIT_PRONUNCIATIONS = {
+    "0": "zero",
+    "1": "one",
+    "2": "two",
+    "3": "three",
+    "4": "four",
+    "5": "five",
+    "6": "six",
+    "7": "seven",
+    "8": "eight",
+    "9": "nine",
+}
 
 COMMON_WORDS = {
     "and",
@@ -207,6 +219,7 @@ def _parse_advice(term: str, payload: str) -> PronunciationAdvice | None:
     pronunciation = str(decoded.get("pronunciation") or decoded.get("replacement") or "").strip()
     if not pronunciation:
         return None
+    pronunciation = _normalize_pronunciation(pronunciation)
     confidence = max(0.0, min(1.0, float(decoded.get("confidence") or 0.0)))
     action = str(decoded.get("action") or ("accept" if confidence >= _auto_accept_confidence() else "pending")).strip().lower()
     if action not in {"accept", "pending"}:
@@ -219,6 +232,13 @@ def _parse_advice(term: str, payload: str) -> PronunciationAdvice | None:
         action=action,
         source="agx",
     )
+
+
+def _normalize_pronunciation(value: str) -> str:
+    parts = value.split()
+    if not parts:
+        return value.strip()
+    return " ".join(DIGIT_PRONUNCIATIONS.get(part, part) for part in parts)
 
 
 def request_advice(term: str, job: AdviceJob) -> PronunciationAdvice | None:

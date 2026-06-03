@@ -50,6 +50,16 @@ def test_parse_advice_accepts_json_object():
     assert item.action == "accept"
 
 
+def test_parse_advice_normalizes_spelled_digits():
+    item = advisor._parse_advice(
+        "redyuan43",
+        '{"term":"redyuan43","pronunciation":"R e d Y u a n 4 3","confidence":0.98,"reason":"ok","action":"accept"}',
+    )
+
+    assert item is not None
+    assert item.pronunciation == "R e d Y u a n four three"
+
+
 def test_request_advice_calls_agx_ollama(monkeypatch):
     def fake_urlopen(req, timeout):
         assert req.full_url == "http://agx.taild500c8.ts.net:11434/api/generate"
