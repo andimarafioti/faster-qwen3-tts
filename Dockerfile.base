@@ -1,0 +1,55 @@
+# ============================================================
+# Dockerfile.base - Base image with pre-baked Qwen3 TTS model
+# ============================================================
+# Build this once. The runtime Dockerfile inherits from it.
+#
+# Build:
+#   docker build -f Dockerfile.base -t faster-qwen3-tts-base:latest .
+#
+# If the model is gated on HuggingFace, pass your token:
+#   docker build -f Dockerfile.base \
+#     --build-arg HF_TOKEN=hf_xxx \
+#     -t faster-qwen3-tts-base:latest .
+# ============================================================
+
+FROM nvidia/cuda:12.6.0-cudnn-devel-ubuntu24.04
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    DEBIAN_FRONTEND=noninteractive \
+    HF_HOME=/app/hf_cache
+
+ARG HF_TOKEN=""
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.12 python3-pip python3.12-venv python3.12-dev \
+    sox libsox-fmt-all \
+    ffmpeg \
+    git \
+    wget \
+    && ln -sf /usr/bin/python3.12 /usr/bin/python \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* /tmp/* /var/tmp/*
+
+WORKDIR /app
+
+RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
+
+RUN pip install --no-cache-dir \
+    torch==2.10.0 \
+    torchaudio==2.10.0 \
+    torchcodec==0.10.0 \
+    --index-url https://download.pytorch.org/whl/cu126
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY pyproject.toml .
+COPY faster_qwen3_tts/ /app/faster_qwen3_tts/
+RUN pip install --no-cache-dir -e .
+
+# Download model weights at build time so the runtime image starts without
+# hitting HuggingFace. HF_HOME is set above; from_pretrained will find the
+# cache on startup without any network access.
+ARG MODEL_NAME="Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+ENV MODEL_NAME=${MODEL_NAME}
+RUN HF_TOKEN="${HF_TOKEN}" python -c "import os; from huggingface_hub import snapshot_download; token = os.environ.get('HF_TOKEN') or None; model = os.environ['MODEL_NAME']; print('Downloading', model, 'to', os.environ['HF_HOME']); snapshot_download(model, token=token); print('Done.')"

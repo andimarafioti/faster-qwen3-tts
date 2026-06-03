@@ -480,6 +480,66 @@ For x-vector-only prompts, `ref_text` is ignored.
 For ICL precomputed prompts, pass `x_vector_only_mode=[False]`, `icl_mode=[True]`,
 and a non-`None` `ref_code`, and keep `ref_text` populated.
 
+## Docker
+
+The Docker setup is split into two images to keep API rebuilds fast:
+
+- **`Dockerfile.base`** — CUDA + Python deps + model weights baked in. Build this once (or when deps/model change). Takes a while; the model download is the slow part.
+- **`Dockerfile`** — inherits the base, adds only app code. Rebuilds in seconds.
+
+### 1. Build the base image
+
+```bash
+docker build -f Dockerfile.base -t faster-qwen3-tts-base:latest .
+```
+
+If the model requires a HuggingFace token:
+
+```bash
+docker build -f Dockerfile.base \
+  --build-arg HF_TOKEN=hf_xxx \
+  -t faster-qwen3-tts-base:latest .
+```
+
+On Mac (Apple Silicon), add `--platform linux/amd64`.
+
+### 2. Build the API image
+
+```bash
+docker build -t faster-qwen3-tts:<VERSION> .
+```
+
+### 3. Push both images to Google Artifact Registry
+
+```bash
+export GCP_PROJECT="your-gcp-project-id"
+export SA_KEY="/path/to/service-account-key.json"
+export VERSION="1.0.0"
+
+# Authenticate
+cat $SA_KEY | docker login -u _json_key --password-stdin https://us-docker.pkg.dev
+
+# Tag and push the base image
+docker tag faster-qwen3-tts-base:latest \
+  us-docker.pkg.dev/$GCP_PROJECT/dockerimg/faster-qwen3-tts-base:latest
+docker push us-docker.pkg.dev/$GCP_PROJECT/dockerimg/faster-qwen3-tts-base:latest
+
+# Tag and push the API image
+docker tag faster-qwen3-tts:$VERSION \
+  us-docker.pkg.dev/$GCP_PROJECT/dockerimg/faster-qwen3-tts:$VERSION
+docker push us-docker.pkg.dev/$GCP_PROJECT/dockerimg/faster-qwen3-tts:$VERSION
+```
+
+Verify in the GCP Console: **Artifact Registry → dockerimg** — both `faster-qwen3-tts-base` and `faster-qwen3-tts` should be listed.
+
+### When to rebuild
+
+| Changed | Rebuild needed |
+|---------|---------------|
+| `app.py`, `config.py`, voices, etc. | API image only (`Dockerfile`) |
+| `requirements.txt`, `faster_qwen3_tts/`, PyTorch | Base image (`Dockerfile.base`) |
+| Model name (`MODEL_NAME`) | Base image (`Dockerfile.base`) |
+
 ## License
 
 MIT
