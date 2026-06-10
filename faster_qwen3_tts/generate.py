@@ -6,6 +6,7 @@ import time
 from typing import Optional, Tuple
 
 import torch
+import torch.nn.functional as F
 
 from .predictor_graph import PredictorGraph
 from .sampling import apply_repetition_penalty, build_suppress_mask, sample_logits
@@ -29,6 +30,28 @@ def get_eos_tracker(device) -> tuple:
         )
         _EOS_TRACKER_CACHE[key] = tracker
     return tracker
+
+
+def get_fused_codec_embeddings(predictor) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Return (weights, offsets) for a single fused lookup over the predictor's
+    15 per-codebook embedding tables.
+
+    The decode loop needs one embedding row from each of the 15 tables every
+    step; looking them up table-by-table costs 15 kernel launches plus a cat.
+    Concatenating the tables once lets a single F.embedding gather all 15 rows:
+    row i of codebook cb lives at offsets[cb] + i. Cached on the predictor
+    module (costs one duplicated copy of the tables in VRAM).
+    """
+    cached = getattr(predictor, "_fqt_fused_codec_embed", None)
+    if cached is None:
+        embeds = list(predictor.get_input_embeddings())
+        weights = torch.cat([e.weight for e in embeds], dim=0)
+        sizes = torch.tensor([e.weight.shape[0] for e in embeds])
+        offsets = torch.zeros(len(embeds), dtype=torch.long, device=weights.device)
+        offsets[1:] = sizes[:-1].cumsum(0).to(weights.device)
+        cached = (weights, offsets)
+        predictor._fqt_fused_codec_embed = cached
+    return cached
 
 
 @torch.inference_mode()
@@ -58,7 +81,6 @@ def fast_generate(
     Fast autoregressive generation with CUDA-graphed predictor and talker.
     """
     eos_id = config.codec_eos_token_id
-    num_code_groups = config.num_code_groups
     vocab_size = config.vocab_size
     device = talker_input_embeds.device
     
@@ -116,8 +138,8 @@ def fast_generate(
     predictor = talker.code_predictor
     talker_codec_embed = talker.get_input_embeddings()
     talker_codec_head = talker.codec_head
-    predictor_codec_embeds = predictor.get_input_embeddings()
-    
+    fused_codec_weights, fused_codec_offsets = get_fused_codec_embeddings(predictor)
+
     # === PREFILL (still uses HF forward for variable-length prefill) ===
     t_start = time.time()
     
@@ -210,11 +232,13 @@ def fast_generate(
             rep_history[step_idx:step_idx + 1] = token
 
         # --- Build input embedding for talker ---
-        codec_hiddens = [last_id_hidden]
-        for i in range(num_code_groups - 1):
-            codec_hiddens.append(predictor_codec_embeds[i](codebook_token_ids[i].unsqueeze(0).unsqueeze(0)))
-        inputs_embeds = torch.cat(codec_hiddens, dim=1).sum(1, keepdim=True)
-        
+        # One fused gather over all 15 codebook tables; the cat+sum keeps the
+        # exact reduction order of the previous per-table loop for parity.
+        codebook_embeds = F.embedding(
+            codebook_token_ids + fused_codec_offsets, fused_codec_weights
+        ).unsqueeze(0)  # [1, 15, H]
+        inputs_embeds = torch.cat((last_id_hidden, codebook_embeds), dim=1).sum(1, keepdim=True)
+
         if gen_step < trailing_text_hiddens.shape[1]:
             inputs_embeds = inputs_embeds + trailing_text_hiddens[:, gen_step].unsqueeze(1)
         else:
