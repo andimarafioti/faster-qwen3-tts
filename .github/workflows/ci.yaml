@@ -60,6 +60,6 @@ jobs:
       prebuilt_tag: ${{ needs.build-image.outputs.prebuilt_tag }}
       yaml_key: .faster-qwen3-tts
       images_yaml_paths: |
-        helm/qarl-studio/images.yaml
+        helm/qarl-live/images.yaml
       environment: develop
     secrets: inherit
