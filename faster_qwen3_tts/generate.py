@@ -176,6 +176,11 @@ def fast_generate(
     t_decode_start = time.time()
     all_codec_ids = []
     eos_found = False
+    # Preallocated first-codebook history for repetition penalty; rebuilding it
+    # with torch.stack over a growing list is O(n) launches per step.
+    rep_history = None
+    if repetition_penalty != 1.0:
+        rep_history = torch.empty(max_new_tokens, dtype=torch.long, device=device)
 
     for step_idx in range(max_new_tokens):
         if step_idx > 0:
@@ -197,11 +202,13 @@ def fast_generate(
         last_id_hidden = talker_codec_embed(token.unsqueeze(1))  # [1, 1, H]
         pred_input = torch.cat((past_hidden, last_id_hidden), dim=1)  # [1, 2, H]
         codebook_token_ids = predictor_graph.run(pred_input)  # [15] long tensor
-        
+
         # Build full codec: [first_cb, cb1, ..., cb15]
         all_cb = torch.cat([token.view(1), codebook_token_ids])  # [16]
         all_codec_ids.append(all_cb.detach())
-        
+        if rep_history is not None:
+            rep_history[step_idx:step_idx + 1] = token
+
         # --- Build input embedding for talker ---
         codec_hiddens = [last_id_hidden]
         for i in range(num_code_groups - 1):
@@ -224,9 +231,10 @@ def fast_generate(
         
         logits = talker_codec_head(hidden_states[:, -1, :]).unsqueeze(0)
         
-        if repetition_penalty != 1.0 and len(all_codec_ids) > 0:
-            history = torch.stack([c[0] for c in all_codec_ids])
-            logits = apply_repetition_penalty(logits, history, repetition_penalty)
+        if rep_history is not None:
+            logits = apply_repetition_penalty(
+                logits, rep_history[:step_idx + 1], repetition_penalty
+            )
 
         suppress_eos = len(all_codec_ids) < min_new_tokens
         token = sample_logits(
