@@ -11,6 +11,25 @@ from .predictor_graph import PredictorGraph
 from .sampling import apply_repetition_penalty, build_suppress_mask, sample_logits
 from .talker_graph import TalkerGraph
 
+_EOS_TRACKER_CACHE: dict = {}
+
+
+def get_eos_tracker(device) -> tuple:
+    """Pinned host buffer + events for deferred EOS detection.
+
+    Cached per device: pinned allocation costs several ms, which would land on
+    every call's TTFA. Generation is single-stream so sharing scratch is safe.
+    """
+    key = str(device)
+    tracker = _EOS_TRACKER_CACHE.get(key)
+    if tracker is None:
+        tracker = (
+            torch.zeros(2, dtype=torch.long, pin_memory=True),
+            (torch.cuda.Event(), torch.cuda.Event()),
+        )
+        _EOS_TRACKER_CACHE[key] = tracker
+    return tracker
+
 
 @torch.inference_mode()
 def fast_generate(
@@ -137,17 +156,43 @@ def fast_generate(
     rope_deltas = getattr(talker, "rope_deltas", None)
     talker_graph.set_generation_state(attention_mask, rope_deltas)
     
+    # Deferred EOS detection: token values are copied to a pinned host buffer
+    # asynchronously and checked one iteration late, so the CPU never blocks on
+    # the GPU mid-step (a per-step .item() would drain the launch queue every
+    # iteration). Slot k%2 holds the token consumed by iteration k. At the top
+    # of iteration k we first check iteration k-1's token (its copy was enqueued
+    # two iterations of GPU work ago and is almost always already complete),
+    # then opportunistically check token k itself if its copy already landed —
+    # the common case on hosts slower than the GPU, where this stops exactly at
+    # EOS. Otherwise EOS costs one extra (overshoot) iteration that is popped.
+    token_cpu, token_events = get_eos_tracker(device)
+    token_cpu[0:1].copy_(token, non_blocking=True)
+    token_events[0].record()
+
     torch.cuda.synchronize()
     t_prefill = time.time() - t_start
-    
+
     # === DECODE LOOP ===
     t_decode_start = time.time()
     all_codec_ids = []
-    
+    eos_found = False
+
     for step_idx in range(max_new_tokens):
-        if token.item() == eos_id:
+        if step_idx > 0:
+            prev_slot = (step_idx - 1) % 2
+            token_events[prev_slot].synchronize()
+            if int(token_cpu[prev_slot]) == eos_id:
+                # Previous iteration consumed EOS — drop its output and stop.
+                all_codec_ids.pop()
+                eos_found = True
+                break
+        cur_slot = step_idx % 2
+        if token_events[cur_slot].query() and int(token_cpu[cur_slot]) == eos_id:
+            # This iteration's own token is already visible and is EOS — stop
+            # before doing any work (no overshoot).
+            eos_found = True
             break
-        
+
         # --- CUDA-Graphed Code Predictor ---
         last_id_hidden = talker_codec_embed(token.unsqueeze(1))  # [1, 1, H]
         pred_input = torch.cat((past_hidden, last_id_hidden), dim=1)  # [1, 2, H]
@@ -193,12 +238,21 @@ def fast_generate(
             suppress_mask=suppress_mask,
             suppress_tokens=eos_suppress_ids if suppress_eos else None,
         )
+        next_slot = (step_idx + 1) % 2
+        token_cpu[next_slot:next_slot + 1].copy_(token, non_blocking=True)
+        token_events[next_slot].record()
         past_hidden = hidden_states[:, -1:, :].clone()  # clone since it's the static buffer
         gen_step += 1
-    
+
     torch.cuda.synchronize()
+    # The loop can exit (budget/seq-len) with the newest entry still unchecked;
+    # its token lives in slot (n-1)%2 since slots are keyed by iteration index.
+    if not eos_found and all_codec_ids:
+        last_slot = (len(all_codec_ids) - 1) % 2
+        if int(token_cpu[last_slot]) == eos_id:
+            all_codec_ids.pop()
     t_decode = time.time() - t_decode_start
-    
+
     n_steps = len(all_codec_ids)
     timing = {
         'prefill_ms': t_prefill * 1000,

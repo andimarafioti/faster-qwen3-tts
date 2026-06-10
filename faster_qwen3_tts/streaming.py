@@ -10,6 +10,7 @@ from typing import Generator, Tuple
 
 import torch
 
+from .generate import get_eos_tracker
 from .predictor_graph import PredictorGraph
 from .sampling import apply_repetition_penalty, build_suppress_mask, sample_logits
 from .talker_graph import TalkerGraph
@@ -90,6 +91,15 @@ def fast_generate_streaming(
     rope_deltas = getattr(talker, "rope_deltas", None)
     talker_graph.set_generation_state(attention_mask, rope_deltas)
 
+    # Deferred EOS detection (see fast_generate): tokens are copied to a pinned
+    # host buffer asynchronously and checked one iteration late so the CPU never
+    # blocks on the GPU mid-step. Slot k%2 holds the token consumed by iteration
+    # k. Chunk flushes additionally validate their tail entry (after the sync
+    # they already perform) so an EOS overshoot is never yielded downstream.
+    token_cpu, token_events = get_eos_tracker(device)
+    token_cpu[0:1].copy_(token, non_blocking=True)
+    token_events[0].record()
+
     torch.cuda.synchronize()
     t_prefill = time.time() - t_start
 
@@ -98,10 +108,25 @@ def fast_generate_streaming(
     all_first_tokens = []  # for repetition penalty across chunks
     total_steps = 0
     chunk_count = 0
+    eos_found = False
     chunk_start = time.time()
 
     for step_idx in range(max_new_tokens):
-        if token.item() == eos_id:
+        if step_idx > 0:
+            prev_slot = (step_idx - 1) % 2
+            token_events[prev_slot].synchronize()
+            if int(token_cpu[prev_slot]) == eos_id:
+                # Previous iteration consumed EOS — drop its output and stop.
+                # The entry is always still in chunk_buffer: a flush validates
+                # its tail before yielding, so an EOS entry never leaves it.
+                chunk_buffer.pop()
+                eos_found = True
+                break
+        cur_slot = step_idx % 2
+        if token_events[cur_slot].query() and int(token_cpu[cur_slot]) == eos_id:
+            # This iteration's own token is already visible and is EOS — stop
+            # before doing any work (no overshoot).
+            eos_found = True
             break
 
         # --- CUDA-Graphed Code Predictor ---
@@ -147,12 +172,22 @@ def fast_generate_streaming(
             suppress_mask=suppress_mask,
             suppress_tokens=eos_suppress_ids if suppress_eos else None,
         )
+        next_slot = (step_idx + 1) % 2
+        token_cpu[next_slot:next_slot + 1].copy_(token, non_blocking=True)
+        token_events[next_slot].record()
         past_hidden = hidden_states[:, -1:, :].clone()
         gen_step += 1
 
         # --- Yield chunk when buffer is full ---
         if len(chunk_buffer) >= chunk_size:
             torch.cuda.synchronize()
+            # This chunk's tail entry hasn't been EOS-checked yet (that happens
+            # at the top of the next iteration); validate it now that we're synced.
+            if int(token_cpu[step_idx % 2]) == eos_id:
+                chunk_buffer.pop()
+                eos_found = True
+                if not chunk_buffer:
+                    break
             chunk_decode_time = time.time() - chunk_start
             total_steps += len(chunk_buffer)
 
@@ -162,16 +197,26 @@ def fast_generate_streaming(
                 'prefill_ms': t_prefill * 1000 if chunk_count == 0 else 0,
                 'decode_ms': chunk_decode_time * 1000,
                 'total_steps_so_far': total_steps,
-                'is_final': False,
+                'is_final': eos_found,
             }
 
             chunk_buffer = []
+            if eos_found:
+                break
             chunk_count += 1
             chunk_start = time.time()
 
     # --- Yield final partial chunk ---
     if chunk_buffer:
         torch.cuda.synchronize()
+        if not eos_found:
+            # Loop exited on budget/seq-len with the newest entry unchecked;
+            # slots are keyed by global iteration index.
+            tail_idx = total_steps + len(chunk_buffer) - 1
+            if int(token_cpu[tail_idx % 2]) == eos_id:
+                chunk_buffer.pop()
+
+    if chunk_buffer:
         chunk_decode_time = time.time() - chunk_start
         total_steps += len(chunk_buffer)
 
