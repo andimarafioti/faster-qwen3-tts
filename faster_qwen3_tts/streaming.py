@@ -105,7 +105,11 @@ def fast_generate_streaming(
 
     # === DECODE LOOP — yield chunks ===
     chunk_buffer = []
-    all_first_tokens = []  # for repetition penalty across chunks
+    # Preallocated first-codebook history for repetition penalty across chunks;
+    # rebuilding it with torch.stack over a growing list is O(n) launches per step.
+    rep_history = None
+    if repetition_penalty != 1.0:
+        rep_history = torch.empty(max_new_tokens, dtype=torch.long, device=device)
     total_steps = 0
     chunk_count = 0
     eos_found = False
@@ -136,7 +140,8 @@ def fast_generate_streaming(
 
         all_cb = torch.cat([token.view(1), codebook_token_ids])
         chunk_buffer.append(all_cb.detach())
-        all_first_tokens.append(token.detach())
+        if rep_history is not None:
+            rep_history[step_idx:step_idx + 1] = token
 
         # --- Build input embedding for talker ---
         codec_hiddens = [last_id_hidden]
@@ -158,11 +163,12 @@ def fast_generate_streaming(
 
         logits = talker_codec_head(hidden_states[:, -1, :]).unsqueeze(0)
 
-        if repetition_penalty != 1.0 and all_first_tokens:
-            history = torch.stack(all_first_tokens)
-            logits = apply_repetition_penalty(logits, history, repetition_penalty)
+        if rep_history is not None:
+            logits = apply_repetition_penalty(
+                logits, rep_history[:step_idx + 1], repetition_penalty
+            )
 
-        suppress_eos = len(all_first_tokens) < min_new_tokens
+        suppress_eos = step_idx + 1 < min_new_tokens
         token = sample_logits(
             logits.squeeze(0),
             temperature=temperature,
