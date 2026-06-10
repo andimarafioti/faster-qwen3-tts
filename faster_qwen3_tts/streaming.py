@@ -9,8 +9,9 @@ import time
 from typing import Generator, Tuple
 
 import torch
+import torch.nn.functional as F
 
-from .generate import get_eos_tracker
+from .generate import get_eos_tracker, get_fused_codec_embeddings
 from .predictor_graph import PredictorGraph
 from .sampling import apply_repetition_penalty, build_suppress_mask, sample_logits
 from .talker_graph import TalkerGraph
@@ -52,8 +53,7 @@ def fast_generate_streaming(
     predictor = talker.code_predictor
     talker_codec_embed = talker.get_input_embeddings()
     talker_codec_head = talker.codec_head
-    predictor_codec_embeds = predictor.get_input_embeddings()
-    num_code_groups = config.num_code_groups
+    fused_codec_weights, fused_codec_offsets = get_fused_codec_embeddings(predictor)
 
     # === PREFILL (still uses HF forward for variable-length prefill) ===
     t_start = time.time()
@@ -144,10 +144,12 @@ def fast_generate_streaming(
             rep_history[step_idx:step_idx + 1] = token
 
         # --- Build input embedding for talker ---
-        codec_hiddens = [last_id_hidden]
-        for i in range(num_code_groups - 1):
-            codec_hiddens.append(predictor_codec_embeds[i](codebook_token_ids[i].unsqueeze(0).unsqueeze(0)))
-        inputs_embeds = torch.cat(codec_hiddens, dim=1).sum(1, keepdim=True)
+        # One fused gather over all 15 codebook tables; the cat+sum keeps the
+        # exact reduction order of the previous per-table loop for parity.
+        codebook_embeds = F.embedding(
+            codebook_token_ids + fused_codec_offsets, fused_codec_weights
+        ).unsqueeze(0)  # [1, 15, H]
+        inputs_embeds = torch.cat((last_id_hidden, codebook_embeds), dim=1).sum(1, keepdim=True)
 
         if gen_step < trailing_text_hiddens.shape[1]:
             inputs_embeds = inputs_embeds + trailing_text_hiddens[:, gen_step].unsqueeze(1)
