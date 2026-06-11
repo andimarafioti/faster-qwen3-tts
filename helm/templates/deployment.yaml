@@ -27,6 +27,13 @@ spec:
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app: faster-qwen3-tts
+            topologyKey: kubernetes.io/hostname
       # Image pull secrets for Google Artifact Registry
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
