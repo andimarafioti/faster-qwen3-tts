@@ -30,9 +30,16 @@ fi
 # Verify CUDA
 .venv/bin/python -c "import torch; assert torch.cuda.is_available(), 'CUDA not available'; print(f'PyTorch {torch.__version__}, CUDA {torch.version.cuda}, GPU: {torch.cuda.get_device_name(0)}')" || {
     echo ""
-    echo "WARNING: CUDA not available. You may need to install a CUDA-enabled PyTorch wheel."
-    echo "  uv pip install torch --index-url https://download.pytorch.org/whl/cu128 --python .venv/bin/python"
-    echo "  Note: RTX 50xx / Blackwell GPUs need CUDA 12.8 wheels (PyTorch 2.7+)."
+    echo "WARNING: CUDA not available — usually a driver/toolkit mismatch."
+    echo "  The default 'pip install' pulls the latest PyTorch wheel, built against a recent CUDA"
+    echo "  toolkit. If your NVIDIA driver is older than that toolkit you'll see"
+    echo "  'CUDA initialization: The NVIDIA driver on your system is too old'."
+    echo "  Check your driver's max CUDA version with: nvidia-smi  (top-right 'CUDA Version')."
+    echo "  Then install a matching PyTorch wheel, e.g.:"
+    echo "    - Driver CUDA 12.4 (e.g. T4 / A10G / many cloud & Colab GPUs):"
+    echo "        uv pip install torch==2.5.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu124 --python .venv/bin/python"
+    echo "    - Driver CUDA 12.8+ (RTX 50xx / Blackwell):"
+    echo "        uv pip install torch --index-url https://download.pytorch.org/whl/cu128 --python .venv/bin/python"
 }
 
 # Pre-download models to HuggingFace cache

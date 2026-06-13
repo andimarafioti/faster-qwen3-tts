@@ -16,6 +16,12 @@ pip install faster-qwen3-tts
 
 **Apple Silicon note:** MPS backend is fully supported. No CUDA graphs (uses dynamic cache fallback), but `torch.compile(mode="reduce-overhead")` provides equivalent performance. See [APPLE_SILICON_SETUP_GUIDE.md](APPLE_SILICON_SETUP_GUIDE.md) for details.
 
+**Driver / CUDA mismatch note (T4, A10G, and other CUDA-12.4 hosts):** `pip install` pulls the default PyTorch wheel, which is built against a recent CUDA toolkit. If your NVIDIA driver is *older* than that toolkit — common on CUDA 12.4 hosts such as AWS, Azure ML, and many Colab/T4 boxes — `torch.cuda.is_available()` returns `False` with `CUDA initialization: The NVIDIA driver on your system is too old`. Install a PyTorch wheel matching your driver's CUDA version. Check it with `nvidia-smi` (top-right "CUDA Version"); for a CUDA 12.4 driver:
+
+```bash
+pip install "torch==2.5.1" "torchaudio==2.5.1" --index-url https://download.pytorch.org/whl/cu124
+```
+
 ## Quick Start
 
 ### Python
@@ -166,6 +172,7 @@ Benchmarks include tokenization + inference (apples-to-apples with baseline). RT
 | RTX 4060 (Windows) | 0.23 | 2,697ms | **2.26** | **413ms** | 9.8x / 6.5x |
 | H100 80GB HBM3 | 0.435 | 1,474ms | **3.884** | **228ms** | 8.9x / 6.5x |
 | Apple Silicon M4 (MPS) | 0.48 | 1,726ms | **0.71** | **1,424ms** | 1.4x / 1.2x |
+| Tesla T4 16GB | 0.467 | 1,671ms | **1.068** | **901ms** | 2.3x / 1.9x |
 
 ### 1.7B Model
 
@@ -177,6 +184,7 @@ Benchmarks include tokenization + inference (apples-to-apples with baseline). RT
 | RTX 4060 (Windows) | 0.23 | 2,905ms | **1.83** | **460ms** | 7.9x / 6.3x |
 | H100 80GB HBM3 | 0.439 | 1,525ms | **3.304** | **241ms** | 7.5x / 6.3x |
 | Apple Silicon M4 (MPS) | 0.38 | 2,008ms | **0.60** | **1,615ms** | 1.6x / 1.2x |
+| Tesla T4 16GB | 0.453 | 1,811ms | **0.925** | **1,096ms** | 2.0x / 1.7x |
 
 **Note:** Baseline TTFA values are **streaming TTFA** from the community `Qwen3-TTS-streaming` fork (which adds streaming) or from our **dynamic-cache parity streaming** path (no CUDA graphs) where available. The official `Qwen3-TTS` repo does **not** currently support streaming, so without a streaming baseline TTFA would be **time-to-full-audio**. CUDA graphs uses `generate_voice_clone_streaming(chunk_size=8)` for TTFA. Both include text tokenization for fair comparison. Speedup shows throughput / TTFA improvement. The streaming fork reports additional speedups that appear tied to `torch.compile`; we couldn’t reproduce those on Jetson-class devices where `torch.compile` isn’t available.
 
