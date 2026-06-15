@@ -1,3 +1,9 @@
+# Fork Information
+This fork includes finetuning scripts and changes for **Qwen3-TTS-12Hz-0.6B-Base**.
+I specifically created this because I found a lack of information on how to finetune 0.6B correctly, and the original Qwen3-TTS repo only includes an example for 1.7B.
+Additionally, this repo will include some debugging scripts which can be useful during finetuning without needing to use a full-on tensorboard.
+
+
 # Faster Qwen3-TTS
 
 Real-time Qwen3-TTS inference using CUDA graph capture. No Flash Attention, no vLLM, no Triton. Just `torch.cuda.CUDAGraph`. Supports both streaming and non-streaming generation.
