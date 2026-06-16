@@ -1239,7 +1239,9 @@ class Qwen3TTSTalkerCodePredictorModelForConditionalGeneration(Qwen3TTSPreTraine
 
         loss = None
         if labels is not None:
-            loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.vocab_size, **kwargs)
+            # Sub-talker residual prediction is intra-frame, NOT temporal: logits[k] is already
+            # aligned to labels[k]. Pass shift_labels to suppress ForCausalLMLoss's internal shift.
+            loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.vocab_size, shift_labels=labels.contiguous(), **kwargs)
 
         return Qwen3TTSTalkerCodePredictorOutputWithPast(
             loss=loss,

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["faster_qwen3_tts*"]
+include = ["faster_qwen3_tts*", "qwen_tts*"]
 
 [project]
 name = "faster-qwen3-tts"
@@ -26,12 +26,21 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 requires-python = ">=3.10"
+# qwen_tts is now vendored in this repo (not a pip dependency), so its runtime deps live here.
+# transformers is pinned to 4.57.3 because the finetuning loss-alignment fixes were verified
+# against that version's ForCausalLMLoss behavior.
 dependencies = [
-    "qwen-tts>=0.1.1",
-    "transformers>=4.57",
+    "transformers==4.57.3",
+    "accelerate==1.12.0",
     "torch>=2.5.1",
+    "torchaudio",
     "numpy",
     "soundfile",
+    "librosa",
+    "einops",
+    "onnxruntime",
+    "sox",
+    "gradio",
     "huggingface-hub",
 ]
 
@@ -48,3 +57,6 @@ faster-qwen3-tts = "faster_qwen3_tts.cli:main"
 [project.urls]
 Homepage = "https://github.com/andimarafioti/faster-qwen3-tts"
 Repository = "https://github.com/andimarafioti/faster-qwen3-tts"
+
+[tool.setuptools.package-data]
+qwen_tts = ["py.typed", "**/*.npz"]
