@@ -66,6 +66,7 @@ class SpeechRequest(BaseModel):
     voice: str = "alloy"
     response_format: str = "wav"
     speed: float = 1.0
+    language: Optional[str] = None  # overrides the server/voice default when provided
 
 
 def _to_pcm16(pcm: np.ndarray) -> bytes:
@@ -193,28 +194,31 @@ async def create_speech(req: SpeechRequest):
         )
     content_type = _CONTENT_TYPES[fmt]
 
+    # Non-streaming: synthesize the full clip and return a complete, correctly-sized
+    # response. This is reliable for clients like Postman/curl (no chunked/unknown-length
+    # WAV header, which can look "cached"/empty). For real-time streaming use _stream_chunks.
+    language = req.language or voice_cfg.get("language", "Auto")
+    loop = asyncio.get_event_loop()
+
+    def _generate():
+        with _model_lock:
+            return tts_model.generate_custom_voice(
+                text=req.input,
+                speaker=voice_cfg["speaker"],
+                language=language,
+            )
+
+    audio_arrays, sr = await loop.run_in_executor(None, _generate)
+    audio = audio_arrays[0] if audio_arrays else np.zeros(1, dtype=np.float32)
+
     if fmt == "mp3":
-        loop = asyncio.get_event_loop()
+        body = _to_mp3_bytes(audio, sr)
+    elif fmt == "wav":
+        body = _to_wav_bytes(audio, sr)
+    else:  # pcm
+        body = _to_pcm16(audio)
 
-        def _generate():
-            with _model_lock:
-                return tts_model.generate_custom_voice(
-                    text=req.input,
-                    speaker=voice_cfg["speaker"],
-                    language=voice_cfg.get("language", "Auto"),
-                )
-
-        audio_arrays, sr = await loop.run_in_executor(None, _generate)
-        audio = audio_arrays[0] if audio_arrays else np.zeros(1, dtype=np.float32)
-        return Response(content=_to_mp3_bytes(audio, sr), media_type=content_type)
-
-    async def audio_stream():
-        if fmt == "wav":
-            yield _wav_header(SAMPLE_RATE)
-        async for raw_chunk in _stream_chunks(voice_cfg, req.input):
-            yield raw_chunk
-
-    return StreamingResponse(audio_stream(), media_type=content_type)
+    return Response(content=body, media_type=content_type, headers={"Cache-Control": "no-store"})
 
 
 def _parse_args():
