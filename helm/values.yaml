@@ -85,6 +85,18 @@ gcs:
   voiceCacheBucket: ""
   voiceCachePrefix: ""
 
+# Cloud-agnostic git voice source (QarlAI/live-assets). When repo+branch are
+# set, voices load from the repo at startup instead of GCS (GCP->Azure
+# migration). prefix defaults to the qwen3 subtree so voices land flat in the
+# voices dir, matching the GCS layout. Token is optional (reuses the
+# avatar_profiles org PAT when no dedicated secret is given).
+voicesGit:
+  repo: ""
+  branch: ""
+  prefix: "voices/qwen3"
+  tokenSecretName: ""
+  tokenSecretKey: "VOICE_CACHE_GIT_TOKEN"
+
 # Deployment progress deadline (in seconds)
 # This is how long Kubernetes will wait for the deployment to make progress before marking it as failed
 progressDeadlineSeconds: 600
