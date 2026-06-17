@@ -111,6 +111,21 @@ spec:
         - name: VOICE_CACHE_PREFIX
           value: {{ .Values.gcs.voiceCachePrefix | quote }}
         {{- end }}
+        {{- if .Values.voicesGit.repo }}
+        - name: VOICE_CACHE_GIT_REPO
+          value: {{ .Values.voicesGit.repo | quote }}
+        - name: VOICE_CACHE_GIT_BRANCH
+          value: {{ .Values.voicesGit.branch | quote }}
+        - name: VOICE_CACHE_GIT_PREFIX
+          value: {{ .Values.voicesGit.prefix | quote }}
+        {{- if .Values.voicesGit.tokenSecretName }}
+        - name: VOICE_CACHE_GIT_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.voicesGit.tokenSecretName }}
+              key: {{ .Values.voicesGit.tokenSecretKey | default "VOICE_CACHE_GIT_TOKEN" }}
+        {{- end }}
+        {{- end }}
         {{- range $name, $value := .Values.envVars }}
         - name: {{ $name }}
           value: {{ $value | quote }}
