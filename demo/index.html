@@ -93,6 +93,16 @@ body {
   transition: border-color 0.15s;
 }
 .mpill:hover { border-color: var(--border2); }
+.upill {
+  display: none; align-items: center; min-width: 0; max-width: 150px;
+  font-size: 11px; color: var(--text2); text-decoration: none;
+  padding: 4px 9px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 20px; overflow: hidden; white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.upill.show { display: flex; }
+.upill:hover { border-color: var(--border2); color: var(--text); }
 .mdot {
   width: 6px; height: 6px; border-radius: 50%;
   background: var(--dimmer); flex-shrink: 0;
@@ -639,6 +649,7 @@ body {
     <h1>faster-qwen3-tts</h1>
     <span class="badge">CUDA GRAPHS</span>
     <span class="spacer"></span>
+    <a class="upill" id="userPill" href="/oauth/huggingface/logout" title="Logout"></a>
     <button class="mpill" onclick="openSettings()" title="Settings">
       <span class="mdot" id="mdot"></span>
       <span id="mtext">not loaded</span>
@@ -867,6 +878,12 @@ function setPlayBtns(disabled) {
   document.querySelectorAll('.play-btn').forEach(b => b.disabled = disabled);
 }
 
+function webHeaders() {
+  return window.__FQTTS_WEB_TOKEN__
+    ? { 'X-FQTTS-Web-Token': window.__FQTTS_WEB_TOKEN__ }
+    : {};
+}
+
 // ── State ─────────────────────────────────────────────────────────────────────
 let genMode  = 'stream';
 let xvecOnly = false;
@@ -878,6 +895,7 @@ let presetRefs = [];
 let loadedModel  = null;
 let loadingModel = null;
 let dlBlob   = null;
+let currentUsage = null;
 
 const defaultSpeakers = [
   { id: 'Vivian',   desc: 'Chinese — Bright young female' },
@@ -1037,7 +1055,7 @@ async function transcribeRef() {
   try {
     const fd = new FormData();
     fd.append('audio', refFile);
-    const res = await fetch('/transcribe', { method: 'POST', body: fd });
+    const res = await fetch('/transcribe', { method: 'POST', headers: webHeaders(), body: fd });
     if (!res.ok) return; // transcription unavailable — leave field empty
     const d = await res.json();
     ta.value = d.text || '';
@@ -1053,7 +1071,11 @@ async function transcribeRef() {
 // ── Model ─────────────────────────────────────────────────────────────────────
 async function fetchStatus() {
   try {
-    const d = await fetch('/status').then(r => r.json());
+    const res = await fetch('/status');
+    if (res.status === 401) { window.location.href = '/'; return; }
+    if (!res.ok) throw new Error('Status failed');
+    const d = await res.json();
+    renderUser(d.user, d.usage);
     applyAvailableModels(d.available_models || []);
     if (d.loaded && d.model) {
       // Only trust loadedModel when the server confirms it's actually loaded
@@ -1067,6 +1089,21 @@ async function fetchStatus() {
   } catch { setPill('off', 'offline'); }
 }
 
+function renderUser(user, usage) {
+  const pill = $('userPill');
+  if (!user) {
+    pill.classList.remove('show');
+    pill.textContent = '';
+    return;
+  }
+  currentUsage = usage || null;
+  const quota = usage?.is_pro
+    ? 'PRO'
+    : `${Math.max(0, usage?.remaining ?? 0)} left`;
+  pill.textContent = `${user.username || 'HF user'} · ${quota}`;
+  pill.classList.add('show');
+}
+
 async function loadModel() {
   const btn = $('loadBtn');
   btn.disabled = true; btn.textContent = 'Loading...';
@@ -1077,7 +1114,7 @@ async function loadModel() {
   try {
     const fd = new FormData();
     fd.append('model_id', loadingModel);
-    const d = await fetch('/load', { method: 'POST', body: fd }).then(r => r.json());
+    const d = await fetch('/load', { method: 'POST', headers: webHeaders(), body: fd }).then(r => r.json());
     if (d.status === 'loaded' || d.status === 'already_loaded') {
       loadedModel  = loadingModel;
       loadingModel = null;
@@ -1645,6 +1682,7 @@ async function generate(mode) {
     pb.classList.remove('spin'); pb.style.width = '0%';
   }
 
+  fetchStatus();
   busy = false;
   setPlayBtns(false);
 }
@@ -1653,7 +1691,7 @@ async function runStream(fd) {
   clientT0 = performance.now();
   firstChunkAt = null; firstAudioAt = null; lastBufS = 0; firstServerWall = null;
 
-  const res = await fetch('/generate/stream', { method: 'POST', body: fd });
+  const res = await fetch('/generate/stream', { method: 'POST', headers: webHeaders(), body: fd });
   if (!res.ok) { const e = await res.json(); throw new Error(e.detail || 'Request failed'); }
 
   const reader = res.body.getReader();
@@ -1704,7 +1742,7 @@ async function runStream(fd) {
 
 async function runNonStream(fd) {
   $('waveInd').classList.add('off');
-  const res = await fetch('/generate', { method: 'POST', body: fd });
+  const res = await fetch('/generate', { method: 'POST', headers: webHeaders(), body: fd });
   if (!res.ok) { const e = await res.json(); throw new Error(e.detail || 'Request failed'); }
   const d = await res.json();
   const m = d.metrics;
