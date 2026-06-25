@@ -10,6 +10,7 @@ from typing import Generator, Tuple
 
 import torch
 
+from .device import sync_device
 from .predictor_graph import PredictorGraph
 from .sampling import apply_repetition_penalty, sample_logits
 from .talker_graph import TalkerGraph
@@ -93,7 +94,7 @@ def fast_generate_streaming(
     rope_deltas = getattr(talker, "rope_deltas", None)
     talker_graph.set_generation_state(attention_mask, rope_deltas)
 
-    torch.cuda.synchronize()
+    sync_device(device)
     t_prefill = time.time() - t_start
 
     # === DECODE LOOP — yield chunks ===
@@ -155,7 +156,7 @@ def fast_generate_streaming(
 
         # --- Yield chunk when buffer is full ---
         if len(chunk_buffer) >= chunk_size:
-            torch.cuda.synchronize()
+            sync_device(device)
             chunk_decode_time = time.time() - chunk_start
             total_steps += len(chunk_buffer)
 
@@ -174,7 +175,7 @@ def fast_generate_streaming(
 
     # --- Yield final partial chunk ---
     if chunk_buffer:
-        torch.cuda.synchronize()
+        sync_device(device)
         chunk_decode_time = time.time() - chunk_start
         total_steps += len(chunk_buffer)
 
@@ -259,7 +260,7 @@ def parity_generate_streaming(
     if attention_mask is not None:
         attention_mask = attention_mask.clone()
 
-    torch.cuda.synchronize()
+    sync_device(device)
     t_prefill = time.time() - t_start
 
     # === DECODE LOOP — yield chunks ===
@@ -327,7 +328,7 @@ def parity_generate_streaming(
         gen_step = out.generation_step
 
         if len(chunk_buffer) >= chunk_size:
-            torch.cuda.synchronize()
+            sync_device(device)
             chunk_decode_time = time.time() - chunk_start
             total_steps += len(chunk_buffer)
 
@@ -345,7 +346,7 @@ def parity_generate_streaming(
             chunk_start = time.time()
 
     if chunk_buffer:
-        torch.cuda.synchronize()
+        sync_device(device)
         chunk_decode_time = time.time() - chunk_start
         total_steps += len(chunk_buffer)
 

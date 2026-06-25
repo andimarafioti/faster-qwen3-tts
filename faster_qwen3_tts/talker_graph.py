@@ -17,6 +17,8 @@ import torch
 from transformers import StaticCache
 from transformers.masking_utils import create_causal_mask, create_sliding_window_causal_mask
 
+from .device import device_supports_cuda_graphs
+
 
 class TalkerGraph:
     """
@@ -27,9 +29,14 @@ class TalkerGraph:
     def __init__(self, talker_model, talker_config, device='cuda', dtype=torch.bfloat16,
                  max_seq_len=512):
         self.device = device
-        device_index = torch.device(device).index
-        device_index = device_index if device_index is not None else torch.cuda.current_device()
-        self.device_index = device_index
+        self.use_cuda_graphs = device_supports_cuda_graphs(device)
+
+        if self.use_cuda_graphs:
+            device_index = torch.device(device).index
+            device_index = device_index if device_index is not None else torch.cuda.current_device()
+            self.device_index = device_index
+        else:
+            self.device_index = None
 
         self.dtype = dtype
         self.max_seq_len = max_seq_len
@@ -124,6 +131,12 @@ class TalkerGraph:
 
         for _ in range(num_warmup):
             self._decode_step()
+
+        if not self.use_cuda_graphs:
+            print("Talker: CUDA graphs not available, using dynamic decode fallback")
+            self.captured = True
+            return
+
         torch.cuda.synchronize()
 
         print("Capturing CUDA graph for talker decode...")
@@ -209,6 +222,10 @@ class TalkerGraph:
         # position_ids = arange(seq_len=1) + cache_position + rope_deltas
         delta = self.rope_deltas + self.cache_position[0].to(self.rope_deltas.dtype)
         self.position_ids.copy_(delta.unsqueeze(0).expand(3, -1, -1))
-        self.graph.replay()
+
+        if self.use_cuda_graphs:
+            self.graph.replay()
+        else:
+            self._decode_step()
 
         return self.output_buf  # static buffer — caller should use immediately or clone

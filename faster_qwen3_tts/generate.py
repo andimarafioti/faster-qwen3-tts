@@ -7,6 +7,7 @@ from typing import Optional, Tuple
 
 import torch
 
+from .device import sync_device
 from .predictor_graph import PredictorGraph
 from .sampling import apply_repetition_penalty, sample_logits
 from .talker_graph import TalkerGraph
@@ -84,7 +85,7 @@ def fast_generate(
         effective_lengths = torch.where(has_stop_token, stop_indices, talker_codes.shape[1])
         talker_codes_list = [talker_codes[i, :length, :] for i, length in enumerate(effective_lengths)]
 
-        torch.cuda.synchronize()
+        sync_device(device)
         total_time = time.time() - t_start
         steps = int(talker_codes_list[0].shape[0]) if talker_codes_list else 0
         timing = {
@@ -139,7 +140,7 @@ def fast_generate(
     rope_deltas = getattr(talker, "rope_deltas", None)
     talker_graph.set_generation_state(attention_mask, rope_deltas)
     
-    torch.cuda.synchronize()
+    sync_device(device)
     t_prefill = time.time() - t_start
     
     # === DECODE LOOP ===
@@ -198,7 +199,7 @@ def fast_generate(
         past_hidden = hidden_states[:, -1:, :].clone()  # clone since it's the static buffer
         gen_step += 1
     
-    torch.cuda.synchronize()
+    sync_device(device)
     t_decode = time.time() - t_decode_start
     
     n_steps = len(all_codec_ids)

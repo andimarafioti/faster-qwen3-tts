@@ -307,7 +307,7 @@ def cmd_serve(args):
 
 def build_parser():
     p = argparse.ArgumentParser(prog="faster-qwen3-tts", description="FasterQwen3TTS CLI")
-    p.add_argument("--device", default="cuda", help="Device (cuda or cpu)")
+    p.add_argument("--device", default="auto", help="Device (auto, cuda, mps, cpu)")
     p.add_argument("--dtype", default="bf16", choices=["bf16", "fp16", "fp32"], help="Model dtype")
     sub = p.add_subparsers(dest="command", required=True)
 

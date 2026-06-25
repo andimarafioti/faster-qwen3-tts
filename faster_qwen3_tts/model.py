@@ -13,6 +13,7 @@ import soundfile as sf
 import torch
 
 from .utils import suppress_flash_attn_warning
+from .device import get_optimal_device, device_supports_cuda_graphs
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,7 @@ class FasterQwen3TTS:
         self.sample_rate = self._infer_sample_rate(base_model)
         self._warmed_up = False
         self._voice_prompt_cache = {}  # Cache (ref_audio, ref_text) -> (vcp, ref_ids)
+        self.use_cuda_graphs = device_supports_cuda_graphs(device)
 
     @staticmethod
     def _get_speech_tokenizer(base_model):
@@ -94,7 +96,7 @@ class FasterQwen3TTS:
     def from_pretrained(
         cls,
         model_name: str,
-        device: str = "cuda",
+        device: str = "auto",
         dtype: Union[str, torch.dtype] = torch.bfloat16,
         attn_implementation: str = "sdpa",
         max_seq_len: int = 2048,
@@ -104,7 +106,7 @@ class FasterQwen3TTS:
 
         Args:
             model_name: Model path or HuggingFace Hub ID
-            device: Device to use ("cuda" or "cpu")
+            device: Device to use ("auto", "cuda", "mps", or "cpu")
             dtype: Data type for inference
             attn_implementation: Attention implementation ("sdpa" or "flash_attention_2")
             max_seq_len: Maximum sequence length for static cache
@@ -115,10 +117,17 @@ class FasterQwen3TTS:
         if isinstance(dtype, str):
             dtype = getattr(torch, dtype)
             
-        if not device.startswith("cuda") or not torch.cuda.is_available():
-            raise ValueError("CUDA graphs require CUDA device")
+        device = get_optimal_device(device)
+        use_cuda_graphs = device_supports_cuda_graphs(device)
+
+        # MPS/CPU: use float32 and sdpa attention for compatibility
+        if not use_cuda_graphs:
+            if dtype in (torch.bfloat16, torch.float16):
+                logger.info(f"Device {device}: switching from {dtype} to float32 for compatibility")
+                dtype = torch.float32
+            attn_implementation = "sdpa"
         
-        logger.info(f"Loading Qwen3-TTS model: {model_name}")
+        logger.info(f"Loading Qwen3-TTS model: {model_name} on {device}")
         
         # Import here to avoid dependency issues (and suppress flash-attn warning)
         with suppress_flash_attn_warning():
@@ -141,8 +150,11 @@ class FasterQwen3TTS:
         pred_config = predictor.model.config
         talker_hidden = talker_config.hidden_size
 
-        # Build CUDA graphs
-        logger.info("Building CUDA graphs...")
+        if use_cuda_graphs:
+            logger.info("Building CUDA graphs...")
+        else:
+            logger.info(f"Device {device}: CUDA graphs disabled, using dynamic cache fallback")
+        
         predictor_graph = PredictorGraph(
             predictor,
             pred_config,
@@ -162,7 +174,7 @@ class FasterQwen3TTS:
             max_seq_len=max_seq_len,
         )
         
-        logger.info("CUDA graphs initialized (will capture on first run)")
+        logger.info(f"Model loaded on {device} (CUDA graphs: {'enabled' if use_cuda_graphs else 'disabled'})")
         
         return cls(
             base_model=base_model,
@@ -178,11 +190,18 @@ class FasterQwen3TTS:
         if self._warmed_up:
             return
             
-        logger.info("Warming up CUDA graphs...")
-        self.predictor_graph.capture(num_warmup=3)
-        self.talker_graph.capture(prefill_len=prefill_len, num_warmup=3)
+        if self.use_cuda_graphs:
+            logger.info("Warming up CUDA graphs...")
+            self.predictor_graph.capture(num_warmup=3)
+            self.talker_graph.capture(prefill_len=prefill_len, num_warmup=3)
+            logger.info("CUDA graphs captured and ready")
+        else:
+            logger.info("Warming up model (no CUDA graphs)...")
+            self.predictor_graph.capture(num_warmup=3)
+            self.talker_graph.capture(prefill_len=prefill_len, num_warmup=3)
+            logger.info("Model warmed up (dynamic cache fallback)")
+        
         self._warmed_up = True
-        logger.info("CUDA graphs captured and ready")
     
     def generate(
         self,
