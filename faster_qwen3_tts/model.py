@@ -188,18 +188,32 @@ class FasterQwen3TTS:
         """Warm up and capture CUDA graphs with given prefill length."""
         if self._warmed_up:
             return
-            
+
         if self.use_cuda_graphs:
             logger.info("Warming up CUDA graphs...")
             self.predictor_graph.capture(num_warmup=3)
             self.talker_graph.capture(prefill_len=prefill_len, num_warmup=3)
             logger.info("CUDA graphs captured and ready")
         else:
+            # ponytail: torch.compile fuses transformer layers on MPS to cut dispatch overhead
+            if self.device == "mps" and hasattr(torch, "compile"):
+                logger.info("Compiling models for MPS (reduce-overhead)...")
+                try:
+                    self.predictor_graph.pred_model = torch.compile(
+                        self.predictor_graph.pred_model, mode="reduce-overhead"
+                    )
+                    self.talker_graph.model = torch.compile(
+                        self.talker_graph.model, mode="reduce-overhead"
+                    )
+                    logger.info("torch.compile applied to predictor and talker")
+                except Exception as e:
+                    logger.warning(f"torch.compile failed, continuing without: {e}")
+
             logger.info("Warming up model (no CUDA graphs)...")
             self.predictor_graph.capture(num_warmup=3)
             self.talker_graph.capture(prefill_len=prefill_len, num_warmup=3)
             logger.info("Model warmed up (dynamic cache fallback)")
-        
+
         self._warmed_up = True
     
     def generate(

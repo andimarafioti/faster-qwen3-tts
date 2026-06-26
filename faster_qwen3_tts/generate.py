@@ -7,7 +7,6 @@ from typing import Optional, Tuple
 
 import torch
 
-from .utils import sync_device
 from .predictor_graph import PredictorGraph
 from .sampling import apply_repetition_penalty, sample_logits
 from .talker_graph import TalkerGraph
@@ -85,7 +84,9 @@ def fast_generate(
         effective_lengths = torch.where(has_stop_token, stop_indices, talker_codes.shape[1])
         talker_codes_list = [talker_codes[i, :length, :] for i, length in enumerate(effective_lengths)]
 
-        sync_device(device)
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+
         total_time = time.time() - t_start
         steps = int(talker_codes_list[0].shape[0]) if talker_codes_list else 0
         timing = {
@@ -101,10 +102,10 @@ def fast_generate(
     talker_codec_embed = talker.get_input_embeddings()
     talker_codec_head = talker.codec_head
     predictor_codec_embeds = predictor.get_input_embeddings()
-    
+
     # === PREFILL (still uses HF forward for variable-length prefill) ===
     t_start = time.time()
-    
+
     out = talker.forward(
         inputs_embeds=talker_input_embeds,
         attention_mask=attention_mask,
@@ -117,11 +118,11 @@ def fast_generate(
         past_hidden=None,
         past_key_values=None,
     )
-    
+
     talker_past_kv = out.past_key_values
     past_hidden = out.past_hidden
     gen_step = out.generation_step
-    
+
     logits = out.logits[:, -1, :]
     suppress_eos = min_new_tokens > 0
     token = sample_logits(
@@ -133,55 +134,64 @@ def fast_generate(
         suppress_mask=suppress_mask,
         suppress_tokens=[eos_id] if suppress_eos else None,
     )
-    
+
     # Copy prefill KV cache into talker graph's static cache
     prefill_len = talker_graph.prefill_kv(talker_past_kv)
     # Sync padding mask + rope deltas for decode parity
     rope_deltas = getattr(talker, "rope_deltas", None)
     talker_graph.set_generation_state(attention_mask, rope_deltas)
-    
-    sync_device(device)
+
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+
     t_prefill = time.time() - t_start
-    
-    # === DECODE LOOP ===
+
+    # === DECODE LOOP (pre-allocated buffers for MPS) ===
+    # ponytail: pre-alloc avoids per-step torch.cat/clone/list-append overhead
     t_decode_start = time.time()
     all_codec_ids = []
-    
+    output_buf = torch.empty(num_code_groups, dtype=torch.long, device=device)  # [16]
+    pred_input_buf = torch.empty(1, 2, past_hidden.shape[-1], dtype=past_hidden.dtype, device=device)
+    past_hidden_buf = torch.empty_like(past_hidden)
+    codec_hiddens_buf = torch.empty(1, num_code_groups, past_hidden.shape[-1], dtype=past_hidden.dtype, device=device)
+
     for step_idx in range(max_new_tokens):
         if token.item() == eos_id:
             break
-        
-        # --- CUDA-Graphed Code Predictor ---
+
+        # --- Code Predictor ---
         last_id_hidden = talker_codec_embed(token.unsqueeze(1))  # [1, 1, H]
-        pred_input = torch.cat((past_hidden, last_id_hidden), dim=1)  # [1, 2, H]
-        codebook_token_ids = predictor_graph.run(pred_input)  # [15] long tensor
-        
+        pred_input_buf[:, :1, :].copy_(past_hidden)
+        pred_input_buf[:, 1:, :].copy_(last_id_hidden)
+        codebook_token_ids = predictor_graph.run(pred_input_buf)  # [15] long tensor
+
         # Build full codec: [first_cb, cb1, ..., cb15]
-        all_cb = torch.cat([token.view(1), codebook_token_ids])  # [16]
-        all_codec_ids.append(all_cb.detach())
-        
-        # --- Build input embedding for talker ---
-        codec_hiddens = [last_id_hidden]
+        output_buf[0] = token.view(-1)
+        output_buf[1:].copy_(codebook_token_ids)
+        all_codec_ids.append(output_buf.clone())
+
+        # --- Build input embedding for talker (batched embed lookup) ---
+        codec_hiddens_buf[:, 0, :].copy_(last_id_hidden.squeeze(1))
         for i in range(num_code_groups - 1):
-            codec_hiddens.append(predictor_codec_embeds[i](codebook_token_ids[i].unsqueeze(0).unsqueeze(0)))
-        inputs_embeds = torch.cat(codec_hiddens, dim=1).sum(1, keepdim=True)
-        
+            codec_hiddens_buf[:, i + 1, :].copy_(
+                predictor_codec_embeds[i](codebook_token_ids[i].unsqueeze(0).unsqueeze(0)).squeeze(0)
+            )
+        inputs_embeds = codec_hiddens_buf.sum(1, keepdim=True)  # [1, 1, H]
+
         if gen_step < trailing_text_hiddens.shape[1]:
             inputs_embeds = inputs_embeds + trailing_text_hiddens[:, gen_step].unsqueeze(1)
         else:
             inputs_embeds = inputs_embeds + tts_pad_embed
-        
-        # --- CUDA-Graphed Talker decode step ---
+
+        # --- Talker decode step ---
         current_pos = prefill_len + step_idx
         if current_pos >= talker_graph.max_seq_len - 1:
-            # Stop if we exceed max_seq_len
             break
-        
+
         hidden_states = talker_graph.run(inputs_embeds, position=current_pos)
-        # hidden_states is the static output buffer - use it immediately
-        
+
         logits = talker_codec_head(hidden_states[:, -1, :]).unsqueeze(0)
-        
+
         if repetition_penalty != 1.0 and len(all_codec_ids) > 0:
             history = torch.stack([c[0] for c in all_codec_ids])
             logits = apply_repetition_penalty(logits, history, repetition_penalty)
@@ -196,12 +206,15 @@ def fast_generate(
             suppress_mask=suppress_mask,
             suppress_tokens=[eos_id] if suppress_eos else None,
         )
-        past_hidden = hidden_states[:, -1:, :].clone()  # clone since it's the static buffer
+        # ponytail: copy_ into pre-alloc'd buffer instead of clone()
+        past_hidden_buf.copy_(hidden_states[:, -1:, :])
+        past_hidden = past_hidden_buf
         gen_step += 1
-    
-    sync_device(device)
+
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     t_decode = time.time() - t_decode_start
-    
+
     n_steps = len(all_codec_ids)
     timing = {
         'prefill_ms': t_prefill * 1000,
@@ -210,7 +223,7 @@ def fast_generate(
         'ms_per_step': (t_decode / n_steps * 1000) if n_steps > 0 else 0,
         'steps_per_s': (n_steps / t_decode) if t_decode > 0 else 0,
     }
-    
+
     if all_codec_ids:
         return torch.stack(all_codec_ids), timing
     return None, timing

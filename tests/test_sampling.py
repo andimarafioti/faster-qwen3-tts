@@ -5,6 +5,7 @@ import torch
 
 from faster_qwen3_tts.generate import fast_generate
 from faster_qwen3_tts.sampling import apply_repetition_penalty
+from faster_qwen3_tts.utils import get_optimal_device
 
 
 def test_repetition_penalty_uses_all_history():
@@ -21,8 +22,9 @@ def test_repetition_penalty_uses_all_history():
     assert pytest.approx(out[0, 0, 8].item(), rel=1e-6) == -1.0 * 1.1
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for fast_generate syncs.")
 def test_min_new_tokens_suppresses_early_eos():
+    device = get_optimal_device()
+
     class DummyConfig:
         codec_eos_token_id = 1
         num_code_groups = 16
@@ -50,7 +52,9 @@ def test_min_new_tokens_suppresses_early_eos():
             return logits
 
     class DummyTalker:
-        def __init__(self, hidden=4, device="cuda"):
+        def __init__(self, hidden=4, device=None):
+            if device is None:
+                device = get_optimal_device()
             self.config = DummyConfig()
             self.code_predictor = DummyCodePredictor(
                 self.config.vocab_size, hidden, self.config.num_code_groups - 1, device
@@ -93,10 +97,10 @@ def test_min_new_tokens_suppresses_early_eos():
             return input_embeds
 
     talker = DummyTalker()
-    tie = torch.zeros(1, 3, 4, device="cuda")
-    tam = torch.ones(1, 3, dtype=torch.long, device="cuda")
-    tth = torch.zeros(1, 1, 4, device="cuda")
-    tpe = torch.zeros(1, 1, 4, device="cuda")
+    tie = torch.zeros(1, 3, 4, device=device)
+    tam = torch.ones(1, 3, dtype=torch.long, device=device)
+    tth = torch.zeros(1, 1, 4, device=device)
+    tpe = torch.zeros(1, 1, 4, device=device)
 
     codec_ids, _ = fast_generate(
         talker=talker,
