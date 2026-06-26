@@ -10,7 +10,7 @@ from typing import Generator, Tuple
 
 import torch
 
-from .device import sync_device
+from .utils import sync_device
 from .predictor_graph import PredictorGraph
 from .sampling import apply_repetition_penalty, sample_logits
 from .talker_graph import TalkerGraph

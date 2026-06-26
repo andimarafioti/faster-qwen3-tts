@@ -12,8 +12,7 @@ import numpy as np
 import soundfile as sf
 import torch
 
-from .utils import suppress_flash_attn_warning
-from .device import get_optimal_device, device_supports_cuda_graphs
+from .utils import suppress_flash_attn_warning, get_optimal_device, device_supports_cuda_graphs
 
 logger = logging.getLogger(__name__)
 
