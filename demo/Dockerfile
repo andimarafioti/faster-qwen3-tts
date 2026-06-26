@@ -14,6 +14,7 @@ ENV TORCHINDUCTOR_CACHE_DIR=/tmp/torch_inductor
 ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
 ENV VIRTUAL_ENV=/opt/venv
 ENV PATH="/opt/venv/bin:${PATH}"
+ARG FASTER_QWEN3_TTS_REF=main
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
@@ -30,7 +31,7 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/b
     && "$VIRTUAL_ENV/bin/python" -m pip install --index-url https://download.pytorch.org/whl/cu128 torch torchaudio \
     && "$VIRTUAL_ENV/bin/python" -m pip install "qwentts-cpp-python==0.3.0+cu128" \
         -f https://huggingface.co/datasets/andito/qwentts-cpp-python-wheels/tree/main/whl/cu128 \
-    && "$VIRTUAL_ENV/bin/python" -m pip install -c constraints.txt "faster-qwen3-tts[demo] @ git+https://github.com/andimarafioti/faster-qwen3-tts.git@ggml-backend-integration" \
+    && "$VIRTUAL_ENV/bin/python" -m pip install -c constraints.txt "faster-qwen3-tts[demo] @ git+https://github.com/andimarafioti/faster-qwen3-tts.git@${FASTER_QWEN3_TTS_REF}" \
     && "$VIRTUAL_ENV/bin/python" -m pip install -c constraints.txt -r requirements.txt
 
 EXPOSE 7860

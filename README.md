@@ -38,12 +38,19 @@ faster-qwen3-tts --backend ggml --quant BF16 design \
 ```
 
 The extra installs `qwentts-cpp-python>=0.3.0` from PyPI. That default wheel is
-CUDA 12.8. For CUDA 13 / DGX Spark or CUDA 12.4 targets, install the matching
-wrapper wheel from the Hugging Face wheelhouse before installing the extra:
+CUDA 12.8. For CUDA 13 / DGX Spark, CUDA 12.4 targets, or Ubuntu 22.04 / older
+Linux hosts that need a `manylinux_2_35` wheel, install the matching wrapper
+wheel from the Hugging Face wheelhouse before installing the extra:
 
 ```bash
+# Ubuntu 22.04 / older Linux with CUDA 12.8
+pip install "qwentts-cpp-python==0.3.0+cu128" \
+  -f https://huggingface.co/datasets/andito/qwentts-cpp-python-wheels/tree/main/whl/cu128
+
+# CUDA 13 / DGX Spark
 pip install "qwentts-cpp-python==0.3.0+cu130" \
   -f https://huggingface.co/datasets/andito/qwentts-cpp-python-wheels/tree/main/whl/cu130
+
 pip install "faster-qwen3-tts[ggml]"
 ```
 
