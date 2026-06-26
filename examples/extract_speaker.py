@@ -14,19 +14,24 @@ import torch
 import sys
 sys.path.insert(0, '.')
 
+from faster_qwen3_tts import get_optimal_device, device_supports_cuda_graphs
+
 def main():
     parser = argparse.ArgumentParser(description="Extract speaker embedding from reference audio")
     parser.add_argument("--ref_audio", required=True, help="Path to reference audio file (wav)")
     parser.add_argument("--output", required=True, help="Output path for speaker embedding (.pt)")
     parser.add_argument("--model_path", default="Qwen/Qwen3-TTS-12Hz-1.7B-Base",
                         help="Model path or HF model id")
-    parser.add_argument("--device", default="cuda:0", help="Device")
+    parser.add_argument("--device", default="auto", help="Device")
     args = parser.parse_args()
 
     from qwen_tts import Qwen3TTSModel
 
+    device = get_optimal_device(args.device)
+    dtype = torch.bfloat16 if device_supports_cuda_graphs(device) else torch.float32
+
     print(f"Loading model from {args.model_path}...")
-    model = Qwen3TTSModel.from_pretrained(args.model_path, device_map=args.device, dtype=torch.bfloat16)
+    model = Qwen3TTSModel.from_pretrained(args.model_path, device_map=device, dtype=dtype)
 
     print(f"Extracting speaker embedding from {args.ref_audio}...")
     prompt_items = model.create_voice_clone_prompt(

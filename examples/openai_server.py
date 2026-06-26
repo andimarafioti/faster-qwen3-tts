@@ -305,7 +305,7 @@ def _parse_args():
     )
     p.add_argument("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)")
     p.add_argument("--port", type=int, default=8000, help="Bind port (default: 8000)")
-    p.add_argument("--device", default="cuda", help="Torch device (default: cuda)")
+    p.add_argument("--device", default="auto", help="Torch device (default: auto)")
     return p.parse_args()
 
 
@@ -337,13 +337,16 @@ def main():
         )
         sys.exit(1)
 
-    from faster_qwen3_tts import FasterQwen3TTS
+    from faster_qwen3_tts import FasterQwen3TTS, get_optimal_device, device_supports_cuda_graphs
 
-    logger.info("Loading model %s on %s …", args.model, args.device)
+    device = get_optimal_device(args.device)
+    dtype = torch.bfloat16 if device_supports_cuda_graphs(device) else torch.float32
+
+    logger.info("Loading model %s on %s …", args.model, device)
     tts_model = FasterQwen3TTS.from_pretrained(
         args.model,
-        device=args.device,
-        dtype=torch.bfloat16,
+        device=device,
+        dtype=dtype,
     )
     SAMPLE_RATE = tts_model.sample_rate
     logger.info("Model ready. Sample rate: %d Hz", SAMPLE_RATE)
