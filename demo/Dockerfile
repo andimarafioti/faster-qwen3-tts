@@ -1,9 +1,11 @@
-FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu22.04
+FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 ENV MODEL_CACHE_SIZE=5
 ENV ACTIVE_MODELS=Qwen/Qwen3-TTS-12Hz-1.7B-Base
+ENV DEMO_DEFAULT_BACKEND=ggml
+ENV DEMO_GGML_QUANT=BF16
 ENV DEMO_WEB_ONLY=1
 ENV DEMO_REQUIRE_LOGIN=1
 ENV USAGE_BUCKET_MOUNT_PATH=/data
@@ -19,8 +21,8 @@ WORKDIR /app
 COPY . /app
 
 RUN python3 -m pip install --upgrade pip \
-    && python3 -m pip install --index-url https://download.pytorch.org/whl/cu126 torch torchaudio \
-    && python3 -m pip install "faster-qwen3-tts[demo]" \
+    && python3 -m pip install --index-url https://download.pytorch.org/whl/cu128 torch torchaudio \
+    && python3 -m pip install "faster-qwen3-tts[demo,ggml]" \
     && python3 -m pip install -r requirements.txt
 
 EXPOSE 7860

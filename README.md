@@ -170,15 +170,17 @@ faster-qwen3-tts serve \
 
 ### Demo UI
 
-A minimal web UI that streams audio in real time and shows TTFA and RTF live:
+A minimal web UI that streams audio in real time and shows TTFA and RTF live.
+It defaults to GGML/qwentts.cpp and includes a backend toggle for comparing it
+against the Torch CUDA-graph backend:
 
 ```bash
-pip install -e ".[demo]"
-python demo/server.py
+pip install -e ".[demo,ggml]"
+python demo/server.py --backend ggml
 # open http://localhost:7860
 ```
 
-Features: voice clone (upload any WAV or use your microphone), voice design (1.7B-VoiceDesign model), streaming/non-streaming toggle, adjustable chunk size, live TTFA/RTF metrics, WAV download.
+Features: voice clone (upload any WAV or use your microphone), voice design (1.7B-VoiceDesign model), GGML/Torch backend toggle, streaming/non-streaming toggle, adjustable chunk size, live TTFA/RTF metrics, WAV download.
 
 ### OpenAI-compatible API server
 

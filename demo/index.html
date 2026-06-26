@@ -588,6 +588,9 @@ body {
   background: var(--surface2); color: var(--text);
   box-shadow: var(--shadow);
 }
+.tog.disabled {
+  opacity: 0.35; cursor: not-allowed; pointer-events: none;
+}
 
 /* Slider */
 .s-slider {
@@ -647,7 +650,7 @@ body {
   <!-- Header -->
   <header class="hdr">
     <h1>faster-qwen3-tts</h1>
-    <span class="badge">CUDA GRAPHS</span>
+    <span class="badge" id="backendBadge">GGML</span>
     <span class="spacer"></span>
     <a class="upill" id="userPill" href="/oauth/huggingface/logout" title="Logout"></a>
     <button class="mpill" onclick="openSettings()" title="Settings">
@@ -754,6 +757,7 @@ body {
         <button class="dl-btn" onclick="dlAudio()" title="Download WAV">&darr;</button>
       </div>
       <div class="metrics">
+        <div class="met"><span class="met-k">Backend</span><span class="met-v" id="mBackend">&mdash;</span></div>
         <div class="met"><span class="met-k">TTFA</span><span class="met-v" id="mTTFA">&mdash;</span></div>
         <div class="met"><span class="met-k">Client</span><span class="met-v" id="mClient">&mdash;</span></div>
         <div class="met" id="mCloneWrap" style="display:none"><span class="met-k">Clone</span><span class="met-v" id="mClone">&mdash;</span></div>
@@ -781,6 +785,13 @@ body {
     </div>
 
     <div class="s-section">Model</div>
+    <div class="s-row">
+      <label>Backend</label>
+      <div class="toggle" id="backendToggle">
+        <div class="tog on" data-b="ggml" onclick="setBackend('ggml', true)">GGML</div>
+        <div class="tog" data-b="torch" onclick="setBackend('torch', true)">Graphs</div>
+      </div>
+    </div>
     <div class="s-row">
       <label>Model</label>
       <select id="modelSel"></select>
@@ -894,6 +905,10 @@ let presetRefId = null;
 let presetRefs = [];
 let loadedModel  = null;
 let loadingModel = null;
+let selectedBackend = 'ggml';
+let loadedBackend = null;
+let loadingBackend = null;
+let availableBackends = ['ggml', 'torch'];
 let dlBlob   = null;
 let currentUsage = null;
 
@@ -980,6 +995,30 @@ function defaultNonStreamingModeForModel(modelId) {
 function syncTextFeedDefault(modelId) {
   if (!modelId) return;
   setNonStreamingMode(defaultNonStreamingModeForModel(modelId));
+}
+function backendLabel(backend) {
+  return backend === 'torch' ? 'Graphs' : 'GGML';
+}
+function setBackend(backend, autoLoad = false) {
+  if (!availableBackends.includes(backend)) return;
+  selectedBackend = backend;
+  updateBackendUI();
+  if (autoLoad && loadedModel && !busy) loadModel().catch(() => {});
+}
+function applyAvailableBackends(backends, defaultBackend, activeBackend) {
+  availableBackends = (backends && backends.length ? backends : [defaultBackend || 'ggml']);
+  selectedBackend = activeBackend || defaultBackend || selectedBackend;
+  if (!availableBackends.includes(selectedBackend)) selectedBackend = availableBackends[0];
+  updateBackendUI();
+}
+function updateBackendUI() {
+  document.querySelectorAll('.tog[data-b]').forEach(el => {
+    const enabled = availableBackends.includes(el.dataset.b);
+    el.classList.toggle('on', el.dataset.b === selectedBackend);
+    el.classList.toggle('disabled', !enabled);
+  });
+  const badgeBackend = loadedBackend || selectedBackend;
+  $('backendBadge').textContent = backendLabel(badgeBackend).toUpperCase();
 }
 function setXvec(v) {
   xvecOnly = v;
@@ -1076,16 +1115,23 @@ async function fetchStatus() {
     if (!res.ok) throw new Error('Status failed');
     const d = await res.json();
     renderUser(d.user, d.usage);
+    applyAvailableBackends(d.available_backends || [], d.default_backend || 'ggml', d.backend || null);
     applyAvailableModels(d.available_models || []);
     if (d.loaded && d.model) {
       // Only trust loadedModel when the server confirms it's actually loaded
       loadedModel = d.model;
+      loadedBackend = d.backend || selectedBackend;
       $('modelSel').value = d.model;
       syncTextFeedDefault(d.model);
+    } else {
+      loadedModel = null;
+      loadedBackend = null;
     }
+    loadingModel = d.loading ? d.loading_model : null;
+    loadingBackend = d.loading ? d.loading_backend : null;
     populateSpeakers(d.speakers || []);
     renderPresetRefs(d.preset_refs || []);
-    setPill(d.loaded ? 'loaded' : 'off', d.loaded ? 'ready' : 'not loaded');
+    setPill(d.loaded ? 'loaded' : 'off', d.loaded ? `${backendLabel(loadedBackend)} ready` : 'not loaded');
   } catch { setPill('off', 'offline'); }
 }
 
@@ -1108,25 +1154,32 @@ async function loadModel() {
   const btn = $('loadBtn');
   btn.disabled = true; btn.textContent = 'Loading...';
   loadingModel = $('modelSel').value;
+  loadingBackend = selectedBackend;
   loadedModel  = null;
+  loadedBackend = null;
   setPlayBtns(true);
-  setPill('loading', 'loading...');
+  setPill('loading', `${backendLabel(loadingBackend)} loading...`);
   try {
     const fd = new FormData();
     fd.append('model_id', loadingModel);
+    fd.append('backend', loadingBackend);
     const d = await fetch('/load', { method: 'POST', headers: webHeaders(), body: fd }).then(r => r.json());
     if (d.status === 'loaded' || d.status === 'already_loaded') {
       loadedModel  = loadingModel;
+      loadedBackend = loadingBackend;
       loadingModel = null;
+      loadingBackend = null;
       syncTextFeedDefault(loadedModel);
-      setPill('loaded', 'ready');
+      setPill('loaded', `${backendLabel(loadedBackend)} ready`);
       fetchStatus();
     } else {
       loadingModel = null;
+      loadingBackend = null;
       setPill('error', 'failed');
     }
   } catch {
     loadingModel = null;
+    loadingBackend = null;
     setPill('error', 'error');
   }
   btn.disabled = false; btn.textContent = 'Load';
@@ -1136,6 +1189,7 @@ async function loadModel() {
 function setPill(state, label) {
   $('mdot').className = 'mdot ' + state;
   $('mtext').textContent = label;
+  updateBackendUI();
   updateModeRows();
 }
 
@@ -1612,6 +1666,10 @@ function buildFinalWav() {
 // ── Generate ──────────────────────────────────────────────────────────────────
 async function generate(mode) {
   if (busy) return;
+  if (!loadedModel || loadedBackend !== selectedBackend) {
+    showMsg('warn', `Load ${backendLabel(selectedBackend)} first.`);
+    return;
+  }
 
   const isVD = loadedModel?.includes('VoiceDesign');
   const isCV = loadedModel?.includes('CustomVoice');
@@ -1721,11 +1779,13 @@ async function runStream(fd) {
         if (!audioInited) { await initAudio(d.sample_rate); audioInited = true; }
         // Capture server wall time on first chunk
         if (firstChunkAt == null && d.elapsed_ms != null) firstServerWall = d.elapsed_ms;
+        setResultBackend(d.backend);
         pushMetrics(d.ttfa_ms, d.rtf, d.total_audio_s, d.voice_clone_ms);
         enqueueChunk(d.audio_b64);
 
       } else if (d.type === 'done') {
         $('queueBar').className = 'queue-bar';
+        setResultBackend(d.backend);
         pushMetrics(d.ttfa_ms, d.rtf, d.total_audio_s, d.voice_clone_ms);
         await chunkQ;
         setDone();
@@ -1746,6 +1806,7 @@ async function runNonStream(fd) {
   if (!res.ok) { const e = await res.json(); throw new Error(e.detail || 'Request failed'); }
   const d = await res.json();
   const m = d.metrics;
+  setResultBackend(d.backend);
   pushMetrics(m.total_ms, m.rtf, m.audio_duration_s, m.voice_clone_ms);
   setDone();
   const bytes = Uint8Array.from(atob(d.audio_b64), c => c.charCodeAt(0));
@@ -1757,7 +1818,11 @@ async function runNonStream(fd) {
 // ── Metrics ───────────────────────────────────────────────────────────────────
 function resetMetrics() {
   ['mTTFA', 'mClient', 'mRTF', 'mDur', 'mBuf', 'mClone'].forEach(id => $(id).innerHTML = '&mdash;');
+  setResultBackend(loadedBackend || selectedBackend);
   $('mCloneWrap').style.display = 'none';
+}
+function setResultBackend(backend) {
+  $('mBackend').textContent = backendLabel(backend || loadedBackend || selectedBackend);
 }
 function pushMetrics(ttfa, rtf, dur, cloneMs) {
   if (ttfa    != null) $('mTTFA').textContent  = Math.round(ttfa) + 'ms';
