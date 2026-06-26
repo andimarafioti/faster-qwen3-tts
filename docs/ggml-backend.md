@@ -35,12 +35,12 @@ Install a backend-specific wrapper wheel first when the PyPI CUDA 12.8 wheel is
 not the right runtime for the machine, then install this package as usual:
 
 ```bash
-pip install "qwentts-cpp-python==0.2.0+cu130" \
-  -f https://huggingface.co/datasets/andito/qwentts-cpp-python-wheels/resolve/main/whl/cu130.html
+pip install "qwentts-cpp-python==0.3.0+cu130" \
+  -f https://huggingface.co/datasets/andito/qwentts-cpp-python-wheels/tree/main/whl/cu130
 pip install "faster-qwen3-tts[ggml]"
 ```
 
-The same wheel index also has `0.2.0+cu124`, `0.2.0+cu128`, and `0.2.0+cpu`
+The same wheel index also has `0.3.0+cu124`, `0.3.0+cu128`, and `0.3.0+cpu`
 variants.
 
 For local wrapper development, clone the wrapper repo beside this checkout and
@@ -100,7 +100,12 @@ faster-qwen3-tts --backend ggml --quant BF16 design \
   --output out.wav
 ```
 
-Cached qwentts.cpp references are supported for base voice cloning:
+Raw reference audio is cached automatically after the first base voice-clone
+request. The adapter stores qwentts-compatible `.spk` and `.rvq` latents under
+`~/.cache/faster-qwen3-tts/qwentts_refs` by default, or under
+`FQWEN3TTS_QWENTTS_REF_CACHE_DIR` / `--qwentts-ref-cache-dir` when set.
+
+Precomputed qwentts.cpp references are also supported for base voice cloning:
 
 ```python
 audio_list, sr = model.generate_voice_clone(
@@ -113,8 +118,8 @@ audio_list, sr = model.generate_voice_clone(
 ```
 
 Use `ref_spk` by itself for speaker-only conditioning. Use `ref_spk` +
-`ref_rvq` + `ref_text` for cached ICL conditioning. Raw `ref_audio` and cached
-references are mutually exclusive.
+`ref_rvq` + `ref_text` for cached ICL conditioning. Raw `ref_audio` and
+explicit cached references are mutually exclusive.
 
 ## Current ABI Gaps
 
@@ -122,11 +127,9 @@ The qwentts.cpp C ABI is already enough for buffered and streaming
 synthesis, voice cloning, CustomVoice, and VoiceDesign. These gaps remain
 before treating the backend as full parity:
 
-- no C ABI for creating `.spk` / `.rvq` files from `ref_audio` inside Python
 - no `non_streaming_mode` switch
 - base-model `instruct` is rejected by qwentts.cpp
 - KV-cache length is fixed in qwentts.cpp
-- raw reference audio must reach the ABI as mono float 24 kHz
 
 The public GGUF model repo used by the resolver is
 `Serveurperso/Qwen3-TTS-GGUF`.
@@ -168,26 +171,26 @@ The legacy CUDA-graph-only benchmarks still run with `./benchmark.sh`.
 
 ## Wheel Distribution
 
-`qwentts-cpp-python==0.2.0` is published on PyPI. The PyPI package is the
+`qwentts-cpp-python==0.3.0` is published on PyPI. The PyPI package is the
 default CUDA 12.8 wheel used by `pip install "faster-qwen3-tts[ggml]"`.
 Additional local-version wheels are hosted on Hugging Face Hub:
 
 ```bash
-pip install "qwentts-cpp-python==0.2.0+cpu" \
-  -f https://huggingface.co/datasets/andito/qwentts-cpp-python-wheels/resolve/main/whl/cpu.html
+pip install "qwentts-cpp-python==0.3.0+cpu" \
+  -f https://huggingface.co/datasets/andito/qwentts-cpp-python-wheels/tree/main/whl/cpu
 
-pip install "qwentts-cpp-python==0.2.0+cu124" \
-  -f https://huggingface.co/datasets/andito/qwentts-cpp-python-wheels/resolve/main/whl/cu124.html
+pip install "qwentts-cpp-python==0.3.0+cu124" \
+  -f https://huggingface.co/datasets/andito/qwentts-cpp-python-wheels/tree/main/whl/cu124
 
-pip install "qwentts-cpp-python==0.2.0+cu128" \
-  -f https://huggingface.co/datasets/andito/qwentts-cpp-python-wheels/resolve/main/whl/cu128.html
+pip install "qwentts-cpp-python==0.3.0+cu128" \
+  -f https://huggingface.co/datasets/andito/qwentts-cpp-python-wheels/tree/main/whl/cu128
 
-pip install "qwentts-cpp-python==0.2.0+cu130" \
-  -f https://huggingface.co/datasets/andito/qwentts-cpp-python-wheels/resolve/main/whl/cu130.html
+pip install "qwentts-cpp-python==0.3.0+cu130" \
+  -f https://huggingface.co/datasets/andito/qwentts-cpp-python-wheels/tree/main/whl/cu130
 ```
 
-Hugging Face raw file hosting is used as a `--find-links` wheelhouse rather
-than a PyTorch-style package index. For CUDA 13 / DGX Spark, install the
+Hugging Face file hosting is used as a `--find-links` wheelhouse rather than a
+PyTorch-style package index. For CUDA 13 / DGX Spark, install the
 `+cu130` wheel before installing `faster-qwen3-tts[ggml]`.
 
 For publishing new wrapper wheels, use the manual GitHub Actions workflow:

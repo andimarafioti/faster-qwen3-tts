@@ -118,6 +118,7 @@ class FasterQwen3TTS:
         qwentts_library_path: Optional[Union[str, Path]] = None,
         qwentts_use_fa: bool = True,
         qwentts_clamp_fp16: bool = False,
+        qwentts_ref_cache_dir: Optional[Union[str, Path]] = None,
         cache_dir: Optional[Union[str, Path]] = None,
         local_files_only: bool = False,
     ):
@@ -138,6 +139,8 @@ class FasterQwen3TTS:
             qwentts_library_path: Optional explicit path to libqwen.
             qwentts_use_fa: Whether qwentts.cpp should use flash-attention kernels.
             qwentts_clamp_fp16: Whether qwentts.cpp should clamp fp16 operations.
+            qwentts_ref_cache_dir: Optional cache directory for GGML voice-clone
+                `.spk` / `.rvq` references extracted from raw reference audio.
             
         Returns:
             FasterQwen3TTS instance
@@ -157,6 +160,7 @@ class FasterQwen3TTS:
                     library_path=qwentts_library_path,
                     use_fa=qwentts_use_fa,
                     clamp_fp16=qwentts_clamp_fp16,
+                    voice_ref_cache_dir=qwentts_ref_cache_dir,
                 )
 
             return GGMLQwen3TTS.from_pretrained(
@@ -167,6 +171,7 @@ class FasterQwen3TTS:
                 library_path=qwentts_library_path,
                 use_fa=qwentts_use_fa,
                 clamp_fp16=qwentts_clamp_fp16,
+                voice_ref_cache_dir=qwentts_ref_cache_dir,
             )
 
         if isinstance(dtype, str):

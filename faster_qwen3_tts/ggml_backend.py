@@ -5,7 +5,10 @@ generation to the separately packaged qwentts.cpp C ABI wrapper.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Callable, Generator, Optional, Tuple, Union
@@ -16,6 +19,7 @@ import soundfile as sf
 logger = logging.getLogger(__name__)
 
 _QWEN_FRAME_RATE = 24000 / 1920
+_VOICE_REF_CACHE_VERSION = 1
 
 
 def _require_qwentts_cpp():
@@ -55,13 +59,41 @@ def _load_ref_audio_24k(
     return _resample_linear(np.asarray(audio, dtype=np.float32), int(sr), 24000)
 
 
+def _default_voice_ref_cache_dir() -> Path:
+    env_value = os.environ.get("FQWEN3TTS_QWENTTS_REF_CACHE_DIR")
+    if env_value:
+        return Path(env_value)
+    return Path.home() / ".cache" / "faster-qwen3-tts" / "qwentts_refs"
+
+
+def _path_identity(path: Union[str, Path]) -> str:
+    p = Path(path)
+    try:
+        stat = p.stat()
+        return f"{p.resolve()}:{stat.st_size}:{stat.st_mtime_ns}"
+    except OSError:
+        return str(p)
+
+
 class GGMLQwen3TTS:
     """FasterQwen3TTS-compatible wrapper backed by qwentts.cpp/GGML."""
 
     sample_rate = 24000
 
-    def __init__(self, runtime):
+    def __init__(
+        self,
+        runtime,
+        *,
+        model_identity: str = "unknown",
+        voice_ref_cache_dir: Optional[Union[str, Path]] = None,
+    ):
         self.runtime = runtime
+        self.model_identity = str(model_identity)
+        self.voice_ref_cache_dir = (
+            Path(voice_ref_cache_dir) if voice_ref_cache_dir is not None else _default_voice_ref_cache_dir()
+        )
+        self._voice_ref_cache = {}
+        self.last_adapter_profile: Optional[dict] = None
 
     def get_supported_speakers(self) -> list[str]:
         if not hasattr(self.runtime, "speaker_names"):
@@ -77,6 +109,7 @@ class GGMLQwen3TTS:
         library_path: Optional[Union[str, Path]] = None,
         use_fa: bool = True,
         clamp_fp16: bool = False,
+        voice_ref_cache_dir: Optional[Union[str, Path]] = None,
     ) -> "GGMLQwen3TTS":
         QwenTTS, _load_speaker_embedding = _require_qwentts_cpp()
         runtime = QwenTTS(
@@ -86,7 +119,8 @@ class GGMLQwen3TTS:
             use_fa=use_fa,
             clamp_fp16=clamp_fp16,
         )
-        return cls(runtime)
+        model_identity = f"gguf:{_path_identity(talker_path)}|{_path_identity(codec_path)}"
+        return cls(runtime, model_identity=model_identity, voice_ref_cache_dir=voice_ref_cache_dir)
 
     @classmethod
     def from_pretrained(
@@ -99,6 +133,7 @@ class GGMLQwen3TTS:
         library_path: Optional[Union[str, Path]] = None,
         use_fa: bool = True,
         clamp_fp16: bool = False,
+        voice_ref_cache_dir: Optional[Union[str, Path]] = None,
     ) -> "GGMLQwen3TTS":
         QwenTTS, _load_speaker_embedding = _require_qwentts_cpp()
         runtime = QwenTTS.from_pretrained(
@@ -110,7 +145,11 @@ class GGMLQwen3TTS:
             use_fa=use_fa,
             clamp_fp16=clamp_fp16,
         )
-        return cls(runtime)
+        return cls(
+            runtime,
+            model_identity=f"hf:{model_name}:{quant}",
+            voice_ref_cache_dir=voice_ref_cache_dir,
+        )
 
     def generate_voice_clone(
         self,
@@ -142,7 +181,7 @@ class GGMLQwen3TTS:
             )
         if instruct:
             raise NotImplementedError("qwentts.cpp currently rejects instruct for base voice-clone models")
-        ref_kwargs, _adapter_prepare_ms = self._resolve_clone_reference(
+        ref_kwargs, _adapter_prepare_ms, adapter_profile = self._resolve_clone_reference(
             ref_audio=ref_audio,
             ref_text=ref_text,
             xvec_only=xvec_only,
@@ -152,6 +191,7 @@ class GGMLQwen3TTS:
             ref_spk_emb=ref_spk_emb,
             ref_codes=ref_codes,
         )
+        self.last_adapter_profile = adapter_profile
         audio, sr = self.runtime.synthesize(
             text=text,
             lang=language,
@@ -197,7 +237,7 @@ class GGMLQwen3TTS:
             )
         if instruct:
             raise NotImplementedError("qwentts.cpp currently rejects instruct for base voice-clone models")
-        ref_kwargs, adapter_prepare_ms = self._resolve_clone_reference(
+        ref_kwargs, adapter_prepare_ms, adapter_profile = self._resolve_clone_reference(
             ref_audio=ref_audio,
             ref_text=ref_text,
             xvec_only=xvec_only,
@@ -219,6 +259,7 @@ class GGMLQwen3TTS:
             repetition_penalty=repetition_penalty,
             chunk_size=chunk_size,
             adapter_prepare_ms=adapter_prepare_ms,
+            adapter_profile=adapter_profile,
         )
 
     def _resolve_clone_reference(
@@ -232,8 +273,12 @@ class GGMLQwen3TTS:
         ref_rvq: Optional[Union[str, Path]],
         ref_spk_emb: Optional[np.ndarray],
         ref_codes: Optional[np.ndarray],
-    ) -> Tuple[dict, float]:
+    ) -> Tuple[dict, float, dict]:
         adapter_start = time.perf_counter()
+        adapter_profile = {
+            "mode": "clone",
+            "voice_ref_cache": "explicit" if any(value is not None for value in (ref_spk, ref_rvq, ref_spk_emb, ref_codes)) else "none",
+        }
         has_cached_ref = any(
             value is not None for value in (ref_spk, ref_rvq, ref_spk_emb, ref_codes)
         )
@@ -251,11 +296,17 @@ class GGMLQwen3TTS:
 
         if ref_audio is not None:
             ref_audio_24k = _load_ref_audio_24k(ref_audio, append_silence=append_silence)
-            effective_ref_text = "" if xvec_only else ref_text
-            return {
-                "ref_audio_24k": ref_audio_24k,
-                "ref_text": effective_ref_text or None,
-            }, (time.perf_counter() - adapter_start) * 1000
+            voice_ref, cache_profile = self._get_or_extract_voice_ref(
+                ref_audio_24k,
+                append_silence=append_silence,
+            )
+            adapter_profile.update(cache_profile)
+            ref_kwargs = self._voice_ref_to_kwargs(
+                voice_ref,
+                xvec_only=xvec_only,
+                ref_text=ref_text,
+            )
+            return ref_kwargs, (time.perf_counter() - adapter_start) * 1000, adapter_profile
 
         if not has_cached_ref:
             raise ValueError("Voice cloning requires ref_audio or cached ref_spk/ref_spk_emb.")
@@ -271,7 +322,131 @@ class GGMLQwen3TTS:
         }
         if codes is not None:
             ref_kwargs["ref_codes"] = codes
-        return ref_kwargs, (time.perf_counter() - adapter_start) * 1000
+        return ref_kwargs, (time.perf_counter() - adapter_start) * 1000, adapter_profile
+
+    def _voice_ref_to_kwargs(self, voice_ref, *, xvec_only: bool, ref_text: str) -> dict:
+        include_codes = (not xvec_only) and bool(ref_text)
+        ref_kwargs = {
+            "ref_spk_emb": np.ascontiguousarray(voice_ref.ref_spk_emb, dtype=np.float32).reshape(-1),
+            "ref_text": ref_text if include_codes else None,
+        }
+        if include_codes:
+            ref_kwargs["ref_codes"] = np.ascontiguousarray(voice_ref.ref_codes, dtype=np.int32)
+        return ref_kwargs
+
+    def _get_or_extract_voice_ref(self, ref_audio_24k: np.ndarray, *, append_silence: bool):
+        audio = np.ascontiguousarray(ref_audio_24k, dtype=np.float32).reshape(-1)
+        key, metadata = self._voice_ref_cache_key(audio, append_silence=append_silence)
+        key_short = key[:12]
+        cache_start = time.perf_counter()
+
+        if key in self._voice_ref_cache:
+            return self._voice_ref_cache[key], {
+                "voice_ref_cache": "memory",
+                "voice_ref_cache_key": key_short,
+                "voice_ref_cache_ms": (time.perf_counter() - cache_start) * 1000,
+            }
+
+        cached = self._load_voice_ref_from_disk(key, metadata)
+        if cached is not None:
+            self._voice_ref_cache[key] = cached
+            return cached, {
+                "voice_ref_cache": "disk",
+                "voice_ref_cache_key": key_short,
+                "voice_ref_cache_ms": (time.perf_counter() - cache_start) * 1000,
+            }
+
+        extract = getattr(self.runtime, "extract_voice_ref", None)
+        if extract is None:
+            raise NotImplementedError(
+                "Raw ref_audio caching requires qwentts-cpp-python >= 0.3.0 "
+                "with qt_extract_voice_ref support."
+            )
+
+        extract_start = time.perf_counter()
+        voice_ref = extract(audio)
+        extract_ms = (time.perf_counter() - extract_start) * 1000
+        self._voice_ref_cache[key] = voice_ref
+        self._save_voice_ref_to_disk(key, metadata, voice_ref)
+        profile = {
+            "voice_ref_cache": "miss",
+            "voice_ref_cache_key": key_short,
+            "voice_ref_extract_ms": extract_ms,
+        }
+        native_profile = getattr(self.runtime, "last_extract_voice_ref_profile", None)
+        if native_profile:
+            profile["voice_ref_extract_profile"] = dict(native_profile)
+        return voice_ref, profile
+
+    def _voice_ref_cache_key(self, ref_audio_24k: np.ndarray, *, append_silence: bool) -> tuple[str, dict]:
+        audio_hash = hashlib.sha256(ref_audio_24k.tobytes()).hexdigest()
+        metadata = {
+            "version": _VOICE_REF_CACHE_VERSION,
+            "model_identity": self.model_identity,
+            "native_version": self._runtime_version(),
+            "sample_rate": 24000,
+            "dtype": "float32",
+            "n_samples": int(ref_audio_24k.shape[0]),
+            "append_silence": bool(append_silence),
+            "audio_sha256": audio_hash,
+        }
+        key_payload = json.dumps(metadata, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(key_payload).hexdigest(), metadata
+
+    def _runtime_version(self) -> str:
+        version = getattr(self.runtime, "version", None)
+        if callable(version):
+            try:
+                return str(version())
+            except Exception:
+                pass
+        library = getattr(self.runtime, "library", None)
+        library_version = getattr(library, "version", None)
+        if callable(library_version):
+            try:
+                return str(library_version())
+            except Exception:
+                pass
+        return "unknown"
+
+    def _voice_ref_paths(self, key: str) -> tuple[Path, Path, Path]:
+        base = self.voice_ref_cache_dir / key
+        return base.with_suffix(".spk"), base.with_suffix(".rvq"), base.with_suffix(".json")
+
+    def _load_voice_ref_from_disk(self, key: str, metadata: dict):
+        spk_path, rvq_path, meta_path = self._voice_ref_paths(key)
+        if not (spk_path.is_file() and rvq_path.is_file() and meta_path.is_file()):
+            return None
+        try:
+            cached_metadata = json.loads(meta_path.read_text())
+            if cached_metadata != metadata:
+                return None
+            load_voice_ref = getattr(self.runtime, "load_voice_ref", None)
+            if load_voice_ref is None:
+                return None
+            return load_voice_ref(spk_path, rvq_path)
+        except Exception as exc:
+            logger.warning("Failed to load cached qwentts voice reference %s: %s", key[:12], exc)
+            return None
+
+    def _save_voice_ref_to_disk(self, key: str, metadata: dict, voice_ref) -> None:
+        save = getattr(voice_ref, "save", None)
+        if save is None:
+            return
+        try:
+            self.voice_ref_cache_dir.mkdir(parents=True, exist_ok=True)
+            spk_path, rvq_path, meta_path = self._voice_ref_paths(key)
+            tmp_prefix = self.voice_ref_cache_dir / f".{key}.{os.getpid()}"
+            tmp_spk = tmp_prefix.with_suffix(".spk")
+            tmp_rvq = tmp_prefix.with_suffix(".rvq")
+            tmp_meta = tmp_prefix.with_suffix(".json")
+            save(tmp_spk, tmp_rvq)
+            tmp_meta.write_text(json.dumps(metadata, sort_keys=True))
+            tmp_spk.replace(spk_path)
+            tmp_rvq.replace(rvq_path)
+            tmp_meta.replace(meta_path)
+        except Exception as exc:
+            logger.warning("Failed to save qwentts voice reference cache %s: %s", key[:12], exc)
 
     def _load_cached_speaker(
         self,
@@ -306,7 +481,7 @@ class GGMLQwen3TTS:
         )
         if load_rvq_codes is None:
             raise NotImplementedError(
-                "Cached RVQ references require qwentts-cpp-python >= 0.2.0 "
+                "Cached RVQ references require qwentts-cpp-python >= 0.3.0 "
                 "and qwentts.cpp ABI v2."
             )
         return load_rvq_codes(ref_rvq)
@@ -429,7 +604,14 @@ class GGMLQwen3TTS:
             adapter_prepare_ms=(time.perf_counter() - adapter_start) * 1000,
         )
 
-    def _stream_runtime(self, *, chunk_size: int, adapter_prepare_ms: float = 0.0, **kwargs):
+    def _stream_runtime(
+        self,
+        *,
+        chunk_size: int,
+        adapter_prepare_ms: float = 0.0,
+        adapter_profile: Optional[dict] = None,
+        **kwargs,
+    ):
         chunk_sec = max(1, int(chunk_size)) / _QWEN_FRAME_RATE
         start = time.perf_counter()
         last = start
@@ -443,6 +625,7 @@ class GGMLQwen3TTS:
                 "decode_ms": (now - last) * 1000,
                 "total_ms": (now - start) * 1000,
                 "adapter_prepare_ms": adapter_prepare_ms if idx == 0 else 0.0,
+                "adapter_profile": dict(adapter_profile) if (idx == 0 and adapter_profile) else None,
                 "ggml_profile": dict(native_profile) if native_profile else None,
                 "is_final": False,
             }

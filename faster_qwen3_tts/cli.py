@@ -26,6 +26,7 @@ def _load_model(args):
             qwentts_library_path=args.qwentts_lib,
             qwentts_use_fa=args.qwentts_use_fa,
             qwentts_clamp_fp16=args.qwentts_clamp_fp16,
+            qwentts_ref_cache_dir=args.qwentts_ref_cache_dir,
         )
 
     if dtype == "bf16":
@@ -357,6 +358,7 @@ def build_parser():
     p.add_argument("--gguf-model", help="Local qwentts.cpp talker GGUF path")
     p.add_argument("--gguf-codec", help="Local qwentts.cpp codec GGUF path")
     p.add_argument("--qwentts-lib", help="Explicit path to libqwen shared library")
+    p.add_argument("--qwentts-ref-cache-dir", help="Cache directory for qwentts.cpp cloned voice latents")
     p.add_argument(
         "--qwentts-no-fa",
         dest="qwentts_use_fa",

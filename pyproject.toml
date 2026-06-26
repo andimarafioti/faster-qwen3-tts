@@ -37,7 +37,7 @@ dependencies = [
 
 [project.optional-dependencies]
 ggml = [
-    "qwentts-cpp-python>=0.2.0",
+    "qwentts-cpp-python>=0.3.0",
 ]
 demo = [
     "fastapi>=0.100.0",
