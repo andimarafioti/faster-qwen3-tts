@@ -22,7 +22,7 @@ COPY . /app
 
 RUN python3 -m pip install --upgrade pip \
     && python3 -m pip install --index-url https://download.pytorch.org/whl/cu128 torch torchaudio \
-    && python3 -m pip install "faster-qwen3-tts[demo,ggml]" \
+    && python3 -m pip install "faster-qwen3-tts[demo,ggml] @ git+https://github.com/andimarafioti/faster-qwen3-tts.git@ggml-backend-integration" \
     && python3 -m pip install -r requirements.txt
 
 EXPOSE 7860
