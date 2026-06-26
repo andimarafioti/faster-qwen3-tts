@@ -6,14 +6,14 @@ on:
     types: [ opened, synchronize, reopened, closed ]
     paths-ignore:
       - 'helm/**'
-      - '.github/workflows/**'
+      # - '.github/workflows/**'  # Restore before merge
       - 'taskfile.yaml'
 
 jobs:
   build-image:
     runs-on: ubuntu-latest
     permissions:
-      id-token: write
+      packages: write
       contents: read
     outputs:
       prebuilt_tag: ${{ steps.meta.outputs.prebuilt_tag }}
@@ -23,17 +23,14 @@ jobs:
       - name: Set prebuilt tag
         id: meta
         run: |
-          echo "prebuilt_tag=us-docker.pkg.dev/qarlproductionregistries/dockerimgstaging/faster-qwen3-tts:prebuilt-${{ github.event.pull_request.head.sha || github.sha }}" >> $GITHUB_OUTPUT
+          echo "prebuilt_tag=ghcr.io/qarlai/dockerimgstaging/faster-qwen3-tts:prebuilt-${{ github.event.pull_request.head.sha || github.sha }}" >> $GITHUB_OUTPUT
 
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v3
+      - name: Authenticate Docker to GHCR
+        uses: docker/login-action@v3
         with:
-          token_format: access_token
-          workload_identity_provider: 'projects/1093867875731/locations/global/workloadIdentityPools/github/providers/github-provider'
-          service_account: 'qarl-studio-backend-sa@qarl-studio.iam.gserviceaccount.com'
-
-      - name: Authenticate Docker to GAR
-        run: gcloud auth configure-docker us-docker.pkg.dev --quiet
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -49,10 +46,10 @@ jobs:
 
   call-sync-library:
     needs: build-image
-    uses: QarlAI/.github/.github/workflows/build-push-sync.yaml@main
+    uses: QarlAI/.github/.github/workflows/build-push-sync.yaml@mavis/GAR-to-GHCR
     permissions:
       contents: read
-      id-token: write
+      packages: write
       pull-requests: write
     with:
       target_branch: develop

@@ -9,7 +9,7 @@ on:
       image_registry:
         description: "Docker image registry path"
         required: false
-        default: "us-docker.pkg.dev/qarlproductionregistries/dockerimg"
+        default: "ghcr.io/qarlai/dockerimg"
 
 concurrency:
   group: integration-test
@@ -27,7 +27,7 @@ jobs:
     env:
       DEPLOYMENT_NAME: it-${{ github.run_id }}
       TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
-      IMAGE_REGISTRY: ${{ inputs.image_registry || 'us-docker.pkg.dev/qarlproductionregistries/dockerimg' }}
+      IMAGE_REGISTRY: ${{ inputs.image_registry || 'ghcr.io/qarlai/dockerimg' }}
       IMAGE_TAG: ${{ inputs.image_tag }}
       GH_PAT: ${{ secrets.GH_PAT }}
       HF_TOKEN: ${{ secrets.HF_TOKEN }}

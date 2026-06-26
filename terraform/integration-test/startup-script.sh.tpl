@@ -74,10 +74,10 @@ for i in {1..30}; do
 done
 
 # ---------------------------------------------------------------------------
-# Authenticate with Google Artifact Registry & run container
+# Authenticate with GitHub Container Registry & run container
 # ---------------------------------------------------------------------------
-echo "Authenticating Docker with GAR..."
-gcloud auth configure-docker us-docker.pkg.dev --quiet
+echo "Authenticating Docker with ghcr.io..."
+echo "${github_token}" | docker login ghcr.io -u USERNAME --password-stdin
 
 # ---------------------------------------------------------------------------
 # Server container
