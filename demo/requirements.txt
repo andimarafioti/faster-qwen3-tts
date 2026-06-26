@@ -3,5 +3,6 @@
 fastapi>=0.100.0
 uvicorn[standard]>=0.24.0
 python-multipart>=0.0.7
+huggingface-hub[oauth]>=0.36.0
 nano-parakeet
 torchaudio
