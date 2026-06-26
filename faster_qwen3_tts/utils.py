@@ -58,15 +58,3 @@ def device_supports_cuda_graphs(device: str) -> bool:
     """Check if the device supports CUDA graph capture."""
     return device.startswith("cuda") and torch.cuda.is_available()
 
-
-def sync_device(device) -> None:
-    """Synchronize the given device (no-op for CPU).
-
-    Args:
-        device: str ("cuda", "mps", "cpu") or torch.device
-    """
-    device_str = str(device) if not isinstance(device, str) else device
-    if device_str.startswith("cuda"):
-        torch.cuda.synchronize()
-    elif device_str == "mps" and hasattr(torch.mps, "synchronize"):
-        torch.mps.synchronize()
