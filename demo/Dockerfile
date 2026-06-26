@@ -16,7 +16,7 @@ ENV VIRTUAL_ENV=/opt/venv
 ENV PATH="/opt/venv/bin:${PATH}"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 python3-pip python3-venv \
+    python3 \
     curl git ffmpeg libsndfile1 sox \
     && rm -rf /var/lib/apt/lists/*
 
@@ -34,4 +34,4 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/b
     && "$VIRTUAL_ENV/bin/python" -m pip install -r requirements.txt
 
 EXPOSE 7860
-CMD ["python3", "server.py", "--host", "0.0.0.0"]
+CMD ["python", "server.py", "--host", "0.0.0.0"]
