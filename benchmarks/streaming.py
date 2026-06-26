@@ -5,7 +5,10 @@ import time
 import os
 import numpy as np
 import soundfile as sf
-from faster_qwen3_tts import FasterQwen3TTS
+from faster_qwen3_tts import FasterQwen3TTS, get_optimal_device, device_supports_cuda_graphs
+
+device = get_optimal_device("auto")
+dtype = torch.bfloat16 if device_supports_cuda_graphs(device) else torch.float32
 
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODEL_SIZE = os.environ.get('MODEL_SIZE', '0.6B')
@@ -18,8 +21,8 @@ ref_text = "I'm confused why some people have super short timelines, yet at the 
 print("Loading model...")
 model = FasterQwen3TTS.from_pretrained(
     MODEL_ID,
-    device='cuda',
-    dtype=torch.bfloat16,
+    device=device,
+    dtype=dtype,
     attn_implementation='eager',
     max_seq_len=2048,
 )
@@ -42,7 +45,8 @@ print("\n=== Streaming TTFA (time to first audio chunk) ===")
 for chunk_size in [4, 8, 12]:
     ttfa_results = []
     for i in range(5):
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         t0 = time.perf_counter()
         gen = model.generate_voice_clone_streaming(
             text=text,
@@ -53,7 +57,8 @@ for chunk_size in [4, 8, 12]:
             parity_mode=PARITY_STREAMING,
         )
         first_chunk, sr, timing = next(gen)
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         ttfa_ms = (time.perf_counter() - t0) * 1000
         ttfa_results.append(ttfa_ms)
         gen.close()
@@ -69,7 +74,8 @@ print("\n=== Full streaming run (chunk_size=12) ===")
 for run in range(3):
     chunks = []
     chunk_timings = []
-    torch.cuda.synchronize()
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     t_total = time.perf_counter()
 
     for audio_chunk, sr, timing in model.generate_voice_clone_streaming(
@@ -88,7 +94,8 @@ for run in range(3):
             'decode_ms': timing['decode_ms'],
         })
 
-    torch.cuda.synchronize()
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     total_time = time.perf_counter() - t_total
 
     full_audio = np.concatenate(chunks)
@@ -108,7 +115,8 @@ for run in range(3):
 # === NON-STREAMING COMPARISON ===
 print("\n=== Non-streaming comparison ===")
 for run in range(3):
-    torch.cuda.synchronize()
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     t0 = time.perf_counter()
     audio_list, sr = model.generate_voice_clone(
         text=text,
@@ -116,7 +124,8 @@ for run in range(3):
         ref_audio=ref_audio,
         ref_text=ref_text,
     )
-    torch.cuda.synchronize()
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     total_time = time.perf_counter() - t0
 
     audio = audio_list[0]

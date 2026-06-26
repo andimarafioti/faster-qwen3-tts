@@ -7,7 +7,10 @@ import numpy as np
 import torch
 import soundfile as sf
 
-from faster_qwen3_tts import FasterQwen3TTS
+from faster_qwen3_tts import FasterQwen3TTS, get_optimal_device, device_supports_cuda_graphs
+
+device = get_optimal_device("auto")
+dtype = torch.bfloat16 if device_supports_cuda_graphs(device) else torch.float32
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 OUT_DIR = Path(os.environ.get("NSM_SAMPLES_DIR", PROJECT_DIR / "samples" / "non_streaming_mode"))
@@ -49,7 +52,8 @@ DO_SAMPLE = os.environ.get("DO_SAMPLE", "1") == "1"
 
 def set_seed(seed: int):
     torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+    if device_supports_cuda_graphs(device):
+        torch.cuda.manual_seed_all(seed)
     np.random.seed(seed)
 
 
@@ -58,8 +62,8 @@ def main():
 
     model = FasterQwen3TTS.from_pretrained(
         MODEL_ID,
-        device="cuda",
-        dtype=torch.bfloat16,
+        device=device,
+        dtype=dtype,
         attn_implementation="eager",
         max_seq_len=2048,
     )

@@ -4,7 +4,10 @@ import torch
 import time
 import os
 import numpy as np
-from faster_qwen3_tts import FasterQwen3TTS
+from faster_qwen3_tts import FasterQwen3TTS, get_optimal_device, device_supports_cuda_graphs
+
+device = get_optimal_device("auto")
+dtype = torch.bfloat16 if device_supports_cuda_graphs(device) else torch.float32
 
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEXT = os.environ.get(
@@ -29,14 +32,16 @@ def bench_stream(fn, label):
     # TTFA (streaming)
     ttfas = []
     for _ in range(TTFA_RUNS):
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         t0 = time.perf_counter()
         gen = fn(max_new_tokens=512, chunk_size=CHUNK_SIZE, streaming=True)
         try:
             _chunk, _sr, _timing = next(gen)
         finally:
             gen.close()
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         ttfas.append((time.perf_counter() - t0) * 1000)
     ttfa_mean = float(np.mean(ttfas))
     ttfa_std = float(np.std(ttfas))
@@ -45,10 +50,12 @@ def bench_stream(fn, label):
     rtfs = []
     ms_steps = []
     for _ in range(RTF_RUNS):
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         t0 = time.perf_counter()
         audio_list, sr = fn(max_new_tokens=512, streaming=False)
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         total = time.perf_counter() - t0
         audio = audio_list[0]
         dur = len(audio) / sr
@@ -68,7 +75,7 @@ def main():
     # Base model for voice clone
     base_id = 'Qwen/Qwen3-TTS-12Hz-0.6B-Base'
     print(f"Loading Base model: {base_id}")
-    base = FasterQwen3TTS.from_pretrained(base_id, device='cuda', dtype=torch.bfloat16, attn_implementation='eager')
+    base = FasterQwen3TTS.from_pretrained(base_id, device=device, dtype=dtype, attn_implementation='eager')
 
     def vc_fn(xvec_only, max_new_tokens=512, chunk_size=CHUNK_SIZE, streaming=True):
         if streaming:
@@ -93,7 +100,7 @@ def main():
     # CustomVoice model
     custom_id = 'Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice'
     print(f"Loading CustomVoice model: {custom_id}")
-    custom = FasterQwen3TTS.from_pretrained(custom_id, device='cuda', dtype=torch.bfloat16, attn_implementation='eager')
+    custom = FasterQwen3TTS.from_pretrained(custom_id, device=device, dtype=dtype, attn_implementation='eager')
     speakers = custom.model.get_supported_speakers() or []
     if not speakers:
         raise RuntimeError("No speakers reported by custom voice model")

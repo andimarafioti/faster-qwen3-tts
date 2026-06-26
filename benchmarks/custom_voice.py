@@ -5,7 +5,10 @@ import time
 import os
 import numpy as np
 import soundfile as sf
-from faster_qwen3_tts import FasterQwen3TTS
+from faster_qwen3_tts import FasterQwen3TTS, get_optimal_device, device_supports_cuda_graphs
+
+device = get_optimal_device("auto")
+dtype = torch.bfloat16 if device_supports_cuda_graphs(device) else torch.float32
 
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODEL_SIZE = os.environ.get('MODEL_SIZE', '0.6B')
@@ -20,8 +23,8 @@ instruct = os.environ.get('INSTRUCT', '')
 print("Loading model...")
 model = FasterQwen3TTS.from_pretrained(
     MODEL_ID,
-    device='cuda',
-    dtype=torch.bfloat16,
+    device=device,
+    dtype=dtype,
     attn_implementation='eager',
     max_seq_len=2048,
 )
@@ -53,7 +56,8 @@ all_ttfa = {}
 for chunk_size in CHUNK_SIZES:
     ttfas = []
     for _ in range(5):
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         t0 = time.perf_counter()
         gen = model.generate_custom_voice_streaming(
             text=text,
@@ -67,7 +71,8 @@ for chunk_size in CHUNK_SIZES:
             chunk, sr, timing = next(gen)
         finally:
             gen.close()
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         ttfa = (time.perf_counter() - t0) * 1000
         ttfas.append(ttfa)
     all_ttfa[chunk_size] = (np.mean(ttfas), np.std(ttfas))
@@ -82,7 +87,8 @@ print("\nBenchmark runs...")
 rtfs = []
 ms_per_steps = []
 for run in range(3):
-    torch.cuda.synchronize()
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     t0 = time.perf_counter()
     audio_list, sr = model.generate_custom_voice(
         text=text,
@@ -91,7 +97,8 @@ for run in range(3):
         instruct=instruct,
         max_new_tokens=512,
     )
-    torch.cuda.synchronize()
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     total = time.perf_counter() - t0
     audio = audio_list[0]
     audio_dur = len(audio) / sr

@@ -2,13 +2,15 @@
 """Benchmark throughput: CUDA graphs using the FasterQwen3TTS wrapper."""
 import json
 import os
-import subprocess
 import time
 
 import torch
 import numpy as np
 import soundfile as sf
-from faster_qwen3_tts import FasterQwen3TTS
+from faster_qwen3_tts import FasterQwen3TTS, get_optimal_device, device_supports_cuda_graphs
+
+device = get_optimal_device("auto")
+dtype = torch.bfloat16 if device_supports_cuda_graphs(device) else torch.float32
 
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODEL_SIZE = os.environ.get('MODEL_SIZE', '0.6B')
@@ -20,8 +22,8 @@ ref_text = "I'm confused why some people have super short timelines, yet at the 
 print("Loading model...")
 model = FasterQwen3TTS.from_pretrained(
     MODEL_ID,
-    device='cuda',
-    dtype=torch.bfloat16,
+    device=device,
+    dtype=dtype,
     attn_implementation='eager',
     max_seq_len=2048,
 )
@@ -47,7 +49,8 @@ print("\nMeasuring streaming TTFA (5 runs per chunk size)...")
 for chunk_size in CHUNK_SIZES:
     ttfa_results = []
     for i in range(5):
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         t0 = time.perf_counter()
         gen = model.generate_voice_clone_streaming(
             text=text,
@@ -57,7 +60,8 @@ for chunk_size in CHUNK_SIZES:
             chunk_size=chunk_size,
         )
         first_chunk, sr, timing = next(gen)
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         ttfa_ms = (time.perf_counter() - t0) * 1000
         ttfa_results.append(ttfa_ms)
         gen.close()
@@ -77,7 +81,8 @@ ttfa_std = ttfa_by_chunk[PRIMARY_CHUNK_SIZE]['std']
 def measure_streaming_ttfa(parity_mode: bool, chunk_size: int, runs: int = 5):
     results = []
     for _ in range(runs):
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         t0 = time.perf_counter()
         gen = model.generate_voice_clone_streaming(
             text=text,
@@ -88,7 +93,8 @@ def measure_streaming_ttfa(parity_mode: bool, chunk_size: int, runs: int = 5):
             parity_mode=parity_mode,
         )
         _first_chunk, _sr, _timing = next(gen)
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         results.append((time.perf_counter() - t0) * 1000)
         gen.close()
     return float(np.mean(results)), float(np.std(results))
@@ -97,7 +103,8 @@ def measure_streaming_ttfa(parity_mode: bool, chunk_size: int, runs: int = 5):
 def measure_streaming_rtf(parity_mode: bool, chunk_size: int, runs: int = 3):
     rtfs = []
     for _ in range(runs):
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         t0 = time.perf_counter()
         chunks = []
         sr = None
@@ -110,7 +117,8 @@ def measure_streaming_rtf(parity_mode: bool, chunk_size: int, runs: int = 3):
             parity_mode=parity_mode,
         ):
             chunks.append(audio_chunk)
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         total_time = time.perf_counter() - t0
         if chunks and sr is not None:
             audio = np.concatenate(chunks)
@@ -163,13 +171,12 @@ except Exception as e:
     print(f"Audio save failed: {e}")
 
 # Save results as JSON
-gpu_name = "Unknown"
-try:
-    out = subprocess.check_output(['nvidia-smi', '--query-gpu=name', '--format=csv,noheader'],
-                                  stderr=subprocess.DEVNULL, text=True)
-    gpu_name = out.strip().split('\n')[0].replace(' ', '_')
-except Exception:
-    pass
+if device_supports_cuda_graphs(device):
+    gpu_name = torch.cuda.get_device_name(0).replace(' ', '_')
+elif device == "mps":
+    gpu_name = "Apple_Silicon_MPS"
+else:
+    gpu_name = "CPU"
 
 bench_data = {
     'model': MODEL_SIZE,
