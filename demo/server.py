@@ -35,13 +35,16 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 try:
-    from faster_qwen3_tts import FasterQwen3TTS
+    from faster_qwen3_tts import FasterQwen3TTS, get_optimal_device, device_supports_cuda_graphs
 except ImportError:
     print("Error: faster_qwen3_tts not found.")
     print("Install with:  pip install -e .  (from the repo root)")
     sys.exit(1)
 
 from nano_parakeet import from_pretrained as _parakeet_from_pretrained
+
+device = get_optimal_device("auto")
+dtype = torch.bfloat16 if device_supports_cuda_graphs(device) else torch.float32
 
 
 _ALL_MODELS = [
@@ -246,7 +249,7 @@ async def transcribe_audio(audio: UploadFile = File(...)):
         wav_t = torch.from_numpy(wav)
         if sr != 16000:
             wav_t = torchaudio.functional.resample(wav_t.unsqueeze(0), sr, 16000).squeeze(0)
-        return _parakeet.transcribe(wav_t.cuda())
+        return _parakeet.transcribe(wav_t.to(device))
 
     text = await asyncio.to_thread(run)
     return {"text": text}
@@ -314,8 +317,8 @@ async def load_model(model_id: str = Form(...)):
                 print(f"Model cache full — evicted: {evicted}")
             new_model = FasterQwen3TTS.from_pretrained(
                 model_id,
-                device="cuda",
-                dtype=torch.bfloat16,
+                device=device,
+                dtype=dtype,
             )
             print("Capturing CUDA graphs…")
             new_model._warmup(prefill_len=100)
@@ -699,8 +702,8 @@ def main():
         print(f"Loading model: {args.model}")
         _startup_model = FasterQwen3TTS.from_pretrained(
             args.model,
-            device="cuda",
-            dtype=torch.bfloat16,
+            device=device,
+            dtype=dtype,
         )
         print("Capturing CUDA graphs…")
         _startup_model._warmup(prefill_len=100)
@@ -710,8 +713,11 @@ def main():
         print("TTS model ready.")
 
         print("Loading transcription model (nano-parakeet)…")
-        _parakeet = _parakeet_from_pretrained(device="cuda")
-        print("Transcription model ready.")
+        if device_supports_cuda_graphs(device):
+            _parakeet = _parakeet_from_pretrained(device="cuda")
+            print("Transcription model ready.")
+        else:
+            print("Transcription model skipped (requires CUDA).")
 
         print(f"Ready. Open http://localhost:{args.port}")
 
