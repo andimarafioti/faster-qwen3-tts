@@ -4,8 +4,11 @@ import os
 import torch
 import soundfile as sf
 
-from faster_qwen3_tts import FasterQwen3TTS
+from faster_qwen3_tts import FasterQwen3TTS, get_optimal_device, device_supports_cuda_graphs
 from faster_qwen3_tts.generate import fast_generate
+
+device = get_optimal_device("auto")
+dtype = torch.bfloat16 if device_supports_cuda_graphs(device) else torch.float32
 
 MODEL_ID = os.environ.get("QWEN_TTS_CUSTOM_MODEL", "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice")
 OUT_DIR = os.environ.get("PARITY_SAMPLES_DIR", "samples/parity")
@@ -28,8 +31,8 @@ os.makedirs(OUT_DIR, exist_ok=True)
 print(f"Loading model {MODEL_ID}...")
 model = FasterQwen3TTS.from_pretrained(
     MODEL_ID,
-    device="cuda",
-    dtype=torch.bfloat16,
+    device=device,
+    dtype=dtype,
     attn_implementation="eager",
     max_seq_len=2048,
 )

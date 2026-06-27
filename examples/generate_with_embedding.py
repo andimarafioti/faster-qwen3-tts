@@ -22,8 +22,10 @@ import sys
 
 sys.path.insert(0, '.')
 
+from faster_qwen3_tts import get_optimal_device, device_supports_cuda_graphs
 
-def load_xvector_prompt(path: str, device: str = "cuda:0") -> dict:
+
+def load_xvector_prompt(path: str, device: str = "auto") -> dict:
     """Load a saved x-vector and return a voice_clone_prompt dict."""
     spk_emb = torch.load(path, weights_only=True).to(device)
     return dict(
@@ -41,23 +43,26 @@ def main():
     parser.add_argument("--language", default="Auto", help="Language (English, French, German, Spanish, ...)")
     parser.add_argument("--output", default="output.wav", help="Output wav path")
     parser.add_argument("--model_path", default="Qwen/Qwen3-TTS-12Hz-1.7B-Base", help="Model path")
-    parser.add_argument("--device", default="cuda:0", help="Device")
+    parser.add_argument("--device", default="auto", help="Device")
     args = parser.parse_args()
 
     import soundfile as sf
     from faster_qwen3_tts import FasterQwen3TTS
     from faster_qwen3_tts.generate import fast_generate
 
+    device = get_optimal_device(args.device)
+    dtype = torch.bfloat16 if device_supports_cuda_graphs(device) else torch.float32
+
     print(f"Loading model from {args.model_path}...")
     model = FasterQwen3TTS.from_pretrained(
         args.model_path,
-        device="cuda",
-        dtype=torch.bfloat16,
+        device=device,
+        dtype=dtype,
     )
 
     # Load precomputed speaker embedding
     print(f"Loading speaker embedding from {args.speaker}...")
-    vcp = load_xvector_prompt(args.speaker, device=args.device)
+    vcp = load_xvector_prompt(args.speaker, device=device)
 
     # Build inputs
     input_texts = [model.model._build_assistant_text(args.text)]

@@ -8,7 +8,7 @@ import torch
 
 from qwen_tts import Qwen3TTSModel
 
-from faster_qwen3_tts import FasterQwen3TTS
+from faster_qwen3_tts import FasterQwen3TTS, get_optimal_device
 
 
 MODEL_ID = os.environ.get("QWEN_TTS_MODEL", "Qwen/Qwen3-TTS-12Hz-0.6B-Base")
@@ -34,8 +34,31 @@ def _seed_all(seed: int = 0) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
+
+def _get_device():
+    return get_optimal_device("auto")
+
+def _get_device_support():
+    device = _get_device()
+    
+    if device == 'cuda':
+        return 'CUDA'
+
+    return 'MPS'
+
+def _is_tech_support():
+    device = _get_device()
+    return (device == 'cuda') or (device == 'mps')
+
+
+def _model_is_available(model_id: str) -> bool:
+    """Check if a HuggingFace model is cached locally (no download)."""
+    from huggingface_hub import try_to_load_from_cache
+    result = try_to_load_from_cache(model_id, "config.json")
+    return result is not None
 
 def _assert_codec_output_valid(fast_codes, config, max_new_tokens, label="",
                                check_natural_eos=True):
@@ -168,8 +191,10 @@ def parity_fixture():
     """
     _seed_all(0)
 
-    device = "cuda"
-    dtype = torch.bfloat16
+    device = _get_device()
+    # MPS/CPU: float32 (bfloat16 not supported), CUDA: bfloat16
+    dtype = torch.bfloat16 if device.startswith("cuda") else torch.float32
+    attn_impl = "sdpa"
 
     ref_audio = "ref_audio.wav"
     text = "Short parity test."
@@ -183,10 +208,10 @@ def parity_fixture():
     # skips fully-masked K blocks, giving identical results to DynamicCache regardless
     # of StaticCache padding length.
     base = Qwen3TTSModel.from_pretrained(
-        MODEL_ID, device_map=device, dtype=dtype, attn_implementation="sdpa"
+        MODEL_ID, device_map=device, dtype=dtype, attn_implementation=attn_impl
     )
     fast = FasterQwen3TTS.from_pretrained(
-        MODEL_ID, device=device, dtype=dtype, attn_implementation="sdpa"
+        MODEL_ID, device=device, dtype=dtype, attn_implementation=attn_impl
     )
 
     prompt_items = base.create_voice_clone_prompt(ref_audio=ref_audio, ref_text="", x_vector_only_mode=True)
@@ -228,7 +253,8 @@ def parity_fixture():
     yield data
     del data["base"]
     del data["fast"]
-    torch.cuda.empty_cache()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     gc.collect()
 
 
@@ -250,24 +276,29 @@ def parity_fixture_fp32():
     TF32 is re-enabled after the fixture tears down; bfloat16 tests are unaffected
     since they never use float32 matmuls.
     """
-    prev_matmul = torch.backends.cuda.matmul.allow_tf32
-    prev_cudnn = torch.backends.cudnn.allow_tf32
-    torch.backends.cuda.matmul.allow_tf32 = False
-    torch.backends.cudnn.allow_tf32 = False
-
     _seed_all(0)
 
-    device = "cuda"
+    device = _get_device()
     dtype = torch.float32
+    attn_impl = "eager" if device.startswith("cuda") else "sdpa"
+
+    # TF32 is CUDA-only
+    prev_matmul = None
+    prev_cudnn = None
+    if device.startswith("cuda"):
+        prev_matmul = torch.backends.cuda.matmul.allow_tf32
+        prev_cudnn = torch.backends.cudnn.allow_tf32
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
 
     ref_audio = "ref_audio.wav"
     text = "Short parity test."
 
     base = Qwen3TTSModel.from_pretrained(
-        MODEL_ID, device_map=device, dtype=dtype, attn_implementation="eager"
+        MODEL_ID, device_map=device, dtype=dtype, attn_implementation=attn_impl
     )
     fast = FasterQwen3TTS.from_pretrained(
-        MODEL_ID, device=device, dtype=dtype, attn_implementation="eager"
+        MODEL_ID, device=device, dtype=dtype, attn_implementation=attn_impl
     )
 
     prompt_items = base.create_voice_clone_prompt(ref_audio=ref_audio, ref_text="", x_vector_only_mode=True)
@@ -307,9 +338,10 @@ def parity_fixture_fp32():
     yield data
     del data["base"]
     del data["fast"]
-    torch.backends.cuda.matmul.allow_tf32 = prev_matmul
-    torch.backends.cudnn.allow_tf32 = prev_cudnn
-    torch.cuda.empty_cache()
+    if device.startswith("cuda"):
+        torch.backends.cuda.matmul.allow_tf32 = prev_matmul
+        torch.backends.cudnn.allow_tf32 = prev_cudnn
+        torch.cuda.empty_cache()
     gc.collect()
 
 
@@ -317,16 +349,17 @@ def parity_fixture_fp32():
 def custom_voice_fixture():
     _seed_all(0)
 
-    device = "cuda"
-    dtype = torch.bfloat16
+    device = _get_device()
+    dtype = torch.bfloat16 if device.startswith("cuda") else torch.float32
+    attn_impl = "sdpa"
     text = "Short parity test."
     language = "English"
 
     base = Qwen3TTSModel.from_pretrained(
-        CUSTOM_MODEL_ID, device_map=device, dtype=dtype, attn_implementation="eager"
+        CUSTOM_MODEL_ID, device_map=device, dtype=dtype, attn_implementation=attn_impl
     )
     fast = FasterQwen3TTS.from_pretrained(
-        CUSTOM_MODEL_ID, device=device, dtype=dtype, attn_implementation="eager"
+        CUSTOM_MODEL_ID, device=device, dtype=dtype, attn_implementation=attn_impl
     )
 
     speakers = base.get_supported_speakers()
@@ -359,7 +392,8 @@ def custom_voice_fixture():
     yield data
     del data["base"]
     del data["fast"]
-    torch.cuda.empty_cache()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     gc.collect()
 
 
@@ -367,17 +401,18 @@ def custom_voice_fixture():
 def voice_design_fixture():
     _seed_all(0)
 
-    device = "cuda"
-    dtype = torch.bfloat16
+    device = _get_device()
+    dtype = torch.bfloat16 if device.startswith("cuda") else torch.float32
+    attn_impl = "sdpa"
     text = "Short parity test."
     instruct = "Warm, calm voice."
     language = "English"
 
     base = Qwen3TTSModel.from_pretrained(
-        VOICE_DESIGN_MODEL_ID, device_map=device, dtype=dtype, attn_implementation="eager"
+        VOICE_DESIGN_MODEL_ID, device_map=device, dtype=dtype, attn_implementation=attn_impl
     )
     fast = FasterQwen3TTS.from_pretrained(
-        VOICE_DESIGN_MODEL_ID, device=device, dtype=dtype, attn_implementation="eager"
+        VOICE_DESIGN_MODEL_ID, device=device, dtype=dtype, attn_implementation=attn_impl
     )
 
     input_ids_base = base._tokenize_texts([base._build_assistant_text(text)])
@@ -406,7 +441,8 @@ def voice_design_fixture():
     yield data
     del data["base"]
     del data["fast"]
-    torch.cuda.empty_cache()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     gc.collect()
 
 
@@ -427,7 +463,7 @@ def voice_design_fixture():
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestFP32Parity:
-    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for parity test.")
+    @pytest.mark.skipif(not _is_tech_support(), reason=f"{_get_device_support()} required for parity test.")
     def test_voice_clone_token_parity_xvec_only(self, parity_fixture_fp32):
         """xvec-only fast path (CUDA graph + StaticCache) must exactly match upstream.
 
@@ -484,7 +520,7 @@ class TestFP32Parity:
         fast_codes_cpu = fast_codes.detach().cpu()
         _assert_codes_match(upstream_codes, fast_codes_cpu, label="xvec_only/fp32")
 
-    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for parity test.")
+    @pytest.mark.skipif(not _is_tech_support(), reason=f"{_get_device_support()} required for parity test.")
     def test_voice_clone_icl_prefix_parity_fast_path(self, parity_fixture_fp32):
         """ICL fast path (CUDA graph + StaticCache) matches upstream in float32.
 
@@ -601,7 +637,7 @@ class TestFP32Parity:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestBF16Parity:
-    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required.")
+    @pytest.mark.skipif(not _get_device(), reason=f"{_get_device()} required.")
     def test_voice_clone_xvec_bf16_generates_valid_tokens(self, parity_fixture):
         """xvec-only fast path produces structurally valid codec output in bfloat16."""
         from faster_qwen3_tts.generate import fast_generate
@@ -630,7 +666,7 @@ class TestBF16Parity:
 
         _assert_codec_output_valid(fast_codes, config, _MAX_NEW_TOKENS, label="xvec/bf16")
 
-    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required.")
+    @pytest.mark.skipif(not _is_tech_support(), reason=f"{_get_device_support()} required.")
     def test_voice_clone_icl_bf16_generates_valid_tokens(self, parity_fixture):
         """ICL fast path produces structurally valid codec output in bfloat16."""
         from faster_qwen3_tts.generate import fast_generate
@@ -686,7 +722,7 @@ class TestBF16Parity:
         _assert_codec_output_valid(fast_codes, config, _MAX_NEW_TOKENS, label="icl/bf16",
                                    check_natural_eos=True)
 
-    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required.")
+    @pytest.mark.skipif(not _is_tech_support(), reason=f"{_get_device_support()} required.")
     def test_streaming_bf16_produces_valid_chunks(self, parity_fixture):
         """Streaming fast path produces non-empty, valid chunks in bfloat16."""
         from faster_qwen3_tts.streaming import fast_generate_streaming
@@ -725,7 +761,7 @@ class TestBF16Parity:
         all_codes = torch.cat(chunks, dim=0)
         _assert_codec_output_valid(all_codes, config, _MAX_NEW_TOKENS, label="streaming/bf16")
 
-    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for streaming parity test.")
+    @pytest.mark.skipif(not _is_tech_support(), reason=f"{_get_device_support()} required for streaming parity test.")
     def test_streaming_matches_non_streaming_prefix(self, parity_fixture):
         """Streaming and non-streaming fast paths produce identical tokens.
 
@@ -781,7 +817,7 @@ class TestBF16Parity:
         stream_codes = torch.cat(chunks, dim=0)
         _assert_codes_match(full_codes.cpu(), stream_codes.cpu(), label="streaming_vs_non_streaming")
 
-    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for ICL parity test.")
+    @pytest.mark.skipif(not _is_tech_support(), reason=f"{_get_device_support()} required for ICL parity test.")
     def test_voice_clone_icl_full_parity_dynamic_cache(self, parity_fixture):
         """fast._build_talker_inputs_local matches upstream for ICL mode (DynamicCache)."""
         from faster_qwen3_tts.generate import fast_generate
@@ -872,7 +908,7 @@ class TestBF16Parity:
         fast_codes_cpu = fast_codes.detach().cpu()
         _assert_codes_match(upstream_codes, fast_codes_cpu, label="icl/dynamic_cache")
 
-    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for ICL parity test.")
+    @pytest.mark.skipif(not _is_tech_support(), reason=f"{_get_device_support()} required for ICL parity test.")
     def test_icl_build_talker_inputs_outside_inference_mode(self, parity_fixture):
         """Regression test: _build_talker_inputs_local must work with ICL ref_code tensors
         even when called outside of torch.inference_mode().
@@ -931,7 +967,10 @@ class TestBF16Parity:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestCustomVoice:
-    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required.")
+    @pytest.mark.skipif(
+        not _is_tech_support() or not _model_is_available(CUSTOM_MODEL_ID),
+        reason="device or model not available",
+    )
     def test_custom_voice_bf16_generates_valid_tokens(self, custom_voice_fixture):
         """CustomVoice fast path (CUDA graph) produces valid codec tokens in bfloat16."""
         from faster_qwen3_tts.generate import fast_generate
@@ -960,7 +999,10 @@ class TestCustomVoice:
 
         _assert_codec_output_valid(fast_codes, config, _MAX_NEW_TOKENS, label="custom_voice/bf16")
 
-    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for custom voice parity test.")
+    @pytest.mark.skipif(
+        not _is_tech_support() or not _model_is_available(CUSTOM_MODEL_ID),
+        reason="device or model not available",
+    )
     def test_custom_voice_full_parity_dynamic_cache(self, custom_voice_fixture):
         """fast._build_talker_inputs_local matches upstream for CustomVoice (DynamicCache)."""
         from faster_qwen3_tts.generate import fast_generate
@@ -1019,7 +1061,7 @@ class TestCustomVoice:
         _assert_codes_match(upstream_codes, fast_codes_cpu, label="custom_voice/dynamic_cache")
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required.")
+@pytest.mark.skipif(not _is_tech_support(), reason=f"{_get_device_support()} required.")
 def test_instruct_prepends_tokens_to_voice_clone(parity_fixture):
     """instruct= should prepend exactly instruct_len tokens to the talker input embeds,
     leaving the suffix (text + codec part) byte-for-byte identical to the no-instruct case.
@@ -1052,7 +1094,7 @@ def test_instruct_prepends_tokens_to_voice_clone(parity_fixture):
     assert torch.equal(tie_inst[:, instruct_len:], tie_base)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required.")
+@pytest.mark.skipif(not _is_tech_support(), reason=f"{_get_device_support()} required.")
 def test_instruct_changes_generation_output(parity_fixture):
     """Passing instruct= must produce different codec tokens than not passing it,
     confirming the instruction propagates through the full decode loop.
@@ -1086,7 +1128,10 @@ def test_instruct_changes_generation_output(parity_fixture):
 
 
 class TestVoiceDesign:
-    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required.")
+    @pytest.mark.skipif(
+        not _is_tech_support() or not _model_is_available(VOICE_DESIGN_MODEL_ID),
+        reason="device or model not available",
+    )
     def test_voice_design_bf16_generates_valid_tokens(self, voice_design_fixture):
         """VoiceDesign fast path (CUDA graph) produces valid codec tokens in bfloat16."""
         from faster_qwen3_tts.generate import fast_generate
@@ -1115,7 +1160,10 @@ class TestVoiceDesign:
 
         _assert_codec_output_valid(fast_codes, config, _MAX_NEW_TOKENS, label="voice_design/bf16")
 
-    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for voice design parity test.")
+    @pytest.mark.skipif(
+        not _is_tech_support() or not _model_is_available(VOICE_DESIGN_MODEL_ID),
+        reason="device or model not available",
+    )
     def test_voice_design_full_parity_dynamic_cache(self, voice_design_fixture):
         """fast._build_talker_inputs_local matches upstream for VoiceDesign (DynamicCache)."""
         from faster_qwen3_tts.generate import fast_generate

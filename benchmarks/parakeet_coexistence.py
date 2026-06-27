@@ -17,6 +17,8 @@ import time
 import numpy as np
 import torch
 
+from faster_qwen3_tts import get_optimal_device, device_supports_cuda_graphs
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -103,6 +105,11 @@ def run_tts_step_bench(model, n_runs=5, max_new_tokens=128, label=""):
 # ──────────────────────────────────────────────────────────────────────────────
 
 def main():
+    device = get_optimal_device("auto")
+    if not device_supports_cuda_graphs(device):
+        print(f"Skipping parakeet_coexistence: requires CUDA, got {device.upper()}")
+        return
+
     from faster_qwen3_tts import FasterQwen3TTS
 
     print(f"GPU: {torch.cuda.get_device_name(0)}")
