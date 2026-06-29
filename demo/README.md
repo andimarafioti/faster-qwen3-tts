@@ -25,9 +25,7 @@ This Space hosts the demo UI for **faster-qwen3-tts** with streaming audio, TTFA
 
 ```bash
 pip install --index-url https://download.pytorch.org/whl/cu128 torch torchaudio
-pip install "qwentts-cpp-python==0.3.0+cu128" \
-  -f https://huggingface.co/datasets/andito/qwentts-cpp-python-wheels/tree/main/whl/cu128
-pip install "faster-qwen3-tts[demo]" nano-parakeet
+pip install "faster-qwen3-tts[demo,ggml]==0.3.0" nano-parakeet
 python server.py --backend ggml --model Qwen/Qwen3-TTS-12Hz-0.6B-Base
 # open http://localhost:7860
 ```
