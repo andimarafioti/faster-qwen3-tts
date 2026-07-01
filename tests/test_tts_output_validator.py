@@ -67,6 +67,26 @@ def test_audio_issues_detect_suspicious_short_duration():
     assert "suspicious_short_duration" in issues
 
 
+def test_validate_wav_rejects_mid_length_early_stop_even_when_asr_matches(monkeypatch):
+    def fake_asr(_wav_bytes: bytes, filename: str = "tts-validation.wav"):
+        return {"success": True, "text": "风险是，测试短音频提前停止。"}
+
+    monkeypatch.setattr(validator, "call_asr_transcribe", fake_asr)
+    sample_rate = 24000
+    t = np.arange(int(sample_rate * 1.55), dtype=np.float32) / sample_rate
+    tone = 0.08 * np.sin(2 * math.pi * 220 * t)
+
+    result = validator.validate_wav_bytes(
+        expected_text="风险是，测试短音频提前停止。",
+        wav_bytes=_wav_bytes(tone, sample_rate),
+        metadata={"estimated_audio_s": 4.72},
+    )
+
+    assert result["passed"] is False
+    assert result["verdict"] == "warning"
+    assert "suspicious_short_duration" in result["issues"]
+
+
 def test_text_similarity_ignores_punctuation_and_case():
     assert validator.text_similarity("Hello，世界！", "hello 世界") > 0.95
 

@@ -199,6 +199,7 @@ def _is_local_tts_request(method: str, path: str) -> bool:
         "/api/tts/plan",
         "/api/tts/speak",
         "/api/tts/speak_json",
+        "/api/tts/validate_wav",
         "/api/tts/playback_first_json",
         "/api/tts/playback_first_wav",
         "/v1/audio/speech",

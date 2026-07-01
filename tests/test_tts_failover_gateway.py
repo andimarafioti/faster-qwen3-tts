@@ -7,6 +7,7 @@ from examples.tts_failover_gateway import (
     Backend,
     GatewayState,
     _build_config,
+    _is_local_tts_request,
     _should_failover,
     _split_urls,
     _target_url,
@@ -52,6 +53,10 @@ def test_should_failover_only_on_server_errors():
     assert _should_failover(Response(400)) is False
     assert _should_failover(Response(500)) is True
     assert _should_failover(Response(503)) is True
+
+
+def test_validate_wav_is_local_tts_request():
+    assert _is_local_tts_request("POST", "/api/tts/validate_wav") is True
 
 
 def test_gateway_retries_backup_when_primary_returns_5xx(monkeypatch):

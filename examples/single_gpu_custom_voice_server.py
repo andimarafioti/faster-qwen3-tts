@@ -35,6 +35,7 @@ try:
         enqueue_validation,
         get_validation_result,
         recent_validation_results,
+        validate_wav_bytes,
         validation_enabled,
         validation_headers,
     )
@@ -45,11 +46,13 @@ except ModuleNotFoundError:
         enqueue_validation,
         get_validation_result,
         recent_validation_results,
+        validate_wav_bytes,
         validation_enabled,
         validation_headers,
     )
 
 DEFAULT_SPEAKER = "Serena"
+PIPELINE_VERSION = os.getenv("QWEN_TTS_PIPELINE_VERSION", "qwen3_tts_single_v2")
 TOKEN_AUDIO_SECONDS = 0.08
 QUALITY_RETRY_ATTEMPTS = 3
 
@@ -142,6 +145,15 @@ class TTSPlanRequest(BaseModel):
     lang_hint: str | None = None
 
 
+class ValidateWavRequest(BaseModel):
+    expected_text: str = ""
+    audio_b64: str = Field(..., min_length=1)
+    trace_id: str | None = None
+    speaker: str | None = None
+    language: str | None = None
+    estimated_audio_s: float | None = None
+
+
 def _sanitize_tts_text(text: str, lang_hint: str | None = None) -> str:
     return normalize_for_tts(text, lang_hint=lang_hint).text
 
@@ -216,6 +228,16 @@ def _result_quality_issues(result: dict[str, Any]) -> list[str]:
 
 def _blocking_quality_issues(issues: list[str]) -> list[str]:
     return [issue for issue in issues if issue != "hit_token_cap"]
+
+
+def _quality_failure_message(text: str, last_result: dict[str, Any] | None, retry_history: list[dict[str, Any]]) -> str:
+    issues = sorted(set(str(item) for item in (last_result or {}).get("quality_issues") or []))
+    if not issues and retry_history:
+        issues = sorted(set(str(item) for row in retry_history for item in row.get("issues") or []))
+    return (
+        "TTS quality check failed "
+        f"(issues={','.join(issues) or 'unknown'}, attempts={len(retry_history)}, text_len={len(text)})"
+    )
 
 
 async def _synthesize_split_fallback(
@@ -323,6 +345,7 @@ def _status_payload(rows: list[dict[str, Any]], backend: str) -> dict[str, Any]:
                 "/api/tts/plan",
                 "/api/tts/speak",
                 "/api/tts/speak_json",
+                "/api/tts/validate_wav",
                 "/v1/audio/speech",
             ],
             "audio_formats": ["wav"],
@@ -330,6 +353,7 @@ def _status_payload(rows: list[dict[str, Any]], backend: str) -> dict[str, Any]:
             "supports_plan": True,
             "supports_max_new_tokens": True,
             "supports_trace_id": True,
+            "supports_wav_validation": True,
             "tts_validation_enabled": validation_enabled(),
         },
         "client_defaults": {
@@ -353,6 +377,7 @@ def _status_payload(rows: list[dict[str, Any]], backend: str) -> dict[str, Any]:
             "result_endpoint": "/api/tts/validation/{validation_id}",
             "recent_endpoint": "/api/tts/validation/recent?limit=20",
         },
+        "pipeline_version": PIPELINE_VERSION,
     }
 
 
@@ -783,9 +808,10 @@ async def _synthesize(req: SpeechRequest, endpoint: str) -> dict[str, Any]:
                 split_result["retry_history"] = retry_history + list(split_result.get("retry_history") or [])
                 split_result["retry_count"] = len(split_result["retry_history"])
                 result = split_result
-        if retry_history and result.get("quality_issues"):
+        if result.get("quality_issues"):
             result["retry_count"] = len(retry_history)
             result["retry_history"] = retry_history
+            raise RuntimeError(_quality_failure_message(content, result, retry_history))
         result["normalizer"] = normalized.normalizer
         result["normalization_trace"] = list(normalized.normalization_trace)
         result["trace_id"] = req.trace_id or ""
@@ -847,6 +873,33 @@ async def tts_validation_result(validation_id: str, wait_ms: int = 0) -> JSONRes
             status_code=404,
         )
     return JSONResponse(result)
+
+
+@app.post("/api/tts/validate_wav")
+async def tts_validate_wav(req: ValidateWavRequest) -> JSONResponse:
+    try:
+        wav_bytes = base64.b64decode(req.audio_b64, validate=True)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid audio_b64: {exc}") from exc
+
+    expected = normalize_for_tts(req.expected_text, lang_hint=req.language).text
+    metadata: dict[str, Any] = {"pipeline_version": PIPELINE_VERSION}
+    if req.estimated_audio_s is not None:
+        metadata["estimated_audio_s"] = req.estimated_audio_s
+    try:
+        record = await asyncio.to_thread(
+            validate_wav_bytes,
+            expected_text=expected,
+            wav_bytes=wav_bytes,
+            trace_id=req.trace_id or "",
+            endpoint="/api/tts/validate_wav",
+            speaker=req.speaker or "",
+            language=req.language or "",
+            metadata=metadata,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+    return JSONResponse(record)
 
 
 @app.post("/api/tts/load")

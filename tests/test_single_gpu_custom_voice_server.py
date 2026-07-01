@@ -1,4 +1,5 @@
 from examples.single_gpu_custom_voice_server import (
+    AppState,
     CapsWriterSpeakRequest,
     SpeechRequest,
     _estimate_max_new_tokens,
@@ -7,10 +8,14 @@ from examples.single_gpu_custom_voice_server import (
     _result_quality_issues,
     _resolve_max_new_tokens,
     _split_tts_text_into_chunks,
+    _synthesize,
     _status_payload,
     _to_wav_bytes,
 )
+import asyncio
 import numpy as np
+import pytest
+from fastapi import HTTPException
 
 
 def test_single_gpu_token_default_matches_estimate():
@@ -119,5 +124,44 @@ def test_single_gpu_status_payload_recommends_single_concurrency():
     assert payload["workers_ready"] == 1
     assert payload["api_version"] == "tts-http-v1"
     assert payload["capabilities"]["supports_trace_id"] is True
+    assert payload["capabilities"]["supports_wav_validation"] is True
     assert payload["client_defaults"]["recommended_speak_concurrency"] == 1
     assert payload["client_defaults"]["recommended_prefetch_chunks"] == 1
+
+
+def test_single_gpu_quality_failure_raises_instead_of_returning_bad_audio(monkeypatch):
+    import examples.single_gpu_custom_voice_server as server
+
+    class FakeWorker:
+        def synthesize(self, _text, _speaker, _language, _instruction, max_new_tokens):
+            silence = np.zeros(24000 * 3, dtype=np.float32)
+            return {
+                "worker_id": 0,
+                "gpu_ids": ["0"],
+                "audio_s": 3.0,
+                "elapsed_s": 0.5,
+                "ttfa_s": 0.1,
+                "rtf": 6.0,
+                "max_new_tokens": max_new_tokens,
+                "estimated_audio_s": 8.0,
+                "hit_token_cap": False,
+                "suspicious_duration": False,
+                "bytes": _to_wav_bytes(silence, 24000),
+            }
+
+    async def no_split_fallback(**_kwargs):
+        return None
+
+    monkeypatch.setattr(server, "state", AppState(FakeWorker()))
+    monkeypatch.setattr(server, "_synthesize_split_fallback", no_split_fallback)
+
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            _synthesize(
+                SpeechRequest(input="风险是，若配置错误，可能引发播报误判。", trace_id="single-quality-fail"),
+                "/api/tts/speak",
+            )
+        )
+
+    assert excinfo.value.status_code == 500
+    assert "TTS quality check failed" in str(excinfo.value.detail)

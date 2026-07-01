@@ -1,6 +1,7 @@
 from examples.ray_dual_worker_server import (
     AppState,
     CapsWriterSpeakRequest,
+    PlaybackFirstRequest,
     SpeechRequest,
     PIPELINE_VERSION,
     _hit_token_cap,
@@ -10,13 +11,16 @@ from examples.ray_dual_worker_server import (
     _status_payload,
     _estimate_max_new_tokens,
     _resolve_max_new_tokens,
+    _run_playback_first,
     _synthesize_with_quality_retry,
     _trim_trailing_silence,
     _to_wav_bytes,
+    _wav_stream_header,
 )
 import asyncio
 import numpy as np
 import pytest
+import struct
 
 
 def test_resolve_max_new_tokens_uses_estimate_when_missing():
@@ -58,6 +62,16 @@ def test_quality_issues_detect_token_cap_and_long_silence():
     assert "hit_token_cap" in issues
     assert "empty_audio" in issues
     assert "long_silence" in issues
+
+
+def test_wav_stream_header_uses_valid_uint32_sizes():
+    header = _wav_stream_header(24000)
+
+    assert header[:4] == b"RIFF"
+    assert struct.unpack("<I", header[4:8])[0] == 0xFFFFFFFF
+    assert header[8:12] == b"WAVE"
+    assert header[-8:-4] == b"data"
+    assert struct.unpack("<I", header[-4:])[0] == 0xFFFFFFFF
 
 
 def test_quality_issues_detect_suspicious_short_duration():
@@ -232,3 +246,38 @@ def test_quality_retry_raises_when_all_attempts_and_fallback_fail(monkeypatch):
                 trace_id="test-quality-fail",
             )
         )
+
+
+def test_playback_first_uses_quality_retry(monkeypatch):
+    import examples.ray_dual_worker_server as server
+
+    calls = []
+
+    async def fake_quality_retry(**kwargs):
+        calls.append(kwargs)
+        wav = _to_wav_bytes(np.ones(24000, dtype=np.float32) * 0.02, 24000)
+        return {
+            "worker_id": 1,
+            "gpu_ids": ["1"],
+            "sample_rate": 24000,
+            "audio_s": 1.0,
+            "elapsed_s": 0.2,
+            "ttfa_s": 0.05,
+            "rtf": 5.0,
+            "bytes": wav,
+            "quality_issues": [],
+        }
+
+    monkeypatch.setattr(server, "state", AppState([object()]))
+    monkeypatch.setattr(server, "_synthesize_with_quality_retry", fake_quality_retry)
+
+    result = asyncio.run(
+        _run_playback_first(
+            PlaybackFirstRequest(input="短句播放测试。", trace_id="pf-test", affinity_key="announcement:test")
+        )
+    )
+
+    assert result["bytes"]
+    assert len(calls) == 1
+    assert calls[0]["trace_id"] == "pf-test-pf1"
+    assert calls[0]["affinity_key"] == "announcement:test"

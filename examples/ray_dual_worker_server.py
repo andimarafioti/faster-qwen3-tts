@@ -31,7 +31,7 @@ import ray
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
 try:
@@ -85,7 +85,17 @@ def _wav_header(sample_rate: int, data_len: int) -> bytes:
 
 
 def _wav_stream_header(sample_rate: int) -> bytes:
-    return _wav_header(sample_rate, 0xFFFFFFFF)
+    byte_rate = sample_rate * 2
+    block_align = 2
+    buf = io.BytesIO()
+    buf.write(b"RIFF")
+    buf.write(struct.pack("<I", 0xFFFFFFFF))
+    buf.write(b"WAVE")
+    buf.write(b"fmt ")
+    buf.write(struct.pack("<IHHIIHH", 16, 1, 1, sample_rate, byte_rate, block_align, 16))
+    buf.write(b"data")
+    buf.write(struct.pack("<I", 0xFFFFFFFF))
+    return buf.getvalue()
 
 
 def _to_wav_bytes(audio: np.ndarray, sample_rate: int) -> bytes:
@@ -1288,15 +1298,14 @@ async def _run_playback_first(req: PlaybackFirstRequest) -> dict[str, Any]:
 
     start = time.perf_counter()
     if len(segments) == 1:
-        worker = state.pick_worker()
-        result = await _ray_get(
-            worker.synthesize.remote(
-                segments[0]["text"],
-                req.voice,
-                tts_language,
-                req.instruction,
-                segments[0]["max_new_tokens"],
-            )
+        result = await _synthesize_with_quality_retry(
+            text=segments[0]["text"],
+            speaker=req.voice,
+            language=tts_language,
+            instruction=req.instruction,
+            max_new_tokens=segments[0]["max_new_tokens"],
+            trace_id=f"{req.trace_id or ''}-pf1",
+            affinity_key=req.affinity_key,
         )
         result["segment_index"] = 0
         result["role"] = "full"
@@ -1304,26 +1313,38 @@ async def _run_playback_first(req: PlaybackFirstRequest) -> dict[str, Any]:
         head_ready_wall_s = result["elapsed_s"]
         tail_ready_wall_s = None
     else:
-        first_worker, second_worker = state.pick_two_workers()
-        first_ref = first_worker.synthesize.remote(
-            segments[0]["text"],
-            req.voice,
-            tts_language,
-            req.instruction,
-            segments[0]["max_new_tokens"],
+        first_task = asyncio.create_task(
+            _synthesize_with_quality_retry(
+                text=segments[0]["text"],
+                speaker=req.voice,
+                language=tts_language,
+                instruction=req.instruction,
+                max_new_tokens=segments[0]["max_new_tokens"],
+                trace_id=f"{req.trace_id or ''}-pf1",
+                affinity_key=req.affinity_key,
+            )
         )
-        second_ref = second_worker.synthesize.remote(
-            segments[1]["text"],
-            req.voice,
-            tts_language,
-            req.instruction,
-            segments[1]["max_new_tokens"],
+        second_task = asyncio.create_task(
+            _synthesize_with_quality_retry(
+                text=segments[1]["text"],
+                speaker=req.voice,
+                language=tts_language,
+                instruction=req.instruction,
+                max_new_tokens=segments[1]["max_new_tokens"],
+                trace_id=f"{req.trace_id or ''}-pf2",
+                affinity_key=req.affinity_key,
+            )
         )
-        first_task = asyncio.create_task(_ray_get(first_ref))
-        second_task = asyncio.create_task(_ray_get(second_ref))
-        first_result = await first_task
-        head_ready_wall_s = time.perf_counter() - start
-        second_result = await second_task
+        try:
+            first_result = await first_task
+            head_ready_wall_s = time.perf_counter() - start
+            second_result = await second_task
+        except Exception:
+            for task in (first_task, second_task):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(first_task, second_task, return_exceptions=True)
+            raise
         tail_ready_wall_s = time.perf_counter() - start
         first_result["segment_index"] = 0
         first_result["role"] = "head"
@@ -1414,99 +1435,28 @@ async def playback_first_json(req: PlaybackFirstRequest) -> JSONResponse:
 
 
 @app.post("/api/tts/playback_first_wav")
-async def playback_first_wav(req: PlaybackFirstRequest) -> StreamingResponse:
-    async def stream():
-        if state is None:
-            raise HTTPException(status_code=503, detail="Server not initialized")
-
-        normalized = normalize_for_tts(req.input, lang_hint=req.language)
-        content = normalized.text
-        if not has_readable_text(content):
-            raise HTTPException(status_code=400, detail="No readable TTS text after sanitization")
-        tts_language = _stable_language_for_tts(content, req.language)
-        segments = _split_playback_first(
-            content,
-            target_audio_s=req.head_target_audio_s,
-            min_chars=req.head_min_chars,
-            max_chars=req.head_max_chars,
-        )
-        hard_cap = 512
-        for segment in segments:
-            segment["max_new_tokens"] = _estimate_max_new_tokens(segment["text"], hard_cap)
-
-        sample_rate = 24000
-        yield _wav_stream_header(sample_rate)
-
-        if len(segments) == 1:
-            worker = state.pick_worker()
-            result = await _ray_get(
-                worker.synthesize.remote(
-                    segments[0]["text"],
-                    req.voice,
-                    tts_language,
-                    req.instruction,
-                    segments[0]["max_new_tokens"],
-                )
-            )
-            _enqueue_result_validation(
-                result,
-                expected_text=segments[0]["text"],
-                endpoint="/api/tts/playback_first_wav",
-                trace_id=req.trace_id or "",
-                speaker=req.voice,
-                language=tts_language,
-            )
-            yield _wav_payload(result["bytes"])
-            return
-
-        first_worker, second_worker = state.pick_two_workers()
-        first_task = asyncio.create_task(
-            _ray_get(
-                first_worker.synthesize.remote(
-                    segments[0]["text"],
-                    req.voice,
-                    tts_language,
-                    req.instruction,
-                    segments[0]["max_new_tokens"],
-                )
-            )
-        )
-        second_task = asyncio.create_task(
-            _ray_get(
-                second_worker.synthesize.remote(
-                    segments[1]["text"],
-                    req.voice,
-                    tts_language,
-                    req.instruction,
-                    segments[1]["max_new_tokens"],
-                )
-            )
-        )
-        first_result = await first_task
-        sample_rate = int(first_result["sample_rate"])
-        _enqueue_result_validation(
-            first_result,
-            expected_text=segments[0]["text"],
-            endpoint="/api/tts/playback_first_wav",
-            trace_id=req.trace_id or "",
-            speaker=req.voice,
-            language=tts_language,
-        )
-        yield _wav_payload(first_result["bytes"])
-        if req.join_silence_ms > 0:
-            yield _silence_pcm(sample_rate, req.join_silence_ms)
-        second_result = await second_task
-        _enqueue_result_validation(
-            second_result,
-            expected_text=segments[1]["text"],
-            endpoint="/api/tts/playback_first_wav",
-            trace_id=req.trace_id or "",
-            speaker=req.voice,
-            language=tts_language,
-        )
-        yield _wav_payload(second_result["bytes"])
-
-    return StreamingResponse(stream(), media_type="audio/wav")
+async def playback_first_wav(req: PlaybackFirstRequest) -> Response:
+    try:
+        result = await _run_playback_first(req)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+    validation_id = enqueue_validation(
+        expected_text=str(result.get("expected_text") or req.input),
+        wav_bytes=result["bytes"],
+        trace_id=req.trace_id or "",
+        endpoint="/api/tts/playback_first_wav",
+        speaker=req.voice,
+        language=_stable_language_for_tts(str(result.get("expected_text") or req.input), req.language) or "",
+        metadata={
+            "mode": result.get("mode"),
+            "audio_s": result.get("audio_s"),
+            "rtf": result.get("rtf"),
+            "segments_requested": result.get("segments_requested"),
+            "normalization_trace": result.get("normalization_trace"),
+        },
+    )
+    result["validation_id"] = validation_id
+    return Response(content=result["bytes"], media_type="audio/wav")
 
 
 def _parse_args() -> argparse.Namespace:
