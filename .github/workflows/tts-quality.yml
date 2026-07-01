@@ -1,0 +1,55 @@
+name: TTS quality checks
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - codex/ray-dual-worker-tts
+
+jobs:
+  tts-quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install lightweight test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            pytest \
+            numpy \
+            fastapi \
+            uvicorn \
+            requests \
+            ray \
+            markdown-it-py \
+            wetext \
+            py-pinyin-split \
+            wordfreq
+
+      - name: Compile TTS modules
+        run: |
+          python -m py_compile \
+            examples/ray_dual_worker_server.py \
+            examples/single_gpu_custom_voice_server.py \
+            examples/tts_failover_gateway.py \
+            examples/tts_output_validator.py \
+            examples/tts_text_normalizer.py
+
+      - name: Run TTS quality unit tests
+        run: |
+          python -m pytest \
+            tests/test_tts_output_validator.py \
+            tests/test_ray_dual_worker_server_tokens.py \
+            tests/test_tts_failover_gateway.py \
+            tests/test_single_gpu_custom_voice_server.py \
+            tests/test_tts_text_normalizer.py

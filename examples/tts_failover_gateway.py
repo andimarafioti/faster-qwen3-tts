@@ -40,17 +40,57 @@ LLAMA_LOCAL_SCRIPTS = Path("/home/ivan/github/llama.cpp/scripts/local")
 if str(LLAMA_LOCAL_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(LLAMA_LOCAL_SCRIPTS))
 
-from model_resource_manager import (  # noqa: E402
-    ResourceBusy,
-    TTS_MODEL,
-    acquire_model,
-    mark_error,
-    mark_loaded,
-    mark_unloaded,
-    problem_detail,
-    read_state,
-    should_idle_unload,
-)
+try:
+    from model_resource_manager import (  # noqa: E402
+        ResourceBusy,
+        TTS_MODEL,
+        acquire_model,
+        mark_error,
+        mark_loaded,
+        mark_unloaded,
+        problem_detail,
+        read_state,
+        should_idle_unload,
+    )
+except ModuleNotFoundError:
+    class ResourceBusy(Exception):
+        pass
+
+    class _NoopLease:
+        async def release(self) -> None:
+            return None
+
+    TTS_MODEL = "qwen3-tts"
+
+    async def acquire_model(_model: str, _unload_callback: Any) -> _NoopLease:
+        return _NoopLease()
+
+    def mark_error(_model: str, _message: str) -> None:
+        return None
+
+    def mark_loaded(_model: str) -> None:
+        return None
+
+    def mark_unloaded(_model: str) -> None:
+        return None
+
+    def problem_detail(*, requested_model: str, exc: Exception, instance: str) -> tuple[dict[str, Any], dict[str, str]]:
+        return (
+            {
+                "type": "about:blank",
+                "title": "Resource busy",
+                "status": 503,
+                "detail": str(exc) or f"{requested_model} is busy",
+                "instance": instance,
+            },
+            {},
+        )
+
+    def read_state() -> dict[str, Any]:
+        return {"mode": "standalone"}
+
+    def should_idle_unload(_model: str, _idle_timeout_s: int) -> bool:
+        return False
 
 
 HOP_BY_HOP_HEADERS = {
