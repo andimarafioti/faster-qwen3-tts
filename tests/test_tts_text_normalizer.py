@@ -2,6 +2,12 @@ from examples.ray_dual_worker_server import _split_tts_text_into_chunks
 from examples.tts_text_normalizer import has_readable_text, normalize_for_tts
 import json
 import os
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def isolate_user_pronunciation_terms(monkeypatch, tmp_path):
+    monkeypatch.setenv("QWEN_TTS_PRONUNCIATION_TERMS", str(tmp_path / "pronunciation_terms.json"))
 
 
 def test_normalizer_removes_markdown_separator_without_dropping_tail(monkeypatch):
@@ -35,15 +41,42 @@ def test_normalizer_drops_pure_symbol_text(monkeypatch):
     assert has_readable_text(result.text) is False
 
 
-def test_short_cleaned_text_stays_in_one_chunk(monkeypatch):
+def test_cleaned_text_keeps_tail_when_chunked(monkeypatch):
     monkeypatch.setenv("QWEN_TTS_NORMALIZER", "basic")
     text = "好像发了一个 hello，也发了一个 n i h a o，好像报错。  --- 感觉还是有不能连贯输出的情况?"
 
     chunks, truncated = _split_tts_text_into_chunks(text, max_chars=90, min_chars=28, max_segments=10)
 
     assert truncated is False
+    assert chunks
+    assert "---" not in "".join(chunks)
+    assert "感觉还是有不能连贯输出的情况" in "".join(chunks)
+
+
+def test_multi_sentence_diagnostic_text_splits_below_max_chars(monkeypatch):
+    monkeypatch.setenv("QWEN_TTS_NORMALIZER", "basic")
+    text = "诊断确认: T T S 服务端生成坏音频仍返回二零零,需修复质量校验. 风险是播报失败被误判为成功,下一步是增强服务端失败拦截与重试逻辑."
+
+    chunks, truncated = _split_tts_text_into_chunks(text, max_chars=90, min_chars=28, max_segments=10)
+
+    assert truncated is False
+    assert len(chunks) == 2
+    assert "仍返回二零零" in chunks[0]
+    assert "需修复质量校验" in chunks[0]
+    assert "风险是播报失败" in chunks[1]
+    assert "下一步是增强服务端" in chunks[1]
+
+
+def test_plain_multi_sentence_summary_stays_one_chunk_below_max_chars(monkeypatch):
+    monkeypatch.setenv("QWEN_TTS_NORMALIZER", "basic")
+    text = "设备 ivan，目录 UGREEN。当前流程持续传音，耗流且资源浪费。建议本地加轻量VAD，有声才发，尾音保留后交云端处理，降本节能。"
+
+    chunks, truncated = _split_tts_text_into_chunks(text, max_chars=90, min_chars=28, max_segments=10)
+
+    assert truncated is False
     assert len(chunks) == 1
-    assert "---" not in chunks[0]
+    assert "当前流程持续传音" in chunks[0]
+    assert "建议本地加轻量 V A D" in chunks[0]
 
 
 def test_full_user_report_keeps_chinese_content():
@@ -149,10 +182,31 @@ def test_code_symbols_paths_and_colon_none_are_verbalized(monkeypatch):
 
     result = normalize_for_tts("风险:无，a != b，/v1/audio/speech。")
 
-    assert "风险，无" in result.text
+    assert "风险是，无" in result.text
     assert "不等于" in result.text
     assert "路径 v 一 audio speech" in result.text
     assert "风险五" not in result.text
+
+
+def test_discourse_labels_are_verbalized_for_speech(monkeypatch):
+    monkeypatch.setenv("QWEN_TTS_NORMALIZER", "basic")
+
+    result = normalize_for_tts("风险:若配置错误,可能引发并发混乱。下一步:启用 traceid 哈希分配。")
+
+    assert result.text.startswith("风险是，若配置错误")
+    assert "。下一步是，启用 traceid 哈希分配" in result.text
+
+
+def test_discourse_label_verbalizer_does_not_touch_urls_or_assignments(monkeypatch):
+    monkeypatch.setenv("QWEN_TTS_NORMALIZER", "basic")
+
+    result = normalize_for_tts("地址 http://example.test/a:b，QWEN_TTS_PORT=8092，路径 /v1/audio:speech。")
+
+    assert "地址是" not in result.text
+    assert "风险是" not in result.text
+    assert "下一步是" not in result.text
+    assert "环境变量 Q W E N T T S P O R T 等于 八 零 九 二" in result.text
+    assert "路径 v 一 audio" in result.text
 
 
 def test_normalizer_can_disable_technical_verbalizer(monkeypatch):

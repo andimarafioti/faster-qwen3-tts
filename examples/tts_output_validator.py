@@ -383,6 +383,31 @@ def _validate_job(job: ValidationJob) -> dict[str, Any]:
     }
 
 
+def validate_wav_bytes(
+    *,
+    expected_text: str,
+    wav_bytes: bytes,
+    trace_id: str = "",
+    endpoint: str = "manual",
+    speaker: str = "",
+    language: str = "",
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    job = ValidationJob(
+        validation_id=f"val-{uuid.uuid4().hex[:16]}",
+        expected_text=expected_text,
+        wav_bytes=wav_bytes,
+        trace_id=trace_id,
+        endpoint=endpoint,
+        speaker=speaker,
+        language=language,
+        metadata=metadata or {},
+    )
+    record = _validate_job(job)
+    _store.upsert(job.validation_id, record)
+    return record
+
+
 def _worker_loop() -> None:
     assert _queue is not None
     while True:

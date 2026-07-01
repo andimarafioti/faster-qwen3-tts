@@ -1,6 +1,8 @@
 from examples.ray_dual_worker_server import (
+    AppState,
     CapsWriterSpeakRequest,
     SpeechRequest,
+    PIPELINE_VERSION,
     _hit_token_cap,
     _next_retry_tokens,
     _result_quality_issues,
@@ -8,10 +10,13 @@ from examples.ray_dual_worker_server import (
     _status_payload,
     _estimate_max_new_tokens,
     _resolve_max_new_tokens,
+    _synthesize_with_quality_retry,
     _trim_trailing_silence,
     _to_wav_bytes,
 )
+import asyncio
 import numpy as np
+import pytest
 
 
 def test_resolve_max_new_tokens_uses_estimate_when_missing():
@@ -131,6 +136,23 @@ def test_speech_requests_accept_optional_trace_id():
     assert openai_req.trace_id == "trace-b"
 
 
+def test_speech_requests_accept_optional_affinity_key():
+    capswriter_req = CapsWriterSpeakRequest(text="你好。", affinity_key="announcement:1")
+    openai_req = SpeechRequest(input="你好。", affinity_key="announcement:2")
+
+    assert capswriter_req.affinity_key == "announcement:1"
+    assert openai_req.affinity_key == "announcement:2"
+
+
+def test_app_state_uses_stable_worker_for_affinity_key():
+    workers = [object(), object(), object()]
+    app_state = AppState(workers)
+
+    first = app_state.pick_worker("announcement:stable")
+    assert app_state.pick_worker("announcement:stable") is first
+    assert app_state.pick_worker("announcement:stable") is first
+
+
 def test_status_payload_adds_v1_capabilities_without_removing_existing_fields():
     rows = [
         {
@@ -159,5 +181,54 @@ def test_status_payload_adds_v1_capabilities_without_removing_existing_fields():
     assert payload["speakers"] == ["serena", "aiden", "dylan"]
     assert payload["capabilities"]["supports_plan"] is True
     assert payload["capabilities"]["supports_trace_id"] is True
+    assert payload["capabilities"]["supports_affinity_key"] is True
+    assert payload["pipeline_version"] == PIPELINE_VERSION
+    assert payload["generation"]["do_sample"] is False
     assert payload["client_defaults"]["recommended_speak_concurrency"] == 2
     assert payload["audio"]["content_type"] == "audio/wav"
+
+
+def test_quality_retry_raises_when_all_attempts_and_fallback_fail(monkeypatch):
+    import examples.ray_dual_worker_server as server
+
+    class FakeSynth:
+        def remote(self, _text, _speaker, _language, _instruction, max_new_tokens):
+            return max_new_tokens
+
+    class FakeWorker:
+        synthesize = FakeSynth()
+
+    async def fake_ray_get(max_new_tokens):
+        silence = np.zeros(24000 * 3, dtype=np.float32)
+        return {
+            "worker_id": 0,
+            "gpu_ids": ["0"],
+            "audio_s": 3.0,
+            "elapsed_s": 0.5,
+            "ttfa_s": 0.1,
+            "rtf": 6.0,
+            "max_new_tokens": max_new_tokens,
+            "estimated_audio_s": 8.0,
+            "hit_token_cap": False,
+            "suspicious_duration": False,
+            "bytes": _to_wav_bytes(silence, 24000),
+        }
+
+    async def no_split_fallback(**_kwargs):
+        return None
+
+    monkeypatch.setattr(server, "state", AppState([FakeWorker(), FakeWorker(), FakeWorker()]))
+    monkeypatch.setattr(server, "_ray_get", fake_ray_get)
+    monkeypatch.setattr(server, "_synthesize_split_fallback", no_split_fallback)
+
+    with pytest.raises(RuntimeError, match="TTS quality check failed"):
+        asyncio.run(
+            _synthesize_with_quality_retry(
+                text="风险是，若配置错误，可能引发并发混乱。",
+                speaker="serena",
+                language="Chinese",
+                instruction=None,
+                max_new_tokens=96,
+                trace_id="test-quality-fail",
+            )
+        )

@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import hashlib
 import io
 import math
 import os
@@ -40,6 +41,7 @@ try:
         enqueue_validation,
         get_validation_result,
         recent_validation_results,
+        validate_wav_bytes,
         validation_enabled,
         validation_headers,
     )
@@ -50,11 +52,13 @@ except ModuleNotFoundError:
         enqueue_validation,
         get_validation_result,
         recent_validation_results,
+        validate_wav_bytes,
         validation_enabled,
         validation_headers,
     )
 
 DEFAULT_SPEAKER = "Serena"
+PIPELINE_VERSION = os.getenv("QWEN_TTS_PIPELINE_VERSION", "qwen3_tts_ray_v3")
 TOKEN_AUDIO_SECONDS = 0.08
 QUALITY_RETRY_ATTEMPTS = 3
 
@@ -148,6 +152,7 @@ class SpeechRequest(BaseModel):
     language: str | None = None
     max_new_tokens: int | None = Field(default=None, ge=1)
     trace_id: str | None = None
+    affinity_key: str | None = None
 
 
 class JsonSpeechRequest(SpeechRequest):
@@ -170,6 +175,7 @@ class CapsWriterSpeakRequest(BaseModel):
     language: str | None = None
     max_new_tokens: int | None = Field(default=None, ge=1)
     trace_id: str | None = None
+    affinity_key: str | None = None
 
 
 class TTSPlanRequest(BaseModel):
@@ -177,6 +183,15 @@ class TTSPlanRequest(BaseModel):
     trace_id: str | None = None
     max_chars_per_chunk: int | None = None
     lang_hint: str | None = None
+
+
+class ValidateWavRequest(BaseModel):
+    expected_text: str = ""
+    audio_b64: str = Field(..., min_length=1)
+    trace_id: str | None = None
+    speaker: str | None = None
+    language: str | None = None
+    estimated_audio_s: float | None = None
 
 
 def _sanitize_tts_text(text: str, lang_hint: str | None = None) -> str:
@@ -257,6 +272,16 @@ def _blocking_quality_issues(issues: list[str]) -> list[str]:
     return [issue for issue in issues if issue != "hit_token_cap"]
 
 
+def _quality_failure_message(text: str, last_result: dict[str, Any] | None, retry_history: list[dict[str, Any]]) -> str:
+    issues = sorted(set(str(item) for item in (last_result or {}).get("quality_issues") or []))
+    if not issues and retry_history:
+        issues = sorted(set(str(item) for row in retry_history for item in row.get("issues") or []))
+    return (
+        "TTS quality check failed "
+        f"(issues={','.join(issues) or 'unknown'}, attempts={len(retry_history)}, text_len={len(text)})"
+    )
+
+
 def _contains_chinese(text: str) -> bool:
     return bool(re.search(r"[\u4e00-\u9fff]", text or ""))
 
@@ -282,6 +307,7 @@ async def _synthesize_split_fallback(
     speaker: str | None,
     language: str | None,
     instruction: str | None,
+    affinity_key: str | None = None,
 ) -> dict[str, Any] | None:
     if state is None:
         return None
@@ -293,8 +319,8 @@ async def _synthesize_split_fallback(
 
     results: list[dict[str, Any]] = []
     history: list[dict[str, Any]] = []
+    worker = state.pick_worker(affinity_key)
     for idx, chunk in enumerate(chunks):
-        worker = state.pick_worker()
         result = await _ray_get(
             worker.synthesize.remote(
                 chunk,
@@ -375,6 +401,7 @@ def _status_payload(rows: list[dict[str, Any]], backend: str) -> dict[str, Any]:
         "tts_model_loaded": True,
         "tts_backend": backend,
         "api_version": "tts-http-v1",
+        "pipeline_version": PIPELINE_VERSION,
         "default_speaker": rows[0].get("default_speaker") if rows else None,
         "speakers": speakers,
         "workers_ready": workers_ready,
@@ -393,6 +420,8 @@ def _status_payload(rows: list[dict[str, Any]], backend: str) -> dict[str, Any]:
             "supports_plan": True,
             "supports_max_new_tokens": True,
             "supports_trace_id": True,
+            "supports_affinity_key": True,
+            "supports_wav_validation": True,
             "tts_validation_enabled": validation_enabled(),
         },
         "client_defaults": {
@@ -409,6 +438,12 @@ def _status_payload(rows: list[dict[str, Any]], backend: str) -> dict[str, Any]:
             "format": "wav",
             "content_type": "audio/wav",
             "sample_rate_hz": 24000,
+        },
+        "generation": {
+            "do_sample": bool(state.do_sample) if state is not None else False,
+            "temperature": float(state.temperature) if state is not None else 0.8,
+            "top_p": float(state.top_p) if state is not None else 1.0,
+            "max_new_tokens": int(state.max_new_tokens) if state is not None else 512,
         },
         "validation": {
             "enabled": validation_enabled(),
@@ -480,13 +515,16 @@ def _split_tts_text_into_chunks(
     max_chars = max(20, int(max_chars))
     min_chars = max(1, min(int(min_chars), max_chars))
     max_segments = max(1, int(max_segments))
-    if len(content) <= max_chars:
-        return [content], False
     sentences = _split_sentences(content) or [content]
+    if len(content) <= max_chars and len(sentences) <= 1:
+        return [content], False
 
     chunks: list[str] = []
     current = ""
     truncated = False
+
+    def should_force_boundary(value: str) -> bool:
+        return bool(re.match(r"^\s*(风险|下一步|诊断|结论|建议)(?:是|确认|[:：,，])", value or ""))
 
     def split_long_text(value: str) -> tuple[str, str]:
         window = value[:max_chars]
@@ -520,20 +558,20 @@ def _split_tts_text_into_chunks(
             if truncated:
                 return chunks, True
 
+        force_boundary = bool(current and should_force_boundary(remaining) and len(current) >= min_chars)
         candidate = (current + remaining).strip()
         if not current:
             current = remaining
+        elif force_boundary:
+            push(current)
+            current = remaining
+            if truncated:
+                return chunks, True
         elif len(candidate) <= max_chars:
             current = candidate
         else:
             push(current)
             current = remaining
-            if truncated:
-                return chunks, True
-
-        if len(current) >= min_chars and _estimate_audio_s(current) >= 3.0:
-            push(current)
-            current = ""
             if truncated:
                 return chunks, True
 
@@ -749,9 +787,17 @@ class TTSWorker:
 @dataclass
 class AppState:
     workers: list[Any]
+    do_sample: bool = False
+    temperature: float = 0.8
+    top_p: float = 1.0
+    max_new_tokens: int = 512
     next_worker: int = 0
 
-    def pick_worker(self) -> Any:
+    def pick_worker(self, affinity_key: str | None = None) -> Any:
+        if affinity_key:
+            digest = hashlib.sha256(affinity_key.encode("utf-8")).digest()
+            index = int.from_bytes(digest[:8], "big") % len(self.workers)
+            return self.workers[index]
         worker = self.workers[self.next_worker % len(self.workers)]
         self.next_worker += 1
         return worker
@@ -867,6 +913,7 @@ async def _synthesize_with_quality_retry(
     instruction: str | None,
     max_new_tokens: int | None,
     trace_id: str = "",
+    affinity_key: str | None = None,
 ) -> dict[str, Any]:
     if state is None:
         raise HTTPException(status_code=503, detail="Server not initialized")
@@ -877,7 +924,7 @@ async def _synthesize_with_quality_retry(
     attempts = max(1, min(QUALITY_RETRY_ATTEMPTS, len(state.workers)))
 
     for attempt in range(attempts):
-        worker = state.pick_worker()
+        worker = state.pick_worker(affinity_key)
         result = await _ray_get(
             worker.synthesize.remote(
                 text,
@@ -908,32 +955,32 @@ async def _synthesize_with_quality_retry(
         )
         if blocking_issues:
             print(
-                "[TTS] quality fallback "
+                "[TTS] quality retry "
                 f"trace_id={trace_id or '-'} attempt={attempt + 1} "
                 f"worker={result.get('worker_id')} blocking_issues={','.join(blocking_issues)}",
                 flush=True,
             )
-            break
         if attempt == attempts - 1:
             break
-        current_tokens = int(result.get("max_new_tokens") or _estimate_max_new_tokens(text, 512))
-        next_tokens = _next_retry_tokens(current_tokens, 512)
-        if next_tokens <= current_tokens:
-            break
-        retry_tokens = next_tokens
-        print(
-            "[TTS] quality retry "
-            f"trace_id={trace_id or '-'} attempt={attempt + 1} "
-            f"worker={result.get('worker_id')} issues={','.join(issues)} "
-            f"next_max_new_tokens={retry_tokens}",
-            flush=True,
-        )
+        if "hit_token_cap" in issues:
+            current_tokens = int(result.get("max_new_tokens") or _estimate_max_new_tokens(text, 512))
+            next_tokens = _next_retry_tokens(current_tokens, 512)
+            if next_tokens > current_tokens:
+                retry_tokens = next_tokens
+                print(
+                    "[TTS] quality retry "
+                    f"trace_id={trace_id or '-'} attempt={attempt + 1} "
+                    f"worker={result.get('worker_id')} issues={','.join(issues)} "
+                    f"next_max_new_tokens={retry_tokens}",
+                    flush=True,
+                )
 
     split_result = await _synthesize_split_fallback(
         text=text,
         speaker=speaker,
         language=language,
         instruction=instruction,
+        affinity_key=affinity_key,
     )
     if split_result is not None:
         split_result["retry_history"] = retry_history + list(split_result.get("retry_history") or [])
@@ -949,7 +996,8 @@ async def _synthesize_with_quality_retry(
         raise RuntimeError("TTS synthesis did not produce a result")
     last_result["retry_count"] = len(retry_history)
     last_result["retry_history"] = retry_history
-    return last_result
+    last_result["quality_issues"] = sorted(set(item for row in retry_history for item in row.get("issues") or []))
+    raise RuntimeError(_quality_failure_message(text, last_result, retry_history))
 
 
 @app.get("/health")
@@ -998,6 +1046,33 @@ async def tts_validation_result(validation_id: str, wait_ms: int = 0) -> JSONRes
             status_code=404,
         )
     return JSONResponse(result)
+
+
+@app.post("/api/tts/validate_wav")
+async def tts_validate_wav(req: ValidateWavRequest) -> JSONResponse:
+    try:
+        wav_bytes = base64.b64decode(req.audio_b64, validate=True)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid audio_b64: {exc}") from exc
+
+    expected = normalize_for_tts(req.expected_text, lang_hint=req.language).text
+    metadata: dict[str, Any] = {"pipeline_version": PIPELINE_VERSION}
+    if req.estimated_audio_s is not None:
+        metadata["estimated_audio_s"] = req.estimated_audio_s
+    try:
+        record = await asyncio.to_thread(
+            validate_wav_bytes,
+            expected_text=expected,
+            wav_bytes=wav_bytes,
+            trace_id=req.trace_id or "",
+            endpoint="/api/tts/validate_wav",
+            speaker=req.speaker or "",
+            language=req.language or "",
+            metadata=metadata,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+    return JSONResponse(record)
 
 
 @app.post("/api/tts/load")
@@ -1096,6 +1171,7 @@ async def create_speech(req: SpeechRequest) -> Response:
             instruction=req.instruction,
             max_new_tokens=req.max_new_tokens,
             trace_id=req.trace_id or "",
+            affinity_key=req.affinity_key,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
@@ -1131,6 +1207,7 @@ async def speak_json(req: JsonSpeechRequest) -> JSONResponse:
             instruction=req.instruction,
             max_new_tokens=req.max_new_tokens,
             trace_id=req.trace_id or "",
+            affinity_key=req.affinity_key,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
@@ -1170,6 +1247,7 @@ async def capswriter_speak(req: CapsWriterSpeakRequest) -> Response:
             instruction=req.instruction,
             max_new_tokens=req.max_new_tokens,
             trace_id=req.trace_id or "",
+            affinity_key=req.affinity_key,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
@@ -1477,7 +1555,13 @@ def main() -> None:
         for i in range(args.workers)
     ]
     ray.get([worker.health.remote() for worker in workers])
-    state = AppState(workers=workers)
+    state = AppState(
+        workers=workers,
+        do_sample=args.do_sample,
+        temperature=args.temperature,
+        top_p=args.top_p,
+        max_new_tokens=args.max_new_tokens,
+    )
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 
 

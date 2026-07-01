@@ -65,6 +65,8 @@ DEFAULT_PRONUNCIATION_TERMS = {
     "tts": "T T S",
     "ui": "U I",
 }
+DISCOURSE_LABELS = ("风险", "下一步", "诊断", "结论", "建议")
+DISCOURSE_LABEL_RE = re.compile(r"(^|[。.!？!?；;，,]\s*)(" + "|".join(DISCOURSE_LABELS) + r")\s*[:：]\s*")
 
 
 @dataclass(frozen=True)
@@ -363,12 +365,20 @@ def _normalize_technical_tokens(text: str) -> tuple[str, tuple[dict[str, str], .
     return content, term_trace + tuple(trace)
 
 
+def _verbalize_discourse_labels(text: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        return f"{match.group(1)}{match.group(2)}是，"
+
+    return DISCOURSE_LABEL_RE.sub(replace, text)
+
+
 def normalize_for_tts(text: str, lang_hint: str | None = None) -> NormalizedText:
     original = text or ""
     content = _clean_application_noise(original)
     if not content or not has_readable_text(content):
         return NormalizedText("", content != original.strip(), "basic")
 
+    content = _verbalize_discourse_labels(content)
     content, trace = _normalize_technical_tokens(content)
     normalizer_name = "basic+tech" if trace else "basic"
 
