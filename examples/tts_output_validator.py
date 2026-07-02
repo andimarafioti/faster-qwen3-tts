@@ -28,6 +28,11 @@ except ImportError:  # pragma: no cover - direct script execution fallback
 
 
 DEFAULT_ASR_BASE_URL = "http://agx.taild500c8.ts.net:8001"
+DEFAULT_RECORDS_PATH = (
+    "/media/ivan/55FF-1534/ai-runtimes/"
+    "faster-qwen3-tts/validation/tts_validation_records.jsonl"
+)
+_persist_lock = threading.Lock()
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -39,6 +44,10 @@ def _env_bool(name: str, default: bool) -> bool:
 
 def validation_enabled() -> bool:
     return _env_bool("QWEN_TTS_VALIDATION_ENABLED", True)
+
+
+def validation_persistence_enabled() -> bool:
+    return _env_bool("QWEN_TTS_VALIDATION_PERSIST_ENABLED", True)
 
 
 def _asr_base_url() -> str:
@@ -81,6 +90,56 @@ def _candidate_log_path() -> Path:
     return Path(
         os.getenv("QWEN_TTS_PRONUNCIATION_CANDIDATES", str(_config_dir() / "pronunciation_candidates.jsonl"))
     ).expanduser()
+
+
+def _validation_records_path() -> Path:
+    default_path = DEFAULT_RECORDS_PATH
+    if not Path("/media/ivan/55FF-1534/ai-runtimes").exists():
+        default_path = str(_config_dir() / "tts_validation_records.jsonl")
+    return Path(os.getenv("QWEN_TTS_VALIDATION_RECORDS", default_path)).expanduser()
+
+
+def validation_records_path() -> str:
+    return str(_validation_records_path())
+
+
+def _append_validation_record(record: dict[str, Any]) -> None:
+    if not validation_persistence_enabled():
+        return
+    row = dict(record)
+    row["persisted_at"] = time.time()
+    path = _validation_records_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(row, ensure_ascii=False, sort_keys=True)
+        with _persist_lock:
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(line)
+                fh.write("\n")
+    except Exception:
+        # Persistence must never break TTS responses or validation workers.
+        return
+
+
+def persisted_validation_results(limit: int = 200) -> list[dict[str, Any]]:
+    path = _validation_records_path()
+    if not path.exists():
+        return []
+    max_items = max(1, min(5000, int(limit)))
+    rows: deque[dict[str, Any]] = deque(maxlen=max_items)
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except Exception:
+        return []
+    return list(reversed(rows))
 
 
 def normalize_compare_text(text: str) -> str:
@@ -405,6 +464,7 @@ def validate_wav_bytes(
     )
     record = _validate_job(job)
     _store.upsert(job.validation_id, record)
+    _append_validation_record(record)
     return record
 
 
@@ -430,6 +490,7 @@ def _worker_loop() -> None:
         except Exception:
             pass
         _store.upsert(job.validation_id, record)
+        _append_validation_record(record)
         print(
             "[TTS-VALIDATION] "
             f"id={job.validation_id} trace_id={job.trace_id or '-'} "
@@ -486,16 +547,15 @@ def enqueue_validation(
     try:
         _queue.put_nowait(job)
     except queue.Full:
-        _store.upsert(
-            validation_id,
-            {
-                **_base_record(job, "done"),
-                "verdict": "skipped",
-                "passed": False,
-                "issues": ["queue_full"],
-                "updated_at": time.time(),
-            },
-        )
+        record = {
+            **_base_record(job, "done"),
+            "verdict": "skipped",
+            "passed": False,
+            "issues": ["queue_full"],
+            "updated_at": time.time(),
+        }
+        _store.upsert(validation_id, record)
+        _append_validation_record(record)
         return validation_id
     _store.upsert(validation_id, _base_record(job, "queued"))
     return validation_id

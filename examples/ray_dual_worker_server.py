@@ -40,10 +40,12 @@ try:
         analyze_wav_bytes,
         enqueue_validation,
         get_validation_result,
+        persisted_validation_results,
         recent_validation_results,
         validate_wav_bytes,
         validation_enabled,
         validation_headers,
+        validation_records_path,
     )
 except ModuleNotFoundError:
     from tts_text_normalizer import has_readable_text, normalize_for_tts
@@ -51,10 +53,12 @@ except ModuleNotFoundError:
         analyze_wav_bytes,
         enqueue_validation,
         get_validation_result,
+        persisted_validation_results,
         recent_validation_results,
         validate_wav_bytes,
         validation_enabled,
         validation_headers,
+        validation_records_path,
     )
 
 DEFAULT_SPEAKER = "Serena"
@@ -1039,6 +1043,18 @@ async def tts_validation_recent(limit: int = 20) -> JSONResponse:
             "success": True,
             "enabled": validation_enabled(),
             "results": recent_validation_results(limit),
+        }
+    )
+
+
+@app.get("/api/tts/validation/history")
+async def tts_validation_history(limit: int = 200) -> JSONResponse:
+    return JSONResponse(
+        {
+            "success": True,
+            "enabled": validation_enabled(),
+            "path": validation_records_path(),
+            "results": persisted_validation_results(limit),
         }
     )
 

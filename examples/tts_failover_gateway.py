@@ -25,15 +25,19 @@ try:
     from examples.tts_output_validator import (
         enqueue_validation,
         get_validation_result,
+        persisted_validation_results,
         recent_validation_results,
         validation_enabled,
+        validation_records_path,
     )
 except ModuleNotFoundError:
     from tts_output_validator import (
         enqueue_validation,
         get_validation_result,
+        persisted_validation_results,
         recent_validation_results,
         validation_enabled,
+        validation_records_path,
     )
 
 LLAMA_LOCAL_SCRIPTS = Path("/home/ivan/github/llama.cpp/scripts/local")
@@ -801,6 +805,21 @@ async def tts_validation_recent(request: Request, limit: int = 20) -> Response:
     if local_results:
         return JSONResponse({"success": True, "enabled": validation_enabled(), "results": local_results})
     return await _proxy(request, "/api/tts/validation/recent")
+
+
+@app.get("/api/tts/validation/history")
+async def tts_validation_history(request: Request, limit: int = 200) -> Response:
+    local_results = persisted_validation_results(limit)
+    if local_results:
+        return JSONResponse(
+            {
+                "success": True,
+                "enabled": validation_enabled(),
+                "path": validation_records_path(),
+                "results": local_results,
+            }
+        )
+    return await _proxy(request, "/api/tts/validation/history")
 
 
 @app.get("/api/tts/validation/{validation_id}")

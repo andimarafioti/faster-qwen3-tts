@@ -1,9 +1,16 @@
 import math
 import struct
+import json
 
 import numpy as np
+import pytest
 
 from examples import tts_output_validator as validator
+
+
+@pytest.fixture(autouse=True)
+def isolate_validation_records(monkeypatch, tmp_path):
+    monkeypatch.setenv("QWEN_TTS_VALIDATION_RECORDS", str(tmp_path / "tts_validation_records.jsonl"))
 
 
 def _wav_bytes(samples: np.ndarray, sample_rate: int = 24000) -> bytes:
@@ -128,3 +135,40 @@ def test_validation_records_lowercase_pronunciation_candidates(monkeypatch, tmp_
     content = (tmp_path / "pronunciation_candidates.jsonl").read_text(encoding="utf-8")
     assert '"token": "ai"' in content
     assert '"token": "tts"' in content
+
+
+def test_validate_wav_persists_record_to_jsonl(monkeypatch, tmp_path):
+    records_path = tmp_path / "records" / "tts_validation_records.jsonl"
+    monkeypatch.setenv("QWEN_TTS_VALIDATION_RECORDS", str(records_path))
+
+    def fake_asr(_wav_bytes: bytes, filename: str = "tts-validation.wav"):
+        return {"success": True, "text": "你好"}
+
+    monkeypatch.setattr(validator, "call_asr_transcribe", fake_asr)
+
+    result = validator.validate_wav_bytes(
+        expected_text="你好",
+        wav_bytes=_wav_bytes(np.ones(24000, dtype=np.float32) * 0.02),
+        trace_id="persist-test",
+        endpoint="/api/tts/speak",
+    )
+
+    rows = [json.loads(line) for line in records_path.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 1
+    assert rows[0]["validation_id"] == result["validation_id"]
+    assert rows[0]["trace_id"] == "persist-test"
+    assert rows[0]["expected_text"] == "你好"
+    assert rows[0]["endpoint"] == "/api/tts/speak"
+    assert rows[0]["verdict"] == "passed"
+
+
+def test_persisted_validation_results_returns_newest_first(monkeypatch, tmp_path):
+    records_path = tmp_path / "tts_validation_records.jsonl"
+    monkeypatch.setenv("QWEN_TTS_VALIDATION_RECORDS", str(records_path))
+
+    validator._append_validation_record({"validation_id": "old", "created_at": 1})
+    validator._append_validation_record({"validation_id": "new", "created_at": 2})
+
+    rows = validator.persisted_validation_results(limit=2)
+
+    assert [row["validation_id"] for row in rows] == ["new", "old"]
