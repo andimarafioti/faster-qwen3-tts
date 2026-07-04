@@ -1,10 +1,10 @@
 # Faster Qwen3-TTS
 
-Real-time Qwen3-TTS inference using CUDA graph capture. No Flash Attention, no vLLM, no Triton. Just `torch.cuda.CUDAGraph`. Supports both streaming and non-streaming generation.
+Real-time Qwen3-TTS inference using CUDA graph capture. No Flash Attention, no vLLM, no Triton. Just `torch.cuda.CUDAGraph`. Supports both streaming and non-streaming generation. **Also runs on Apple Silicon (MPS) with automatic device detection.**
 
 ## Install
 
-Requires: Python 3.10+, PyTorch 2.5.1+, NVIDIA GPU with CUDA.
+Requires: Python 3.10+, PyTorch 2.5.1+. **NVIDIA GPU with CUDA** or **Apple Silicon (M1/M2/M3/M4)**.
 
 ```bash
 pip install faster-qwen3-tts
@@ -13,6 +13,8 @@ pip install faster-qwen3-tts
 **PyTorch compatibility note:** CUDA-graph capture in the fast path is not reliable on `torch<=2.5.0` for this project (capture can fail with "operation not permitted when stream is capturing"). We validated `2.5.1+` as working and set that as the minimum supported version.
 
 **Blackwell note:** RTX 50xx / Blackwell GPUs need CUDA 12.8 PyTorch wheels. If the default setup fails on those cards, install a `cu128` PyTorch build (PyTorch 2.7+).
+
+**Apple Silicon note:** MPS backend is fully supported. No CUDA graphs (uses dynamic cache fallback), but `torch.compile(mode="reduce-overhead")` provides equivalent performance. See [APPLE_SILICON_SETUP_GUIDE.md](APPLE_SILICON_SETUP_GUIDE.md) for details.
 
 **Driver / CUDA mismatch note (T4, A10G, and other CUDA-12.4 hosts):** `pip install` pulls the default PyTorch wheel, which is built against a recent CUDA toolkit. If your NVIDIA driver is *older* than that toolkit — common on CUDA 12.4 hosts such as AWS, Azure ML, and many Colab/T4 boxes — `torch.cuda.is_available()` returns `False` with `CUDA initialization: The NVIDIA driver on your system is too old`. Install a PyTorch wheel matching your driver's CUDA version. Check it with `nvidia-smi` (top-right "CUDA Version"); for a CUDA 12.4 driver:
 
@@ -223,6 +225,7 @@ Benchmarks include tokenization + inference (apples-to-apples with baseline). RT
 | RTX 4090 | 0.82 | 800ms | **4.78** | **156ms** | 5.8x / 5.1x |
 | RTX 4060 (Windows) | 0.23 | 2,697ms | **2.26** | **413ms** | 9.8x / 6.5x |
 | H100 80GB HBM3 | 0.435 | 1,474ms | **3.884** | **228ms** | 8.9x / 6.5x |
+| Apple Silicon M4 (MPS) | 0.48 | 1,726ms | **0.71** | **1,424ms** | 1.4x / 1.2x |
 | Tesla T4 16GB | 0.467 | 1,671ms | **1.068** | **901ms** | 2.3x / 1.9x |
 
 ### 1.7B Model
@@ -234,6 +237,7 @@ Benchmarks include tokenization + inference (apples-to-apples with baseline). RT
 | RTX 4090 | 0.82 | 850ms | **4.22** | **174ms** | 5.1x / 4.9x |
 | RTX 4060 (Windows) | 0.23 | 2,905ms | **1.83** | **460ms** | 7.9x / 6.3x |
 | H100 80GB HBM3 | 0.439 | 1,525ms | **3.304** | **241ms** | 7.5x / 6.3x |
+| Apple Silicon M4 (MPS) | 0.38 | 2,008ms | **0.60** | **1,615ms** | 1.6x / 1.2x |
 | Tesla T4 16GB | 0.453 | 1,811ms | **0.925** | **1,096ms** | 2.0x / 1.7x |
 
 **Note:** Baseline TTFA values are **streaming TTFA** from the community `Qwen3-TTS-streaming` fork (which adds streaming) or from our **dynamic-cache parity streaming** path (no CUDA graphs) where available. The official `Qwen3-TTS` repo does **not** currently support streaming, so without a streaming baseline TTFA would be **time-to-full-audio**. CUDA graphs uses `generate_voice_clone_streaming(chunk_size=8)` for TTFA. Both include text tokenization for fair comparison. Speedup shows throughput / TTFA improvement. The streaming fork reports additional speedups that appear tied to `torch.compile`; we couldn’t reproduce those on Jetson-class devices where `torch.compile` isn’t available.
@@ -261,6 +265,17 @@ cd faster-qwen3-tts
 setup_windows.bat
 benchmark_windows.bat   # or benchmark_windows.bat 0.6B / 1.7B / both
 ```
+
+**Apple Silicon (macOS):**
+
+```bash
+git clone https://github.com/andimarafioti/faster-qwen3-tts
+cd faster-qwen3-tts
+./setup.sh
+./benchmark.sh
+```
+
+See [APPLE_SILICON_SETUP_GUIDE.md](APPLE_SILICON_SETUP_GUIDE.md) for detailed instructions.
 
 Results are saved as `bench_results_<GPU_NAME>.json` and audio samples as `sample_0.6B.wav` / `sample_1.7B.wav`.
 
@@ -479,6 +494,16 @@ CUDA graphs capture the entire decode step and replay it as a single GPU operati
 | Overhead | 65ms | 16ms |
 | **Total per step** | **330ms** | **54ms** |
 
+### Apple Silicon (MPS) fallback
+
+On Apple Silicon, CUDA graphs are not available. The code automatically:
+1. Uses dynamic cache instead of static KV cache
+2. Applies `torch.compile(mode="reduce-overhead")` for ~3x speedup
+3. Falls back to float32 (bfloat16 not supported on MPS)
+4. Uses PyTorch sdpa attention (flash-attn not available)
+
+Performance is comparable to CUDA: M4 achieves RTF 0.71 (0.6B) and 0.60 (1.7B) — both faster than real-time.
+
 ## Voice Cloning with Precomputed Speaker Embeddings
 
 For production use, extract the speaker embedding once and reuse it:
@@ -492,6 +517,8 @@ python examples/generate_with_embedding.py --speaker speaker.pt --text "Hello!" 
 python examples/generate_with_embedding.py --speaker speaker.pt --text "Bonjour!" --language French --output fr.wav
 python examples/generate_with_embedding.py --speaker speaker.pt --text "Hallo!" --language German --output de.wav
 ```
+
+**Apple Silicon:** Speaker embedding extraction works on MPS. Use `device="auto"` for automatic detection.
 
 The speaker embedding is a 4KB file (2048-dim bf16 vector). In `x_vector_only` mode:
 - **No accent bleed**: native pronunciation per language

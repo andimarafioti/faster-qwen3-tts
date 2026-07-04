@@ -5,7 +5,10 @@ import time
 import os
 import numpy as np
 import soundfile as sf
-from faster_qwen3_tts import FasterQwen3TTS
+from faster_qwen3_tts import FasterQwen3TTS, get_optimal_device, device_supports_cuda_graphs
+
+device = get_optimal_device("auto")
+dtype = torch.bfloat16 if device_supports_cuda_graphs(device) else torch.float32
 
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODEL_SIZE = os.environ.get('MODEL_SIZE', '0.6B')
@@ -16,7 +19,7 @@ ref_text = "I'm confused why some people have super short timelines, yet at the 
 
 print("Loading model...")
 model = FasterQwen3TTS.from_pretrained(
-    MODEL_ID, device='cuda', dtype=torch.bfloat16,
+    MODEL_ID, device=device, dtype=dtype,
     attn_implementation='eager', max_seq_len=2048,
 )
 
@@ -31,13 +34,15 @@ model.generate_voice_clone(
 print("\n=== Non-streaming baseline (3 runs) ===")
 ns_rtfs = []
 for run in range(3):
-    torch.cuda.synchronize()
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     t0 = time.perf_counter()
     audio_list, sr = model.generate_voice_clone(
         text=text, language="English",
         ref_audio=ref_audio, ref_text=ref_text,
     )
-    torch.cuda.synchronize()
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     total = time.perf_counter() - t0
     dur = len(audio_list[0]) / sr
     rtf = dur / total
@@ -58,7 +63,8 @@ for chunk_size in [1, 2, 4, 8, 12]:
 
     for run in range(3):
         chunks = []
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         t_total = time.perf_counter()
         t_first = None
 
@@ -68,11 +74,13 @@ for chunk_size in [1, 2, 4, 8, 12]:
             chunk_size=chunk_size,
         ):
             if t_first is None:
-                torch.cuda.synchronize()
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
                 t_first = time.perf_counter() - t_total
             chunks.append(audio_chunk)
 
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         total = time.perf_counter() - t_total
 
         full_audio = np.concatenate(chunks)

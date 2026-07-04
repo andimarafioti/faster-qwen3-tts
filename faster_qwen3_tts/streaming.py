@@ -93,7 +93,8 @@ def fast_generate_streaming(
     rope_deltas = getattr(talker, "rope_deltas", None)
     talker_graph.set_generation_state(attention_mask, rope_deltas)
 
-    torch.cuda.synchronize()
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     t_prefill = time.time() - t_start
 
     # === DECODE LOOP — yield chunks ===
@@ -103,31 +104,41 @@ def fast_generate_streaming(
     chunk_count = 0
     chunk_start = time.time()
 
+    # ponytail: pre-alloc buffers for MPS — avoids per-step torch.cat/clone/list overhead
+    output_buf = torch.empty(num_code_groups, dtype=torch.long, device=device)
+    pred_input_buf = torch.empty(1, 2, past_hidden.shape[-1], dtype=past_hidden.dtype, device=device)
+    past_hidden_buf = torch.empty_like(past_hidden)
+    codec_hiddens_buf = torch.empty(1, num_code_groups, past_hidden.shape[-1], dtype=past_hidden.dtype, device=device)
+
     for step_idx in range(max_new_tokens):
         if token.item() == eos_id:
             break
 
-        # --- CUDA-Graphed Code Predictor ---
+        # --- Code Predictor ---
         last_id_hidden = talker_codec_embed(token.unsqueeze(1))
-        pred_input = torch.cat((past_hidden, last_id_hidden), dim=1)
-        codebook_token_ids = predictor_graph.run(pred_input)
+        pred_input_buf[:, :1, :].copy_(past_hidden)
+        pred_input_buf[:, 1:, :].copy_(last_id_hidden)
+        codebook_token_ids = predictor_graph.run(pred_input_buf)
 
-        all_cb = torch.cat([token.view(1), codebook_token_ids])
-        chunk_buffer.append(all_cb.detach())
+        output_buf[0] = token.view(-1)
+        output_buf[1:].copy_(codebook_token_ids)
+        chunk_buffer.append(output_buf.clone())
         all_first_tokens.append(token.detach())
 
-        # --- Build input embedding for talker ---
-        codec_hiddens = [last_id_hidden]
+        # --- Build input embedding for talker (batched embed lookup) ---
+        codec_hiddens_buf[:, 0, :].copy_(last_id_hidden.squeeze(1))
         for i in range(num_code_groups - 1):
-            codec_hiddens.append(predictor_codec_embeds[i](codebook_token_ids[i].unsqueeze(0).unsqueeze(0)))
-        inputs_embeds = torch.cat(codec_hiddens, dim=1).sum(1, keepdim=True)
+            codec_hiddens_buf[:, i + 1, :].copy_(
+                predictor_codec_embeds[i](codebook_token_ids[i].unsqueeze(0).unsqueeze(0)).squeeze(0)
+            )
+        inputs_embeds = codec_hiddens_buf.sum(1, keepdim=True)
 
         if gen_step < trailing_text_hiddens.shape[1]:
             inputs_embeds = inputs_embeds + trailing_text_hiddens[:, gen_step].unsqueeze(1)
         else:
             inputs_embeds = inputs_embeds + tts_pad_embed
 
-        # --- CUDA-Graphed Talker decode step ---
+        # --- Talker decode step ---
         current_pos = prefill_len + step_idx
         if current_pos >= talker_graph.max_seq_len - 1:
             break
@@ -150,12 +161,15 @@ def fast_generate_streaming(
             suppress_mask=suppress_mask,
             suppress_tokens=[eos_id] if suppress_eos else None,
         )
-        past_hidden = hidden_states[:, -1:, :].clone()
+        past_hidden_buf.copy_(hidden_states[:, -1:, :])
+        past_hidden = past_hidden_buf
         gen_step += 1
 
         # --- Yield chunk when buffer is full ---
         if len(chunk_buffer) >= chunk_size:
-            torch.cuda.synchronize()
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+
             chunk_decode_time = time.time() - chunk_start
             total_steps += len(chunk_buffer)
 
@@ -174,7 +188,9 @@ def fast_generate_streaming(
 
     # --- Yield final partial chunk ---
     if chunk_buffer:
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+
         chunk_decode_time = time.time() - chunk_start
         total_steps += len(chunk_buffer)
 
@@ -259,7 +275,9 @@ def parity_generate_streaming(
     if attention_mask is not None:
         attention_mask = attention_mask.clone()
 
-    torch.cuda.synchronize()
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+
     t_prefill = time.time() - t_start
 
     # === DECODE LOOP — yield chunks ===
@@ -327,7 +345,9 @@ def parity_generate_streaming(
         gen_step = out.generation_step
 
         if len(chunk_buffer) >= chunk_size:
-            torch.cuda.synchronize()
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+
             chunk_decode_time = time.time() - chunk_start
             total_steps += len(chunk_buffer)
 
@@ -345,7 +365,9 @@ def parity_generate_streaming(
             chunk_start = time.time()
 
     if chunk_buffer:
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+
         chunk_decode_time = time.time() - chunk_start
         total_steps += len(chunk_buffer)
 

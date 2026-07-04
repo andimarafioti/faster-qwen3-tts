@@ -23,7 +23,7 @@ import torch
 sys.path.insert(0, ".")
 
 from examples.audio import StreamPlayer
-from faster_qwen3_tts import FasterQwen3TTS
+from faster_qwen3_tts import FasterQwen3TTS, get_optimal_device
 
 
 def main():
@@ -33,7 +33,7 @@ def main():
     parser.add_argument("--ref-text", required=True, help="Reference transcript")
     parser.add_argument("--text", required=True, help="Text to synthesize")
     parser.add_argument("--language", default="English", help="Target language")
-    parser.add_argument("--device", default="cuda", help="Device")
+    parser.add_argument("--device", default="auto", help="Device")
     parser.add_argument("--dtype", default="bf16", choices=["bf16", "fp16", "fp32"], help="Model dtype")
     parser.add_argument("--chunk-size", type=int, default=8, help="Codec steps per chunk")
     args = parser.parse_args()
@@ -44,9 +44,11 @@ def main():
         "fp32": torch.float32,
     }
 
+    device = get_optimal_device(args.device)
+
     model = FasterQwen3TTS.from_pretrained(
         args.model,
-        device=args.device,
+        device=device,
         dtype=dtype_map[args.dtype],
     )
 

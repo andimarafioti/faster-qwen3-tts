@@ -14,16 +14,24 @@ if [ ! -f "$PY" ]; then
     exit 1
 fi
 
-$PY -c "import torch; assert torch.cuda.is_available()" 2>/dev/null || {
-    echo "ERROR: PyTorch with CUDA required. Check your venv."
+# Detect device: CUDA, MPS, or CPU
+DEVICE_INFO=""
+if $PY -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
+    GPU_NAME=$($PY -c 'import torch; print(torch.cuda.get_device_name(0))')
+    DEVICE_INFO="GPU: $GPU_NAME"
+    DEVICE_INFO_LINE="CUDA: $($PY -c 'import torch; print(torch.version.cuda)')"
+elif $PY -c "import torch; assert hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()" 2>/dev/null; then
+    DEVICE_INFO="Device: Apple Silicon (MPS)"
+    DEVICE_INFO_LINE="CUDA graphs: disabled (MPS fallback)"
+else
+    echo "ERROR: No CUDA or MPS device available."
     exit 1
-}
+fi
 
-GPU_NAME=$($PY -c 'import torch; print(torch.cuda.get_device_name(0))')
 echo "=== Faster Qwen3-TTS Benchmark ==="
-echo "GPU: $GPU_NAME"
+echo "$DEVICE_INFO"
 echo "PyTorch: $($PY -c 'import torch; print(torch.__version__)')"
-echo "CUDA: $($PY -c 'import torch; print(torch.version.cuda)')"
+echo "$DEVICE_INFO_LINE"
 echo ""
 
 run_model() {

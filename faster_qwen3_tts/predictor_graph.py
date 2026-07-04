@@ -17,6 +17,7 @@ import torch
 from transformers import StaticCache
 from transformers.masking_utils import create_causal_mask, create_sliding_window_causal_mask
 
+from .utils import device_supports_cuda_graphs
 from .sampling import sample_logits
 
 
@@ -34,9 +35,14 @@ class PredictorGraph:
     def __init__(self, code_predictor, pred_config, talker_hidden_size, device='cuda', dtype=torch.bfloat16,
                  do_sample=True, top_k=50, top_p=1.0, temperature=0.9):
         self.device = device
-        device_index = torch.device(device).index
-        device_index = device_index if device_index is not None else torch.cuda.current_device()
-        self.device_index = device_index
+        self.use_cuda_graphs = device_supports_cuda_graphs(device)
+
+        if self.use_cuda_graphs:
+            device_index = torch.device(device).index
+            device_index = device_index if device_index is not None else torch.cuda.current_device()
+            self.device_index = device_index
+        else:
+            self.device_index = None
 
         self.dtype = dtype
         self.num_layers = pred_config.num_hidden_layers
@@ -178,6 +184,12 @@ class PredictorGraph:
         for _ in range(num_warmup):
             self.static_cache.reset()
             self._full_loop()
+
+        if not self.use_cuda_graphs:
+            print("Predictor: CUDA graphs not available, using dynamic decode fallback")
+            self.captured = True
+            return
+
         torch.cuda.synchronize()
 
         print("Capturing CUDA graph for predictor...")
@@ -210,5 +222,10 @@ class PredictorGraph:
         """
         self.input_buf.copy_(pred_input)
         self.static_cache.reset()
-        self.graph.replay()
+
+        if self.use_cuda_graphs:
+            self.graph.replay()
+        else:
+            self._full_loop()
+
         return self.output_tokens.clone()

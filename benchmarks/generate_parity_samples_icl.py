@@ -4,8 +4,11 @@ import os
 import torch
 import soundfile as sf
 
-from faster_qwen3_tts import FasterQwen3TTS
+from faster_qwen3_tts import FasterQwen3TTS, get_optimal_device, device_supports_cuda_graphs
 from faster_qwen3_tts.generate import fast_generate
+
+device = get_optimal_device("auto")
+dtype = torch.bfloat16 if device_supports_cuda_graphs(device) else torch.float32
 
 MODEL_ID = os.environ.get("QWEN_TTS_MODEL", "Qwen/Qwen3-TTS-12Hz-1.7B-Base")
 OUT_DIR = os.environ.get("PARITY_SAMPLES_DIR", "samples/parity")
@@ -43,8 +46,8 @@ os.makedirs(OUT_DIR, exist_ok=True)
 print(f"Loading model {MODEL_ID}...")
 model = FasterQwen3TTS.from_pretrained(
     MODEL_ID,
-    device="cuda",
-    dtype=torch.bfloat16,
+    device=device,
+    dtype=dtype,
     attn_implementation="eager",
     max_seq_len=2048,
 )
@@ -53,7 +56,7 @@ transcripts = {}
 
 def _load_parakeet():
     from nano_parakeet import from_pretrained as parakeet_from_pretrained
-    parakeet = parakeet_from_pretrained(device="cuda")
+    parakeet = parakeet_from_pretrained(device=device)
     parakeet.warmup(duration_s=1.0)
     return parakeet
 
@@ -69,7 +72,7 @@ def _transcribe(parakeet, path: str) -> str:
         wav_t = torch.from_numpy(wav).unsqueeze(0)
         wav_t = torchaudio.functional.resample(wav_t, sr, 16000)
         wav = wav_t.squeeze().numpy()
-    wav_tensor = torch.from_numpy(wav).cuda()
+    wav_tensor = torch.from_numpy(wav).to(device)
     return parakeet.transcribe(wav_tensor)
 
 

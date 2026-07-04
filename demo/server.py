@@ -40,7 +40,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 try:
-    from faster_qwen3_tts import FasterQwen3TTS
+    from faster_qwen3_tts import FasterQwen3TTS, get_optimal_device, device_supports_cuda_graphs
 except ImportError:
     print("Error: faster_qwen3_tts not found.")
     print("Install with:  pip install -e .  (from the repo root)")
@@ -59,6 +59,9 @@ except ImportError:
     OAuthError = None
 
 from nano_parakeet import from_pretrained as _parakeet_from_pretrained
+
+device = get_optimal_device("auto")
+dtype = torch.bfloat16 if device_supports_cuda_graphs(device) else torch.float32
 
 
 _ALL_MODELS = [
@@ -815,7 +818,7 @@ async def transcribe_audio(
         wav_t = torch.from_numpy(wav)
         if sr != 16000:
             wav_t = torchaudio.functional.resample(wav_t.unsqueeze(0), sr, 16000).squeeze(0)
-        return _parakeet.transcribe(wav_t.cuda())
+        return _parakeet.transcribe(wav_t.to(device))
 
     text = await asyncio.to_thread(run)
     return {"text": text}
