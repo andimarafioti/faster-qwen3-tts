@@ -11,7 +11,24 @@ import torch
 from faster_qwen3_tts import FasterQwen3TTS
 
 
-def _load_model(model_id: str, device: str, dtype: str):
+def _load_model(args):
+    model_id = args.model
+    device = args.device
+    dtype = args.dtype
+
+    if args.backend == "ggml":
+        return FasterQwen3TTS.from_pretrained(
+            model_id,
+            backend="ggml",
+            quant=args.quant,
+            gguf_talker_path=args.gguf_model,
+            gguf_codec_path=args.gguf_codec,
+            qwentts_library_path=args.qwentts_lib,
+            qwentts_use_fa=args.qwentts_use_fa,
+            qwentts_clamp_fp16=args.qwentts_clamp_fp16,
+            qwentts_ref_cache_dir=args.qwentts_ref_cache_dir,
+        )
+
     if dtype == "bf16":
         torch_dtype = torch.bfloat16
     elif dtype == "fp16":
@@ -43,8 +60,26 @@ def _stream_to_audio(gen):
     return np.concatenate(chunks), sr
 
 
+def _validate_clone_refs(args):
+    has_audio = bool(args.ref_audio)
+    has_cached = bool(args.ref_spk) or bool(args.ref_rvq)
+    if has_audio and has_cached:
+        print("ERROR: --ref-audio cannot be combined with --ref-spk/--ref-rvq")
+        sys.exit(2)
+    if not has_audio and not args.ref_spk:
+        print("ERROR: clone mode requires --ref-audio or --ref-spk")
+        sys.exit(2)
+    if has_audio and not args.xvec_only and not args.ref_text:
+        print("ERROR: --ref-text is required with --ref-audio unless --xvec-only is set")
+        sys.exit(2)
+    if args.ref_rvq and not args.ref_text:
+        print("ERROR: --ref-text is required with --ref-rvq")
+        sys.exit(2)
+
+
 def cmd_clone(args):
-    model = _load_model(args.model, args.device, args.dtype)
+    _validate_clone_refs(args)
+    model = _load_model(args)
 
     if args.streaming:
         start = time.perf_counter()
@@ -53,6 +88,8 @@ def cmd_clone(args):
             language=args.language,
             ref_audio=args.ref_audio,
             ref_text=args.ref_text,
+            ref_spk=args.ref_spk,
+            ref_rvq=args.ref_rvq,
             chunk_size=args.chunk_size,
             max_new_tokens=args.max_new_tokens,
             temperature=args.temperature,
@@ -73,6 +110,8 @@ def cmd_clone(args):
             language=args.language,
             ref_audio=args.ref_audio,
             ref_text=args.ref_text,
+            ref_spk=args.ref_spk,
+            ref_rvq=args.ref_rvq,
             max_new_tokens=args.max_new_tokens,
             temperature=args.temperature,
             top_k=args.top_k,
@@ -91,10 +130,13 @@ def cmd_clone(args):
 
 
 def cmd_custom(args):
-    model = _load_model(args.model, args.device, args.dtype)
+    model = _load_model(args)
 
     if args.list_speakers:
-        speakers = model.model.get_supported_speakers() or []
+        if hasattr(model, "get_supported_speakers"):
+            speakers = model.get_supported_speakers() or []
+        else:
+            speakers = model.model.get_supported_speakers() or []
         print("\n".join(speakers))
         return
 
@@ -143,7 +185,7 @@ def cmd_custom(args):
 
 
 def cmd_design(args):
-    model = _load_model(args.model, args.device, args.dtype)
+    model = _load_model(args)
 
     if args.streaming:
         start = time.perf_counter()
@@ -184,18 +226,16 @@ def cmd_design(args):
 
 
 def cmd_serve(args):
-    model = _load_model(args.model, args.device, args.dtype)
-
     if args.mode == "clone":
-        if not args.ref_audio or not args.ref_text:
-            print("ERROR: --ref-audio and --ref-text are required for clone mode")
-            sys.exit(2)
+        _validate_clone_refs(args)
     if args.mode == "custom" and not args.speaker:
         print("ERROR: --speaker is required for custom mode")
         sys.exit(2)
     if args.mode == "design" and not args.instruct:
         print("ERROR: --instruct is required for design mode")
         sys.exit(2)
+
+    model = _load_model(args)
 
     print("Server started. Enter text per line. Type 'exit' or 'quit' to stop.")
     idx = 1
@@ -218,13 +258,15 @@ def cmd_serve(args):
                     language=args.language,
                     ref_audio=args.ref_audio,
                     ref_text=args.ref_text,
+                    ref_spk=args.ref_spk,
+                    ref_rvq=args.ref_rvq,
                     chunk_size=args.chunk_size,
                     max_new_tokens=args.max_new_tokens,
                     temperature=args.temperature,
                     top_k=args.top_k,
                     do_sample=not args.greedy,
                     repetition_penalty=args.repetition_penalty,
-                    xvec_only=False,
+                    xvec_only=args.xvec_only,
                     non_streaming_mode=args.non_streaming_mode,
                 )
                 audio, sr = _stream_to_audio(gen)
@@ -234,12 +276,14 @@ def cmd_serve(args):
                     language=args.language,
                     ref_audio=args.ref_audio,
                     ref_text=args.ref_text,
+                    ref_spk=args.ref_spk,
+                    ref_rvq=args.ref_rvq,
                     max_new_tokens=args.max_new_tokens,
                     temperature=args.temperature,
                     top_k=args.top_k,
                     do_sample=not args.greedy,
                     repetition_penalty=args.repetition_penalty,
-                    xvec_only=False,
+                    xvec_only=args.xvec_only,
                     non_streaming_mode=args.non_streaming_mode,
                 )
                 audio = audio_list[0]
@@ -309,6 +353,24 @@ def build_parser():
     p = argparse.ArgumentParser(prog="faster-qwen3-tts", description="FasterQwen3TTS CLI")
     p.add_argument("--device", default="auto", help="Device (auto, cuda, mps, cpu)")
     p.add_argument("--dtype", default="bf16", choices=["bf16", "fp16", "fp32"], help="Model dtype")
+    p.add_argument("--backend", default="torch", choices=["torch", "ggml"], help="Inference backend")
+    p.add_argument("--quant", default="BF16", help="GGUF quant for --backend ggml (BF16, Q8_0, Q4_K_M, F32)")
+    p.add_argument("--gguf-model", help="Local qwentts.cpp talker GGUF path")
+    p.add_argument("--gguf-codec", help="Local qwentts.cpp codec GGUF path")
+    p.add_argument("--qwentts-lib", help="Explicit path to libqwen shared library")
+    p.add_argument("--qwentts-ref-cache-dir", help="Cache directory for qwentts.cpp cloned voice latents")
+    p.add_argument(
+        "--qwentts-no-fa",
+        dest="qwentts_use_fa",
+        action="store_false",
+        help="Disable qwentts.cpp flash-attention kernels for --backend ggml",
+    )
+    p.add_argument(
+        "--qwentts-clamp-fp16",
+        action="store_true",
+        help="Enable qwentts.cpp fp16 clamping for --backend ggml",
+    )
+    p.set_defaults(qwentts_use_fa=True, qwentts_clamp_fp16=False)
     sub = p.add_subparsers(dest="command", required=True)
 
     def add_common(sp):
@@ -340,8 +402,10 @@ def build_parser():
 
     sp = sub.add_parser("clone", help="Voice cloning (reference audio)")
     add_common(sp)
-    sp.add_argument("--ref-audio", required=True, help="Reference audio path")
-    sp.add_argument("--ref-text", required=True, help="Reference transcript")
+    sp.add_argument("--ref-audio", help="Reference audio path")
+    sp.add_argument("--ref-text", default="", help="Reference transcript")
+    sp.add_argument("--ref-spk", help="Cached qwentts.cpp .spk speaker embedding")
+    sp.add_argument("--ref-rvq", help="Cached qwentts.cpp .rvq acoustic codes")
     sp.add_argument(
         "--xvec-only",
         action="store_true",
@@ -367,7 +431,14 @@ def build_parser():
     sp.add_argument("--model", required=True, help="Model id or local path")
     sp.add_argument("--language", default="Auto", help="Language (Auto, English, French, ...)")
     sp.add_argument("--ref-audio", help="Reference audio path (clone)")
-    sp.add_argument("--ref-text", help="Reference transcript (clone)")
+    sp.add_argument("--ref-text", default="", help="Reference transcript (clone)")
+    sp.add_argument("--ref-spk", help="Cached qwentts.cpp .spk speaker embedding (clone)")
+    sp.add_argument("--ref-rvq", help="Cached qwentts.cpp .rvq acoustic codes (clone)")
+    sp.add_argument(
+        "--xvec-only",
+        action="store_true",
+        help="Use speaker embedding only instead of upstream-default ICL mode",
+    )
     sp.add_argument("--speaker", help="Speaker ID (custom)")
     sp.add_argument("--instruct", default="", help="Instruction (custom/design)")
     sp.add_argument("--streaming", action="store_true", help="Use streaming generation")

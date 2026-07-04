@@ -22,6 +22,58 @@ pip install faster-qwen3-tts
 pip install "torch==2.5.1" "torchaudio==2.5.1" --index-url https://download.pytorch.org/whl/cu124
 ```
 
+### Experimental GGML backend
+
+There is an experimental adapter for Pascal's `qwentts.cpp` runtime. The
+current Torch/CUDA-graph backend remains the default; GGML is opt-in and
+uses a separate native wheel package so the main install path stays simple.
+
+```bash
+pip install "faster-qwen3-tts[ggml]"
+
+faster-qwen3-tts --backend ggml --quant BF16 design \
+  --model Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign \
+  --instruct "Warm, confident narrator" \
+  --text "Welcome to the show." \
+  --language English \
+  --output out.wav
+```
+
+The extra installs `qwentts-cpp-python>=0.3.0` from PyPI. That default wheel is
+CUDA 12.8. For CUDA 13 / DGX Spark, CUDA 12.4 targets, or Ubuntu 22.04 / older
+Linux hosts that need a `manylinux_2_35` wheel, install the matching wrapper
+wheel from the Hugging Face wheelhouse before installing the extra:
+
+```bash
+# Ubuntu 22.04 / older Linux with CUDA 12.8
+pip install "qwentts-cpp-python==0.3.0+cu128" \
+  -f https://huggingface.co/datasets/andito/qwentts-cpp-python-wheels/tree/main/whl/cu128
+
+# CUDA 13 / DGX Spark
+pip install "qwentts-cpp-python==0.3.0+cu130" \
+  -f https://huggingface.co/datasets/andito/qwentts-cpp-python-wheels/tree/main/whl/cu130
+
+pip install "faster-qwen3-tts[ggml]"
+```
+
+See [`docs/ggml-backend.md`](docs/ggml-backend.md) for the native wrapper
+package and wheel selection details.
+
+The GGML backend caches raw reference audio as qwentts.cpp `.spk` speaker
+latents plus `.rvq` acoustic latents after the first clone request. You can also
+pass precomputed references directly:
+
+```bash
+faster-qwen3-tts --backend ggml --quant BF16 clone \
+  --model Qwen/Qwen3-TTS-12Hz-1.7B-Base \
+  --ref-spk freeman.spk \
+  --ref-rvq freeman.rvq \
+  --ref-text "$(cat freeman.txt)" \
+  --text "Cached references skip reference audio encoding on every request." \
+  --language English \
+  --output out.wav
+```
+
 ## Quick Start
 
 ### Python
@@ -127,15 +179,17 @@ faster-qwen3-tts serve \
 
 ### Demo UI
 
-A minimal web UI that streams audio in real time and shows TTFA and RTF live:
+A minimal web UI that streams audio in real time and shows TTFA and RTF live.
+It defaults to GGML/qwentts.cpp and includes a backend toggle for comparing it
+against the Torch CUDA-graph backend:
 
 ```bash
-pip install -e ".[demo]"
-python demo/server.py
+pip install -e ".[demo,ggml]"
+python demo/server.py --backend ggml
 # open http://localhost:7860
 ```
 
-Features: voice clone (upload any WAV or use your microphone), voice design (1.7B-VoiceDesign model), streaming/non-streaming toggle, adjustable chunk size, live TTFA/RTF metrics, WAV download.
+Features: voice clone (upload any WAV or use your microphone), voice design (1.7B-VoiceDesign model), GGML/Torch backend toggle, streaming/non-streaming toggle, adjustable chunk size, live TTFA/RTF metrics, WAV download.
 
 ### OpenAI-compatible API server
 
@@ -279,6 +333,7 @@ The original Qwen3TTS implementation supports two mode of generation. It either 
 The public API uses `non_streaming_mode=None` as a sentinel, which preserves each method's upstream default unless you override it explicitly.
 `generate_voice_clone` and `generate_voice_clone_streaming` resolve `None` to `False`, matching upstream step-by-step text feeding during decode.
 `generate_custom_voice`, `generate_custom_voice_streaming`, `generate_voice_design`, and `generate_voice_design_streaming` resolve `None` to `True`, matching the upstream CustomVoice and VoiceDesign defaults.
+The GGML backend currently has no qwentts.cpp ABI switch for step-by-step text feeding; passing `non_streaming_mode=False` emits a warning and qwentts.cpp uses its native prompt layout.
 
 **Performance impact (RTX 4090, 1.7B, ICL, chunk_size=8):** TTFA is unchanged (≈159ms ± 1ms), and RTF is effectively the same (nsm=False: 4.87 ± 0.01, nsm=True: 4.85 ± 0.01).
 

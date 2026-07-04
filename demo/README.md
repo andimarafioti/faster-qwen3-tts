@@ -2,7 +2,7 @@
 title: faster-qwen3-tts
 author: andito
 emoji: 🎙
-tags: [text-to-speech, streaming, cuda-graphs]
+tags: [text-to-speech, streaming, cuda-graphs, ggml]
 colorFrom: indigo
 colorTo: blue
 sdk: docker
@@ -19,13 +19,14 @@ preload_from_hub:
 
 # Faster Qwen3-TTS Demo
 
-This Space hosts the demo UI for **faster-qwen3-tts** with streaming audio, TTFA/RTF metrics, voice clone, custom voices, and voice design.
+This Space hosts the demo UI for **faster-qwen3-tts** with streaming audio, TTFA/RTF metrics, voice clone, custom voices, and voice design. It defaults to the GGML/qwentts.cpp backend and includes a Settings toggle to switch between GGML and the Torch CUDA-graph backend for speed comparisons.
 
 ## Run locally (no Docker)
 
 ```bash
-pip install "faster-qwen3-tts[demo]"
-python server.py --model Qwen/Qwen3-TTS-12Hz-0.6B-Base
+pip install --index-url https://download.pytorch.org/whl/cu128 torch torchaudio
+pip install "faster-qwen3-tts[demo,ggml]==0.3.0" nano-parakeet
+python server.py --backend ggml --model Qwen/Qwen3-TTS-12Hz-0.6B-Base
 # open http://localhost:7860
 ```
 
@@ -67,6 +68,9 @@ DEMO_WEB_TOKEN_TTL_SECONDS=7200  # token lifetime
 DEMO_WEB_GATE_SECRET=...         # optional stable signing secret
 DEMO_USAGE_HASH_SECRET=...       # stable Space Secret for pseudonymous quota IDs
 DEMO_DAILY_FREE_REQUESTS=10      # non-PRO daily generation limit
+DEMO_DEFAULT_BACKEND=ggml        # ggml or torch
+DEMO_AVAILABLE_BACKENDS=ggml,torch
+DEMO_GGML_QUANT=BF16
 USAGE_BUCKET_MOUNT_PATH=/data    # attached HF Storage Bucket mount path
 USAGE_DB_FILENAME=faster-qwen3-tts-usage.sqlite3
 USAGE_DB_PATH=/data/usage.sqlite3 # optional full path override

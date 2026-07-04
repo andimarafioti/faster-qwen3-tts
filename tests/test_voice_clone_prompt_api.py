@@ -59,6 +59,9 @@ def test_public_api_exposes_voice_clone_prompt_parameter():
     sig_stream = inspect.signature(FasterQwen3TTS.generate_voice_clone_streaming)
     assert "voice_clone_prompt" in sig_clone.parameters
     assert "voice_clone_prompt" in sig_stream.parameters
+    for name in ("ref_spk", "ref_rvq", "ref_spk_emb", "ref_codes"):
+        assert name in sig_clone.parameters
+        assert name in sig_stream.parameters
     assert list(sig_clone.parameters).index("max_new_tokens") == 5
     assert list(sig_stream.parameters).index("max_new_tokens") == 5
     assert list(sig_clone.parameters)[-1] == "voice_clone_prompt"
@@ -67,6 +70,26 @@ def test_public_api_exposes_voice_clone_prompt_parameter():
     assert sig_clone.parameters["non_streaming_mode"].default is None
     assert sig_stream.parameters["xvec_only"].default is False
     assert sig_stream.parameters["non_streaming_mode"].default is None
+
+
+def test_torch_backend_rejects_ggml_cached_reference_args():
+    model = _build_dummy_model()
+
+    with pytest.raises(NotImplementedError, match="backend='ggml'"):
+        model.generate_voice_clone(
+            text="hello",
+            language="English",
+            ref_spk="speaker.spk",
+        )
+
+    with pytest.raises(NotImplementedError, match="backend='ggml'"):
+        next(
+            model.generate_voice_clone_streaming(
+                text="hello",
+                language="English",
+                ref_spk="speaker.spk",
+            )
+        )
 
 
 def test_public_api_uses_none_sentinel_for_non_streaming_overrides():

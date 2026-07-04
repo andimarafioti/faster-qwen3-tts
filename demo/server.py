@@ -79,6 +79,34 @@ if _active_models_env:
 else:
     AVAILABLE_MODELS = list(_ALL_MODELS)
 
+
+def _normalize_backend(value: str | None) -> str:
+    backend = (value or "ggml").strip().lower()
+    if backend == "qwentts":
+        backend = "ggml"
+    if backend not in {"ggml", "torch"}:
+        raise ValueError(f"Unsupported backend: {value!r}")
+    return backend
+
+
+DEFAULT_BACKEND = _normalize_backend(os.environ.get("DEMO_DEFAULT_BACKEND", "ggml"))
+_available_backends_env = os.environ.get("DEMO_AVAILABLE_BACKENDS", "ggml,torch")
+AVAILABLE_BACKENDS = []
+for _backend_value in _available_backends_env.split(","):
+    _backend_value = _backend_value.strip()
+    if not _backend_value:
+        continue
+    _backend = _normalize_backend(_backend_value)
+    if _backend not in AVAILABLE_BACKENDS:
+        AVAILABLE_BACKENDS.append(_backend)
+if not AVAILABLE_BACKENDS:
+    AVAILABLE_BACKENDS = [DEFAULT_BACKEND]
+if DEFAULT_BACKEND not in AVAILABLE_BACKENDS:
+    AVAILABLE_BACKENDS.insert(0, DEFAULT_BACKEND)
+
+GGML_QUANT = os.environ.get("DEMO_GGML_QUANT", "BF16")
+QWENTTS_REF_CACHE_DIR = os.environ.get("DEMO_QWENTTS_REF_CACHE_DIR")
+
 BASE_DIR = Path(__file__).resolve().parent
 INDEX_HTML = BASE_DIR / "index.html"
 # Assets that need to be downloaded at runtime go to a writable directory.
@@ -164,6 +192,8 @@ def _load_preset_refs() -> None:
 
 def _prime_preset_voice_cache(model: FasterQwen3TTS) -> None:
     if not _preset_refs:
+        return
+    if not hasattr(model, "_prepare_generation"):
         return
     for preset in _preset_refs.values():
         ref_path = preset["path"]
@@ -625,13 +655,15 @@ if OAuthError is not None:
     async def oauth_error_handler(request: Request, exc) -> RedirectResponse:
         return RedirectResponse("/", status_code=303)
 
-_model_cache: OrderedDict[str, FasterQwen3TTS] = OrderedDict()
+ModelCacheKey = tuple[str, str]
+_model_cache: OrderedDict[ModelCacheKey, FasterQwen3TTS] = OrderedDict()
 _model_cache_max: int = int(os.environ.get("MODEL_CACHE_SIZE", "2"))
-_active_model_name: str | None = None
-_loading = False
+_active_model_key: ModelCacheKey | None = None
+_loading_key: ModelCacheKey | None = None
 _ref_cache: dict[str, str] = {}
 _ref_cache_lock = threading.Lock()
 _parakeet = None
+_parakeet_lock = asyncio.Lock()
 _generation_lock = asyncio.Lock()
 _generation_waiters: int = 0  # requests waiting for or holding the generation lock
 
@@ -684,6 +716,53 @@ def _default_non_streaming_mode_for_mode(mode: str) -> bool:
     return mode != "voice_clone"
 
 
+def _active_model_name() -> str | None:
+    return _active_model_key[1] if _active_model_key else None
+
+
+def _active_backend() -> str:
+    return _active_model_key[0] if _active_model_key else DEFAULT_BACKEND
+
+
+def _active_model():
+    return _model_cache.get(_active_model_key) if _active_model_key else None
+
+
+def _model_type_from_id(model_id: str | None) -> str | None:
+    if not model_id:
+        return None
+    if "VoiceDesign" in model_id:
+        return "voice_design"
+    if "CustomVoice" in model_id:
+        return "custom"
+    return "voice_clone"
+
+
+def _load_tts_model(model_id: str, backend: str, *, quant: str | None = None):
+    ggml_quant = quant or GGML_QUANT
+    kwargs = {
+        "backend": backend,
+        "device": "cuda",
+        "dtype": torch.bfloat16,
+    }
+    if backend == "ggml":
+        kwargs.update(
+            {
+                "quant": ggml_quant,
+                "qwentts_ref_cache_dir": QWENTTS_REF_CACHE_DIR,
+            }
+        )
+    model = FasterQwen3TTS.from_pretrained(model_id, **kwargs)
+    if backend == "torch":
+        print("Capturing CUDA graphs…")
+        model._warmup(prefill_len=100)
+        _prime_preset_voice_cache(model)
+        print("CUDA graphs captured — model ready.")
+    else:
+        print(f"GGML/qwentts.cpp model ready ({ggml_quant}).")
+    return model
+
+
 # ─── Routes ───────────────────────────────────────────────────────────────────
 
 _fetch_preset_assets()
@@ -717,8 +796,13 @@ async def transcribe_audio(
     audio: UploadFile = File(...),
 ):
     """Transcribe reference audio using nano-parakeet."""
+    global _parakeet
     if _parakeet is None:
-        raise HTTPException(status_code=503, detail="Transcription model not loaded")
+        async with _parakeet_lock:
+            if _parakeet is None:
+                print("Loading transcription model (nano-parakeet)...")
+                _parakeet = await asyncio.to_thread(_parakeet_from_pretrained, device="cuda")
+                print("Transcription model ready.")
 
     content = await audio.read()
     if len(content) > MAX_AUDIO_BYTES:
@@ -744,19 +828,32 @@ async def transcribe_audio(
 async def get_status(oauth_info = Depends(require_authenticated_user)):
     speakers = []
     model_type = None
-    active = _model_cache.get(_active_model_name) if _active_model_name else None
+    active_model_name = _active_model_name()
+    active_backend = _active_backend()
+    active = _active_model()
     if active is not None:
         try:
             model_type = active.model.model.tts_model_type
-            speakers = active.model.get_supported_speakers() or []
+        except Exception:
+            model_type = _model_type_from_id(active_model_name)
+        try:
+            if hasattr(active, "get_supported_speakers"):
+                speakers = active.get_supported_speakers() or []
+            else:
+                speakers = active.model.get_supported_speakers() or []
         except Exception:
             speakers = []
     user_payload = _user_payload(oauth_info) if REQUIRE_LOGIN else None
     usage_payload = _get_usage(oauth_info) if REQUIRE_LOGIN else None
     return {
         "loaded": active is not None,
-        "model": _active_model_name,
-        "loading": _loading,
+        "model": active_model_name,
+        "backend": active_backend,
+        "default_backend": DEFAULT_BACKEND,
+        "available_backends": AVAILABLE_BACKENDS,
+        "loading": _loading_key is not None,
+        "loading_model": _loading_key[1] if _loading_key else None,
+        "loading_backend": _loading_key[0] if _loading_key else None,
         "available_models": AVAILABLE_MODELS,
         "model_type": model_type,
         "speakers": speakers,
@@ -768,7 +865,10 @@ async def get_status(oauth_info = Depends(require_authenticated_user)):
         "user": user_payload,
         "usage": usage_payload,
         "queue_depth": _generation_waiters,
-        "cached_models": list(_model_cache.keys()),
+        "cached_models": [
+            {"backend": backend, "model": model_id}
+            for backend, model_id in _model_cache.keys()
+        ],
     }
 
 
@@ -794,42 +894,42 @@ async def load_model(
     _user = Depends(require_authenticated_user),
     _web_client: None = Depends(require_web_client),
     model_id: str = Form(...),
+    backend: str = Form(DEFAULT_BACKEND),
 ):
-    global _active_model_name, _loading
+    global _active_model_key, _loading_key
+    try:
+        backend = _normalize_backend(backend)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if backend not in AVAILABLE_BACKENDS:
+        raise HTTPException(status_code=400, detail=f"Backend {backend!r} is not enabled for this demo.")
+    model_key = (backend, model_id)
 
     # Already in cache — instant switch, no GPU work needed
-    if model_id in _model_cache:
-        _active_model_name = model_id
-        _model_cache.move_to_end(model_id)
-        return {"status": "already_loaded", "model": model_id}
+    if model_key in _model_cache:
+        _active_model_key = model_key
+        _model_cache.move_to_end(model_key)
+        return {"status": "already_loaded", "model": model_id, "backend": backend}
 
-    _loading = True
+    _loading_key = model_key
 
     def _do_load():
-        global _active_model_name, _loading
+        global _active_model_key, _loading_key
         try:
             if len(_model_cache) >= _model_cache_max:
                 evicted, _ = _model_cache.popitem(last=False)
-                print(f"Model cache full — evicted: {evicted}")
-            new_model = FasterQwen3TTS.from_pretrained(
-                model_id,
-                device=device,
-                dtype=dtype,
-            )
-            print("Capturing CUDA graphs…")
-            new_model._warmup(prefill_len=100)
-            _model_cache[model_id] = new_model
-            _model_cache.move_to_end(model_id)
-            _active_model_name = model_id
-            _prime_preset_voice_cache(new_model)
-            print("CUDA graphs captured — model ready.")
+                print(f"Model cache full — evicted: {evicted[0]} {evicted[1]}")
+            new_model = _load_tts_model(model_id, backend)
+            _model_cache[model_key] = new_model
+            _model_cache.move_to_end(model_key)
+            _active_model_key = model_key
         finally:
-            _loading = False
+            _loading_key = None
 
     # Hold the generation lock while loading to prevent OOM from concurrent inference
     async with _generation_lock:
         await asyncio.to_thread(_do_load)
-    return {"status": "loaded", "model": model_id}
+    return {"status": "loaded", "model": model_id, "backend": backend}
 
 
 @app.post("/generate/stream")
@@ -851,7 +951,7 @@ async def generate_stream(
     ref_preset: str = Form(""),
     ref_audio: UploadFile = File(None),
 ):
-    if not _active_model_name or _active_model_name not in _model_cache:
+    if _active_model_key is None or _active_model_key not in _model_cache:
         raise HTTPException(status_code=400, detail="Model not loaded. Click 'Load' first.")
     if len(text) > MAX_TEXT_CHARS:
         raise HTTPException(
@@ -891,9 +991,11 @@ async def generate_stream(
             # Resolve the model after the generation lock is held so we always
             # use the currently active model, not a stale reference captured
             # before a concurrent /load request changed the active model.
-            model = _model_cache.get(_active_model_name)
+            model_key = _active_model_key
+            model = _model_cache.get(model_key)
             if model is None:
                 raise RuntimeError("No model loaded. Please load a model first.")
+            active_backend = model_key[0]
 
             t0 = time.perf_counter()
             total_audio_s = 0.0
@@ -965,6 +1067,7 @@ async def generate_stream(
                 audio_b64 = _to_wav_b64(audio_chunk, sr)
                 payload = {
                     "type": "chunk",
+                    "backend": active_backend,
                     "audio_b64": audio_b64,
                     "sample_rate": sr,
                     "ttfa_ms": round(ttfa_ms),
@@ -989,6 +1092,7 @@ async def generate_stream(
                 audio_b64 = _to_wav_b64(audio_chunk, sr)
                 payload = {
                     "type": "chunk",
+                    "backend": active_backend,
                     "audio_b64": audio_b64,
                     "sample_rate": sr,
                     "ttfa_ms": round(ttfa_ms),
@@ -1002,6 +1106,7 @@ async def generate_stream(
             rtf = total_audio_s / (total_gen_ms / 1000) if total_gen_ms > 0 else 0.0
             done_payload = {
                 "type": "done",
+                "backend": active_backend,
                 "ttfa_ms": round(ttfa_ms) if ttfa_ms else 0,
                 "voice_clone_ms": round(voice_clone_ms),
                 "rtf": round(rtf, 3),
@@ -1075,7 +1180,7 @@ async def generate_non_streaming(
     ref_preset: str = Form(""),
     ref_audio: UploadFile = File(None),
 ):
-    if not _active_model_name or _active_model_name not in _model_cache:
+    if _active_model_key is None or _active_model_key not in _model_cache:
         raise HTTPException(status_code=400, detail="Model not loaded. Click 'Load' first.")
     if len(text) > MAX_TEXT_CHARS:
         raise HTTPException(
@@ -1109,9 +1214,11 @@ async def generate_non_streaming(
 
     def run():
         # Resolve the model after the generation lock is held.
-        model = _model_cache.get(_active_model_name)
+        model_key = _active_model_key
+        model = _model_cache.get(model_key)
         if model is None:
             raise RuntimeError("No model loaded. Please load a model first.")
+        active_backend = model_key[0]
         t0 = time.perf_counter()
         if mode == "voice_clone":
             audio_list, sr = model.generate_voice_clone(
@@ -1154,7 +1261,7 @@ async def generate_non_streaming(
         elapsed = time.perf_counter() - t0
         audio = _concat_audio(audio_list)
         dur = len(audio) / sr
-        return audio, sr, elapsed, dur
+        return audio, sr, elapsed, dur, active_backend
 
     global _generation_waiters
     _generation_waiters += 1
@@ -1163,11 +1270,12 @@ async def generate_non_streaming(
         await _generation_lock.acquire()
         lock_acquired = True
         _generation_waiters -= 1
-        audio, sr, elapsed, dur = await asyncio.to_thread(run)
+        audio, sr, elapsed, dur, active_backend = await asyncio.to_thread(run)
         rtf = dur / elapsed if elapsed > 0 else 0.0
         return JSONResponse({
             "audio_b64": _to_wav_b64(audio, sr),
             "sample_rate": sr,
+            "backend": active_backend,
             "metrics": {
                 "total_ms": round(elapsed * 1000),
                 "audio_duration_s": round(dur, 3),
@@ -1186,11 +1294,23 @@ async def generate_non_streaming(
 # ─── Entry point ──────────────────────────────────────────────────────────────
 
 def main():
+    global GGML_QUANT
     parser = argparse.ArgumentParser(description="Faster Qwen3-TTS Demo Server")
     parser.add_argument(
         "--model",
         default="Qwen/Qwen3-TTS-12Hz-1.7B-Base",
         help="Model to preload at startup (default: 1.7B-Base)",
+    )
+    parser.add_argument(
+        "--backend",
+        default=DEFAULT_BACKEND,
+        choices=["ggml", "torch"],
+        help=f"Backend to preload at startup (default: {DEFAULT_BACKEND})",
+    )
+    parser.add_argument(
+        "--quant",
+        default=GGML_QUANT,
+        help=f"GGUF quantization for --backend ggml (default: {GGML_QUANT})",
     )
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", 7860)))
     parser.add_argument("--host", default="0.0.0.0")
@@ -1200,28 +1320,21 @@ def main():
         help="Skip model loading at startup (load via UI instead)",
     )
     args = parser.parse_args()
+    GGML_QUANT = args.quant
 
     if not args.no_preload:
-        global _active_model_name, _parakeet
-        print(f"Loading model: {args.model}")
-        _startup_model = FasterQwen3TTS.from_pretrained(
-            args.model,
-            device=device,
-            dtype=dtype,
-        )
-        print("Capturing CUDA graphs…")
-        _startup_model._warmup(prefill_len=100)
-        _model_cache[args.model] = _startup_model
-        _active_model_name = args.model
-        _prime_preset_voice_cache(_startup_model)
+        global _active_model_key, _parakeet
+        backend = _normalize_backend(args.backend)
+        print(f"Loading model: {args.model} ({backend})")
+        _startup_model = _load_tts_model(args.model, backend)
+        _startup_key = (backend, args.model)
+        _model_cache[_startup_key] = _startup_model
+        _active_model_key = _startup_key
         print("TTS model ready.")
 
-        print("Loading transcription model (nano-parakeet)…")
-        if device_supports_cuda_graphs(device):
-            _parakeet = _parakeet_from_pretrained(device="cuda")
-            print("Transcription model ready.")
-        else:
-            print("Transcription model skipped (requires CUDA).")
+        print("Loading transcription model (nano-parakeet)...")
+        _parakeet = _parakeet_from_pretrained(device="cuda")
+        print("Transcription model ready.")
 
         print(f"Ready. Open http://localhost:{args.port}")
 

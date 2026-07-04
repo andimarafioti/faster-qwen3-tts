@@ -6,3 +6,7 @@ sample_*.wav
 __pycache__/
 *.pyc
 .venv/
+.cache/
+outputs/
+artifacts/
+packages/qwentts_cpp_python/

@@ -90,6 +90,19 @@ class FasterQwen3TTS:
     ) -> bool:
         """Treat None as the method-specific upstream default."""
         return default if non_streaming_mode is None else non_streaming_mode
+
+    @staticmethod
+    def _reject_ggml_cached_reference_args(
+        ref_spk: Optional[Union[str, Path]],
+        ref_rvq: Optional[Union[str, Path]],
+        ref_spk_emb: Optional[np.ndarray],
+        ref_codes: Optional[np.ndarray],
+    ) -> None:
+        if any(value is not None for value in (ref_spk, ref_rvq, ref_spk_emb, ref_codes)):
+            raise NotImplementedError(
+                "ref_spk/ref_rvq cached qwentts.cpp references require backend='ggml'. "
+                "Use voice_clone_prompt for precomputed prompts with the torch backend."
+            )
         
     @classmethod
     def from_pretrained(
@@ -99,6 +112,16 @@ class FasterQwen3TTS:
         dtype: Union[str, torch.dtype] = torch.bfloat16,
         attn_implementation: str = "sdpa",
         max_seq_len: int = 2048,
+        backend: str = "torch",
+        quant: str = "BF16",
+        gguf_talker_path: Optional[Union[str, Path]] = None,
+        gguf_codec_path: Optional[Union[str, Path]] = None,
+        qwentts_library_path: Optional[Union[str, Path]] = None,
+        qwentts_use_fa: bool = True,
+        qwentts_clamp_fp16: bool = False,
+        qwentts_ref_cache_dir: Optional[Union[str, Path]] = None,
+        cache_dir: Optional[Union[str, Path]] = None,
+        local_files_only: bool = False,
     ):
         """
         Load Qwen3-TTS model and prepare CUDA graphs.
@@ -109,10 +132,49 @@ class FasterQwen3TTS:
             dtype: Data type for inference
             attn_implementation: Attention implementation ("sdpa" or "flash_attention_2")
             max_seq_len: Maximum sequence length for static cache
+            backend: "torch" for the current CUDA graph path, or "ggml" for
+                the optional qwentts.cpp runtime.
+            quant: GGUF quantization used when backend="ggml".
+            gguf_talker_path: Optional local qwentts.cpp talker GGUF path.
+            gguf_codec_path: Optional local qwentts.cpp codec GGUF path.
+            qwentts_library_path: Optional explicit path to libqwen.
+            qwentts_use_fa: Whether qwentts.cpp should use flash-attention kernels.
+            qwentts_clamp_fp16: Whether qwentts.cpp should clamp fp16 operations.
+            qwentts_ref_cache_dir: Optional cache directory for GGML voice-clone
+                `.spk` / `.rvq` references extracted from raw reference audio.
             
         Returns:
             FasterQwen3TTS instance
         """
+        if backend not in ("torch", "ggml", "qwentts"):
+            raise ValueError(f"Unsupported backend {backend!r}. Expected 'torch', 'ggml', or 'qwentts'.")
+
+        if backend in ("ggml", "qwentts"):
+            from .ggml_backend import GGMLQwen3TTS
+
+            if gguf_talker_path is not None or gguf_codec_path is not None:
+                if gguf_talker_path is None or gguf_codec_path is None:
+                    raise ValueError("Both gguf_talker_path and gguf_codec_path are required for backend='ggml'")
+                return GGMLQwen3TTS.from_gguf(
+                    gguf_talker_path,
+                    gguf_codec_path,
+                    library_path=qwentts_library_path,
+                    use_fa=qwentts_use_fa,
+                    clamp_fp16=qwentts_clamp_fp16,
+                    voice_ref_cache_dir=qwentts_ref_cache_dir,
+                )
+
+            return GGMLQwen3TTS.from_pretrained(
+                model_name,
+                quant=quant,
+                cache_dir=cache_dir,
+                local_files_only=local_files_only,
+                library_path=qwentts_library_path,
+                use_fa=qwentts_use_fa,
+                clamp_fp16=qwentts_clamp_fp16,
+                voice_ref_cache_dir=qwentts_ref_cache_dir,
+            )
+
         if isinstance(dtype, str):
             dtype = getattr(torch, dtype)
             
@@ -783,6 +845,10 @@ class FasterQwen3TTS:
         non_streaming_mode: Optional[bool] = None,
         append_silence: bool = True,
         instruct: Optional[str] = None,
+        ref_spk: Optional[Union[str, Path]] = None,
+        ref_rvq: Optional[Union[str, Path]] = None,
+        ref_spk_emb: Optional[np.ndarray] = None,
+        ref_codes: Optional[np.ndarray] = None,
         voice_clone_prompt: Optional[Union[Dict[str, Any], List[Any]]] = None,
     ) -> Tuple[list, int]:
         """
@@ -812,6 +878,9 @@ class FasterQwen3TTS:
                 This path supports x-vector-only prompts (`ref_spk_embedding` only)
                 and ICL prompts (`ref_spk_embedding` + `ref_code` + mode flags).
                 `ref_text` is ignored for x-vector-only and required for ICL.
+            ref_spk/ref_rvq/ref_spk_emb/ref_codes: GGML-only cached reference fields.
+                Use `ref_spk` for qwentts.cpp `.spk` files and `ref_rvq` with
+                `ref_text` for cached ICL references.
             instruct: Optional instruction to guide generation style/dialect (e.g.
                 "请用纯正广东话朗读"). Prepended as a user turn before the TTS assistant turn.
                 Experimental for x-vector-only voice cloning; prefer `xvec_only=False`.
@@ -819,6 +888,13 @@ class FasterQwen3TTS:
         Returns:
             Tuple of ([audio_waveform], sample_rate)
         """
+        self._reject_ggml_cached_reference_args(
+            ref_spk=ref_spk,
+            ref_rvq=ref_rvq,
+            ref_spk_emb=ref_spk_emb,
+            ref_codes=ref_codes,
+        )
+
         from .generate import fast_generate
 
         non_streaming_mode = self._resolve_non_streaming_mode(
@@ -916,6 +992,10 @@ class FasterQwen3TTS:
         append_silence: bool = True,
         parity_mode: bool = False,
         instruct: Optional[str] = None,
+        ref_spk: Optional[Union[str, Path]] = None,
+        ref_rvq: Optional[Union[str, Path]] = None,
+        ref_spk_emb: Optional[np.ndarray] = None,
+        ref_codes: Optional[np.ndarray] = None,
         voice_clone_prompt: Optional[Union[Dict[str, Any], List[Any]]] = None,
     ) -> Generator[Tuple[np.ndarray, int, dict], None, None]:
         """
@@ -950,6 +1030,9 @@ class FasterQwen3TTS:
                 This path supports x-vector-only prompts (`ref_spk_embedding` only)
                 and ICL prompts (`ref_spk_embedding` + `ref_code` + mode flags).
                 `ref_text` is ignored for x-vector-only and required for ICL.
+            ref_spk/ref_rvq/ref_spk_emb/ref_codes: GGML-only cached reference fields.
+                Use `ref_spk` for qwentts.cpp `.spk` files and `ref_rvq` with
+                `ref_text` for cached ICL references.
             instruct: Optional instruction to guide generation style/dialect (e.g.
                 "请用纯正广东话朗读"). Prepended as a user turn before the TTS assistant turn.
                 Experimental for x-vector-only voice cloning; prefer `xvec_only=False`.
@@ -957,6 +1040,13 @@ class FasterQwen3TTS:
         Yields:
             Tuple of (audio_chunk_numpy, sample_rate, timing_dict)
         """
+        self._reject_ggml_cached_reference_args(
+            ref_spk=ref_spk,
+            ref_rvq=ref_rvq,
+            ref_spk_emb=ref_spk_emb,
+            ref_codes=ref_codes,
+        )
+
         from .streaming import fast_generate_streaming, parity_generate_streaming
 
         non_streaming_mode = self._resolve_non_streaming_mode(
