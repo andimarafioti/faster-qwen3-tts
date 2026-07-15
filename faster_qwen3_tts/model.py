@@ -6,7 +6,7 @@ CUDA graphs for 6-10x speedup.
 """
 import logging
 from pathlib import Path
-from typing import Any, Dict, Generator, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Generator, List, Optional, Tuple, Union
 
 import numpy as np
 import soundfile as sf
@@ -959,6 +959,7 @@ class FasterQwen3TTS:
         non_streaming_mode: Optional[bool] = None,
         append_silence: bool = True,
         parity_mode: bool = False,
+        should_stop: Optional[Callable[[], bool]] = None,
         instruct: Optional[str] = None,
         ref_spk: Optional[Union[str, Path]] = None,
         ref_rvq: Optional[Union[str, Path]] = None,
@@ -993,6 +994,9 @@ class FasterQwen3TTS:
                 (False, step-by-step text feeding during decode). Set to True to
                 prefill the full target text before streaming decode.
             parity_mode: When True, disables CUDA graphs and uses dynamic cache streaming.
+            should_stop: Optional callable polled at each chunk boundary BEFORE the
+                (expensive) codec decode; return True to abort generation early
+                (e.g. client disconnected). Connected-client behavior is unchanged.
             voice_clone_prompt: Optional precomputed voice clone prompt dict. When provided,
                 `xvec_only` is ignored and prompt extraction from `ref_audio` is skipped.
                 This path supports x-vector-only prompts (`ref_spk_embedding` only)
@@ -1062,12 +1066,15 @@ class FasterQwen3TTS:
             do_sample=do_sample,
             repetition_penalty=repetition_penalty,
             chunk_size=chunk_size,
+            should_stop=should_stop,
         )
         if not parity_mode:
             stream_kwargs["predictor_graph"] = self.predictor_graph
             stream_kwargs["talker_graph"] = self.talker_graph
 
         for codec_chunk, timing in stream_fn(**stream_kwargs):
+            if should_stop is not None and should_stop():
+                break  # caller gone — skip the expensive decode of a chunk nobody consumes
             all_codes.append(codec_chunk)
             n_new = codec_chunk.shape[0]
             all_flat = torch.cat(all_codes, dim=0)
