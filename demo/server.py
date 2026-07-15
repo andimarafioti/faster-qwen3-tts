@@ -752,7 +752,7 @@ def _load_tts_model(model_id: str, backend: str, *, quant: str | None = None):
     model = FasterQwen3TTS.from_pretrained(model_id, **kwargs)
     if backend == "torch":
         print("Capturing CUDA graphs…")
-        model._warmup(prefill_len=100)
+        model.warmup(prefill_len=100)
         _prime_preset_voice_cache(model)
         print("CUDA graphs captured — model ready.")
     else:

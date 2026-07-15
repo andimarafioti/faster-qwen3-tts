@@ -304,6 +304,14 @@ def test_ggml_speaker_listing_uses_runtime():
     assert model.get_supported_speakers() == ["aiden", "vivian"]
 
 
+def test_ggml_public_warmup_is_a_no_op():
+    runtime = _FakeRuntime()
+    model = GGMLQwen3TTS(runtime)
+
+    assert model.warmup(prefill_len=42) is None
+    assert runtime.calls == []
+
+
 def test_adapter_from_pretrained_forwards_qwentts_runtime_flags(monkeypatch, qwentts_cpp_stub):
     captured = {}
 

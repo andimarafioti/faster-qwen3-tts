@@ -107,6 +107,10 @@ audio_list, sr = model.generate_voice_clone(
 )
 ```
 
+Call `model.warmup(prefill_len=100)` to prepare a model explicitly before
+serving requests. It captures CUDA graphs for the Torch backend and is a safe
+no-op for GGML; normal generation also performs any required lazy preparation.
+
 For local speaker playback from a repo checkout with the example helper:
 
 ```bash

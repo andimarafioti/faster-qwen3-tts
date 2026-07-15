@@ -212,7 +212,7 @@ def parity_fixture():
         fast.predictor_graph.top_k = 0
         fast.predictor_graph.top_p = 1.0
         fast.predictor_graph.temperature = 1.0
-        fast._warmup(tie.shape[1])
+        fast.warmup(tie.shape[1])
 
     data = dict(
         base=base,
@@ -291,7 +291,7 @@ def parity_fixture_fp32():
         fast.predictor_graph.top_k = 0
         fast.predictor_graph.top_p = 1.0
         fast.predictor_graph.temperature = 1.0
-        fast._warmup(tie.shape[1])
+        fast.warmup(tie.shape[1])
 
     data = dict(
         base=base,
@@ -537,7 +537,7 @@ class TestFP32Parity:
             fast.predictor_graph.top_k = 0
             fast.predictor_graph.top_p = 1.0
             fast.predictor_graph.temperature = 1.0
-            fast._warmup(tie.shape[1])
+            fast.warmup(tie.shape[1])
 
         fast.model.model.talker.rope_deltas = None
         fast_codes, _ = fast_generate(
@@ -823,7 +823,7 @@ class TestBF16Parity:
             fast.predictor_graph.top_k = 0
             fast.predictor_graph.top_p = 1.0
             fast.predictor_graph.temperature = 1.0
-            fast._warmup(tie.shape[1])
+            fast.warmup(tie.shape[1])
 
         fast.model.model.talker.rope_deltas = None
         fast_codes, _ = fast_generate(
