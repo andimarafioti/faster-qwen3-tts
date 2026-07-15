@@ -76,7 +76,7 @@ def main():
     print(f"Prefill length: {prefill_len} tokens")
 
     # Warmup + capture CUDA graphs (one-time)
-    model._warmup(prefill_len)
+    model.warmup(prefill_len)
 
     # Warmup
     talker = model.model.model.talker

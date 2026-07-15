@@ -44,7 +44,7 @@ def _build_dummy_model():
         torch.zeros(1, 1, 4, dtype=torch.float32),
         torch.zeros(1, 1, 4, dtype=torch.float32),
     )
-    model._warmup = lambda _prefill_len: setattr(model, "_warmed_up", True)
+    model.warmup = lambda _prefill_len: setattr(model, "_warmed_up", True)
     return model
 
 
@@ -70,6 +70,47 @@ def test_public_api_exposes_voice_clone_prompt_parameter():
     assert sig_clone.parameters["non_streaming_mode"].default is None
     assert sig_stream.parameters["xvec_only"].default is False
     assert sig_stream.parameters["non_streaming_mode"].default is None
+
+
+def test_public_warmup_captures_torch_graphs_once():
+    predictor_calls = []
+    talker_calls = []
+    predictor_graph = types.SimpleNamespace(
+        capture=lambda **kwargs: predictor_calls.append(kwargs),
+    )
+    talker_graph = types.SimpleNamespace(
+        capture=lambda **kwargs: talker_calls.append(kwargs),
+    )
+    base = types.SimpleNamespace(sample_rate=24000)
+    model = FasterQwen3TTS(
+        base,
+        predictor_graph,
+        talker_graph,
+        device="cpu",
+        dtype=torch.float32,
+    )
+
+    model.warmup(prefill_len=42)
+    model.warmup(prefill_len=99)
+
+    assert predictor_calls == [{"num_warmup": 3}]
+    assert talker_calls == [{"prefill_len": 42, "num_warmup": 3}]
+
+
+def test_private_warmup_alias_uses_public_api(monkeypatch):
+    model = FasterQwen3TTS(
+        types.SimpleNamespace(sample_rate=24000),
+        _dummy_graph(),
+        _dummy_graph(),
+        device="cpu",
+        dtype=torch.float32,
+    )
+    calls = []
+    monkeypatch.setattr(model, "warmup", lambda *, prefill_len: calls.append(prefill_len))
+
+    model._warmup(37)
+
+    assert calls == [37]
 
 
 def test_torch_backend_rejects_ggml_cached_reference_args():

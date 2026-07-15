@@ -111,6 +111,15 @@ class GGMLQwen3TTS:
             return []
         return list(self.runtime.speaker_names())
 
+    def warmup(self, prefill_len: int = 100) -> None:
+        """Warm up the backend before generation.
+
+        qwentts.cpp has no separate CUDA-graph capture step, so this is a
+        deliberate no-op. ``prefill_len`` is accepted for API compatibility
+        with the Torch backend.
+        """
+        return None
+
     @classmethod
     def from_gguf(
         cls,

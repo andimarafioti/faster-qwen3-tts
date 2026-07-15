@@ -143,7 +143,8 @@ class FasterQwen3TTS:
                 `.spk` / `.rvq` references extracted from raw reference audio.
             
         Returns:
-            FasterQwen3TTS instance
+            A backend-specific model implementing the public generation and
+            warmup APIs.
         """
         if backend not in ("torch", "ggml", "qwentts"):
             raise ValueError(f"Unsupported backend {backend!r}. Expected 'torch', 'ggml', or 'qwentts'.")
@@ -235,8 +236,12 @@ class FasterQwen3TTS:
             max_seq_len=max_seq_len,
         )
     
-    def _warmup(self, prefill_len: int):
-        """Warm up and capture CUDA graphs with given prefill length."""
+    def warmup(self, prefill_len: int = 100) -> None:
+        """Warm up the backend before generation.
+
+        For the Torch backend, this captures the predictor and talker CUDA
+        graphs using ``prefill_len`` as the simulated prompt length.
+        """
         if self._warmed_up:
             return
             
@@ -245,6 +250,10 @@ class FasterQwen3TTS:
         self.talker_graph.capture(prefill_len=prefill_len, num_warmup=3)
         self._warmed_up = True
         logger.info("CUDA graphs captured and ready")
+
+    def _warmup(self, prefill_len: int) -> None:
+        """Compatibility alias for the former private warmup entry point."""
+        self.warmup(prefill_len=prefill_len)
     
     def generate(
         self,
@@ -520,7 +529,7 @@ class FasterQwen3TTS:
         )
 
         if not self._warmed_up:
-            self._warmup(tie.shape[1])
+            self.warmup(tie.shape[1])
 
         talker = m.talker
         config = m.config.talker_config
@@ -563,7 +572,7 @@ class FasterQwen3TTS:
         )
 
         if not self._warmed_up:
-            self._warmup(tie.shape[1])
+            self.warmup(tie.shape[1])
 
         talker = m.talker
         config = m.config.talker_config
