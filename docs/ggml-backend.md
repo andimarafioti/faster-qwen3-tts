@@ -38,17 +38,17 @@ the `manylinux_2_35` CUDA 12.8 build.
 
 ```bash
 # Ubuntu 22.04 / older Linux with CUDA 12.8
-pip install "qwentts-cpp-python==0.3.0+cu128" \
+pip install "qwentts-cpp-python==0.3.1+cu128" \
   -f https://huggingface.co/datasets/andito/qwentts-cpp-python-wheels/tree/main/whl/cu128
 
 # CUDA 13 / DGX Spark
-pip install "qwentts-cpp-python==0.3.0+cu130" \
+pip install "qwentts-cpp-python==0.3.1+cu130" \
   -f https://huggingface.co/datasets/andito/qwentts-cpp-python-wheels/tree/main/whl/cu130
 
 pip install "faster-qwen3-tts[ggml]"
 ```
 
-The same wheel index also has `0.3.0+cu124`, `0.3.0+cu128`, and `0.3.0+cpu`
+The same wheel index also has `0.3.1+cu124`, `0.3.1+cu128`, and `0.3.1+cpu`
 variants.
 
 For local wrapper development, clone the wrapper repo beside this checkout and
@@ -181,28 +181,28 @@ The legacy CUDA-graph-only benchmarks still run with `./benchmark.sh`.
 
 ## Wheel Distribution
 
-`qwentts-cpp-python==0.3.0` is published on PyPI. The PyPI package is the
+`qwentts-cpp-python==0.3.1` is published on PyPI. The PyPI package is the
 default CUDA 12.8 wheel used by `pip install "faster-qwen3-tts[ggml]"`.
 Additional local-version wheels are hosted on Hugging Face Hub:
 
 ```bash
-pip install "qwentts-cpp-python==0.3.0+cpu" \
+pip install "qwentts-cpp-python==0.3.1+cpu" \
   -f https://huggingface.co/datasets/andito/qwentts-cpp-python-wheels/tree/main/whl/cpu
 
-pip install "qwentts-cpp-python==0.3.0+cu124" \
+pip install "qwentts-cpp-python==0.3.1+cu124" \
   -f https://huggingface.co/datasets/andito/qwentts-cpp-python-wheels/tree/main/whl/cu124
 
-pip install "qwentts-cpp-python==0.3.0+cu128" \
+pip install "qwentts-cpp-python==0.3.1+cu128" \
   -f https://huggingface.co/datasets/andito/qwentts-cpp-python-wheels/tree/main/whl/cu128
 
-pip install "qwentts-cpp-python==0.3.0+cu130" \
+pip install "qwentts-cpp-python==0.3.1+cu130" \
   -f https://huggingface.co/datasets/andito/qwentts-cpp-python-wheels/tree/main/whl/cu130
 ```
 
 Hugging Face file hosting is used as a `--find-links` wheelhouse rather than a
 PyTorch-style package index. For CUDA 13 / DGX Spark, install the `+cu130`
 wheel before installing `faster-qwen3-tts[ggml]`. For Ubuntu 22.04 / older
-Linux hosts, install `0.3.0+cu128` from the Hugging Face wheelhouse so pip can
+Linux hosts, install `0.3.1+cu128` from the Hugging Face wheelhouse so pip can
 select the `manylinux_2_35` CUDA 12.8 wheel.
 
 For publishing new wrapper wheels, use the manual GitHub Actions workflow:
