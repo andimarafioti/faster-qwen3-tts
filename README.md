@@ -297,6 +297,9 @@ Smaller chunks = lower latency but more decode overhead. `chunk_size=2` is the s
 
 The CUDA graphs are unchanged — both predictor and talker graphs are replayed per step. The streaming generator yields codec ID chunks every `chunk_size` steps, and the model wrapper decodes each chunk to audio using a sliding window with 25-frame left context (matching the upstream codec's `chunked_decode` pattern) to avoid boundary artifacts.
 
+`generate_custom_voice_streaming()` accepts `decoder_context_frames` to tune
+that left-context window; its default remains 25 for backward compatibility.
+
 The Python streaming methods are pull-based generators: they prepare the next chunk when the caller requests it. For realtime local playback, use a queue-backed player such as `StreamPlayer`; blocking after each yielded chunk prevents generation and playback from overlapping.
 
 ## Voice Cloning Quality
