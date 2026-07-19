@@ -8,7 +8,7 @@ from typing import Optional, Tuple
 import torch
 
 from .predictor_graph import PredictorGraph
-from .sampling import apply_repetition_penalty, sample_logits
+from .sampling import apply_repetition_penalty, build_suppress_mask, sample_logits
 from .talker_graph import TalkerGraph
 
 
@@ -43,11 +43,9 @@ def fast_generate(
     vocab_size = config.vocab_size
     device = talker_input_embeds.device
     
-    suppress_mask = torch.zeros(vocab_size, dtype=torch.bool, device=device)
+    suppress_mask = build_suppress_mask(vocab_size, eos_id, device)
     suppress_start = max(0, vocab_size - 1024)
-    for i in range(suppress_start, vocab_size):
-        if i != eos_id:
-            suppress_mask[i] = True
+    eos_suppress_ids = torch.tensor([eos_id], dtype=torch.long, device=device)
 
     if parity_mode:
         suppress_tokens = [i for i in range(suppress_start, vocab_size) if i != eos_id]
@@ -130,7 +128,7 @@ def fast_generate(
         top_p=top_p,
         do_sample=do_sample,
         suppress_mask=suppress_mask,
-        suppress_tokens=[eos_id] if suppress_eos else None,
+        suppress_tokens=eos_suppress_ids if suppress_eos else None,
     )
     
     # Copy prefill KV cache into talker graph's static cache
@@ -193,7 +191,7 @@ def fast_generate(
             top_p=top_p,
             do_sample=do_sample,
             suppress_mask=suppress_mask,
-            suppress_tokens=[eos_id] if suppress_eos else None,
+            suppress_tokens=eos_suppress_ids if suppress_eos else None,
         )
         past_hidden = hidden_states[:, -1:, :].clone()  # clone since it's the static buffer
         gen_step += 1
