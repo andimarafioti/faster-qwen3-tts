@@ -285,6 +285,8 @@ CUDA graphs support streaming output — audio chunks are yielded during generat
 
 Smaller chunks = lower latency but more decode overhead. `chunk_size=2` is the smallest that stays real-time on Jetson.
 
+`generate_voice_design_streaming()` accepts `decoder_context_frames` to tune the left-context window used for successive audio chunks. The default remains `25` for backward compatibility; callers can evaluate larger values when continuity is more important than decoder cost.
+
 **Model seed:** All the different model modes are effectively the same speed. The first time you clone a voice, it takes longer, but later it's cached. Use `benchmarks/compare_modes.py` to reproduce. Example on 0.6B, `chunk_size=8`:
 
 | Mode | TTFA (ms) | RTF | ms/step |

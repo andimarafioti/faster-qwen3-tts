@@ -1419,9 +1419,16 @@ class FasterQwen3TTS:
         do_sample: bool = True,
         repetition_penalty: float = 1.05,
         chunk_size: int = 12,
+        decoder_context_frames: int = 25,
     ) -> Generator[Tuple[np.ndarray, int, dict], None, None]:
         if self.model.model.tts_model_type != "voice_design":
             raise ValueError("Loaded model does not support voice design generation")
+        if (
+            isinstance(decoder_context_frames, bool)
+            or not isinstance(decoder_context_frames, int)
+            or decoder_context_frames < 1
+        ):
+            raise ValueError("decoder_context_frames must be a positive integer")
 
         self.model._validate_languages([language])
 
@@ -1442,7 +1449,7 @@ class FasterQwen3TTS:
 
         speech_tokenizer = m.speech_tokenizer
 
-        context_frames = 25
+        context_frames = decoder_context_frames
         min_calibration_frames = max(context_frames, chunk_size)
         all_codes = []
         prev_audio_len = 0
