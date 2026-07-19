@@ -316,6 +316,8 @@ The default now matches upstream Qwen3-TTS: ICL mode with the reference audio in
 
 The 12 Hz codec uses a causal `chunked_decode`: each frame is reconstructed using prior frames as acoustic context. In ICL mode the reference audio codec tokens are prepended to the generated tokens before decoding, then the reference portion is trimmed from the output. Without this, the codec decoder starts cold with no voice context — the model generates the right tokens but they get reconstructed in the wrong voice. This is handled automatically.
 
+`generate_voice_clone_streaming()` accepts `decoder_context_frames` to tune the left-context window used for successive audio chunks. The default remains `25` for backward compatibility; callers can evaluate larger values when continuity is more important than decoder cost.
+
 ### Text input streaming vs Non-streaming quality
 
 The original Qwen3TTS implementation supports two mode of generation. It either takes the full input text and prepares the utterance, or it feeds the text progressively. This is the `non_streaming_mode` parameter in the generation methods. The name is maintained from the Qwen3TTS implementation, but I understand it might bring some headaches since here we also have general audio output streaming.

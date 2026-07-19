@@ -974,6 +974,7 @@ class FasterQwen3TTS:
         ref_spk_emb: Optional[np.ndarray] = None,
         ref_codes: Optional[np.ndarray] = None,
         voice_clone_prompt: Optional[Union[Dict[str, Any], List[Any]]] = None,
+        decoder_context_frames: int = 25,
     ) -> Generator[Tuple[np.ndarray, int, dict], None, None]:
         """
         Stream voice-cloned speech generation, yielding audio chunks.
@@ -1007,6 +1008,9 @@ class FasterQwen3TTS:
                 This path supports x-vector-only prompts (`ref_spk_embedding` only)
                 and ICL prompts (`ref_spk_embedding` + `ref_code` + mode flags).
                 `ref_text` is ignored for x-vector-only and required for ICL.
+            decoder_context_frames: Number of left-context codec frames used when
+                reconstructing successive streamed audio chunks. The default of 25
+                preserves the existing behavior.
             ref_spk/ref_rvq/ref_spk_emb/ref_codes: GGML-only cached reference fields.
                 Use `ref_spk` for qwentts.cpp `.spk` files and `ref_rvq` with
                 `ref_text` for cached ICL references.
@@ -1023,6 +1027,12 @@ class FasterQwen3TTS:
             ref_spk_emb=ref_spk_emb,
             ref_codes=ref_codes,
         )
+        if (
+            isinstance(decoder_context_frames, bool)
+            or not isinstance(decoder_context_frames, int)
+            or decoder_context_frames < 1
+        ):
+            raise ValueError("decoder_context_frames must be a positive integer")
 
         from .streaming import fast_generate_streaming, parity_generate_streaming
 
@@ -1047,9 +1057,9 @@ class FasterQwen3TTS:
 
         # Hybrid decode strategy:
         # 1. Accumulated decode for early chunks (correct, calibrates samples_per_frame)
-        # 2. Sliding window with 25-frame left context once calibrated (constant cost)
+        # 2. Sliding window with the configured left context once calibrated
         # This avoids boundary artifacts (pops) while keeping decode cost bounded.
-        context_frames = 25
+        context_frames = decoder_context_frames
         min_calibration_frames = max(context_frames, chunk_size)
         all_codes = []
         prev_gen_audio_len = 0  # tracks position within the generated (non-ref) audio
