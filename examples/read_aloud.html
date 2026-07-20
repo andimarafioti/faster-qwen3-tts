@@ -1,0 +1,777 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Read Aloud</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; }
+    body {
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f5f7fb;
+      color: #172033;
+    }
+    main {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 340px;
+      gap: 0;
+    }
+    .workspace {
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 24px;
+      line-height: 1.15;
+      font-weight: 720;
+      letter-spacing: 0;
+    }
+    .status {
+      min-height: 32px;
+      padding: 6px 10px;
+      border-radius: 6px;
+      background: #e9eef7;
+      color: #40516e;
+      font-size: 13px;
+      display: inline-flex;
+      align-items: center;
+      white-space: nowrap;
+    }
+    textarea {
+      width: 100%;
+      min-height: 42vh;
+      flex: 1;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      background: #fff;
+      color: #172033;
+      padding: 16px;
+      resize: vertical;
+      font: 16px/1.5 ui-sans-serif, system-ui, sans-serif;
+      outline: none;
+    }
+    textarea:focus { border-color: #4f75d6; box-shadow: 0 0 0 3px rgba(79, 117, 214, 0.16); }
+    .actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    button, a.button {
+      border: 1px solid #bac6d8;
+      background: #fff;
+      color: #172033;
+      border-radius: 6px;
+      padding: 9px 12px;
+      min-height: 38px;
+      font: 650 14px/1 ui-sans-serif, system-ui, sans-serif;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+    button.primary {
+      border-color: #274ea8;
+      background: #2f5fc7;
+      color: #fff;
+    }
+    button:disabled, a.disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+      pointer-events: none;
+    }
+    audio {
+      width: 100%;
+      height: 42px;
+      display: block;
+    }
+    aside {
+      border-left: 1px solid #d8e0ec;
+      background: #ffffff;
+      padding: 20px;
+      overflow: auto;
+    }
+    h2 {
+      margin: 0 0 14px;
+      font-size: 16px;
+      font-weight: 720;
+    }
+    .field { margin-bottom: 15px; }
+    details.field {
+      border-top: 1px solid #e2e8f0;
+      padding-top: 14px;
+    }
+    summary {
+      cursor: pointer;
+      color: #34445f;
+      font-size: 13px;
+      font-weight: 700;
+      list-style-position: inside;
+      margin-bottom: 12px;
+    }
+    label {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 7px;
+      color: #34445f;
+      font-size: 13px;
+      font-weight: 650;
+    }
+    input, select {
+      width: 100%;
+      border: 1px solid #cbd5e1;
+      border-radius: 6px;
+      padding: 8px 10px;
+      min-height: 36px;
+      background: #fff;
+      color: #172033;
+      font: 14px ui-sans-serif, system-ui, sans-serif;
+    }
+    input[type="range"] { padding: 0; min-height: 26px; }
+    input[type="checkbox"] { width: auto; min-height: 0; }
+    label.check {
+      justify-content: flex-start;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 0;
+    }
+    .hint { margin-top: 6px; color: #66758d; font-size: 12px; line-height: 1.35; }
+    .hint.warn { color: #b3261e; font-weight: 650; }
+    .history-item {
+      border: 1px solid #e2e8f0;
+      border-radius: 6px;
+      padding: 8px 10px;
+      margin-bottom: 8px;
+      cursor: pointer;
+    }
+    .history-item:hover { border-color: #4f75d6; }
+    .history-item .title {
+      font-size: 13px;
+      font-weight: 650;
+      color: #172033;
+      margin-bottom: 2px;
+    }
+    .history-item .meta { font-size: 12px; color: #66758d; }
+    .section-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+    }
+    .section-row h2 { margin: 0; }
+    button.small {
+      min-height: 28px;
+      padding: 4px 10px;
+      font-size: 12px;
+    }
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .metric {
+      background: #eef2f8;
+      border-radius: 6px;
+      padding: 8px;
+      min-width: 0;
+    }
+    .metric strong {
+      display: block;
+      font-size: 12px;
+      color: #66758d;
+      margin-bottom: 4px;
+    }
+    .metric span { font-size: 14px; font-weight: 700; }
+    @media (max-width: 820px) {
+      main { grid-template-columns: 1fr; }
+      aside { border-left: 0; border-top: 1px solid #d8e0ec; }
+      .workspace { padding: 16px; }
+      .topbar { align-items: flex-start; flex-direction: column; }
+      .status { white-space: normal; }
+      textarea { min-height: 36vh; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="workspace">
+      <div class="topbar">
+        <h1>Read Aloud</h1>
+        <div id="status" class="status">Connecting...</div>
+      </div>
+
+      <textarea id="text" placeholder="Paste text here, or use the clipboard button if your browser allows it."></textarea>
+      <div id="textCounter" class="hint">0 words · 0 / 10,000 characters</div>
+
+      <div class="field">
+        <label for="passcode">Passcode</label>
+        <input id="passcode" type="password" autocomplete="current-password" placeholder="Required for generation">
+      </div>
+
+      <div class="actions">
+        <button id="paste">Paste</button>
+        <button id="clear">Clear text</button>
+        <button id="stream">Stream</button>
+        <button id="render" class="primary">Generate file</button>
+        <a id="download" class="button disabled" href="#" download>Download WAV</a>
+      </div>
+      <div class="hint">Tip: Ctrl/Cmd+Enter to stream, add Shift to generate a file.</div>
+
+      <audio id="player" controls></audio>
+
+      <div class="metrics">
+        <div class="metric"><strong>Duration</strong><span id="duration">-</span></div>
+        <div class="metric"><strong>Elapsed</strong><span id="elapsed">-</span></div>
+        <div class="metric"><strong>RTF</strong><span id="rtf">-</span></div>
+      </div>
+
+      <div class="field">
+        <div class="section-row">
+          <h2>History</h2>
+          <button id="clearHistory" class="small">Clear</button>
+        </div>
+        <div id="historyList" class="hint">No renders yet.</div>
+      </div>
+    </section>
+
+    <aside>
+      <h2>Voice</h2>
+
+      <div class="field">
+        <label for="preset">Preset</label>
+        <select id="preset">
+          <option value="">Custom</option>
+        </select>
+      </div>
+
+      <div class="field" style="display: flex; gap: 8px; align-items: flex-end;">
+        <div style="flex: 1;">
+          <label for="presetName">Save current instruction as</label>
+          <input id="presetName" type="text" placeholder="Preset name">
+        </div>
+        <button id="savePreset">Save</button>
+      </div>
+      <div class="field">
+        <button id="deletePreset" class="small" style="display: none;">Delete this preset</button>
+      </div>
+
+      <div class="field">
+        <label class="check" for="surprise">
+          <input id="surprise" type="checkbox">
+          Surprise me
+        </label>
+        <div class="hint">Chooses a random preset when you stream or generate a file.</div>
+      </div>
+
+      <div class="field">
+        <label for="instruction">Instruction</label>
+        <textarea id="instruction" style="min-height: 128px;">Warm, natural narrator with clear diction, calm confidence, and a steady pace.</textarea>
+        <div class="hint">Describe accent, age, energy, tone, pacing, emotion, or presentation style.</div>
+      </div>
+
+      <details class="field">
+        <summary>Dialogue</summary>
+
+        <div class="field">
+          <label class="check" for="dialogueMode">
+            <input id="dialogueMode" type="checkbox">
+            Render speaker labels as separate voices
+          </label>
+        </div>
+
+        <div class="field">
+          <label for="speakerA">Speaker A</label>
+          <textarea id="speakerA" style="min-height: 88px;">Adult male speaker with a calm, grounded tone and clear diction.</textarea>
+        </div>
+
+        <div class="field">
+          <label for="speakerB">Speaker B</label>
+          <textarea id="speakerB" style="min-height: 88px;">Adult female speaker with a bright, conversational tone and clear diction.</textarea>
+        </div>
+      </details>
+
+      <div class="field">
+        <label for="language">Language</label>
+        <select id="language">
+          <option>English</option>
+          <option>Chinese</option>
+          <option>French</option>
+          <option>German</option>
+          <option>Spanish</option>
+          <option>Italian</option>
+          <option>Portuguese</option>
+          <option>Japanese</option>
+          <option>Korean</option>
+          <option>Auto</option>
+        </select>
+      </div>
+
+      <details class="field">
+        <summary>Model parameters</summary>
+
+        <div class="field">
+          <label for="temperature">Temperature <span id="temperatureValue">0.90</span></label>
+          <input id="temperature" type="range" min="0.1" max="2" value="0.9" step="0.05">
+        </div>
+
+        <div class="field">
+          <label for="topP">Top-p <span id="topPValue">1.00</span></label>
+          <input id="topP" type="range" min="0.05" max="1" value="1" step="0.05">
+        </div>
+
+        <div class="field">
+          <label for="topK">Top-k <span id="topKValue">50</span></label>
+          <input id="topK" type="range" min="1" max="200" value="50" step="1">
+        </div>
+
+        <div class="field">
+          <label for="repetition">Repetition penalty <span id="repetitionValue">1.05</span></label>
+          <input id="repetition" type="range" min="0.8" max="2" value="1.05" step="0.01">
+        </div>
+
+        <div class="field">
+          <label for="maxTokens">Max audio tokens <span id="maxTokensValue">8192</span></label>
+          <input id="maxTokens" type="range" min="512" max="8192" value="8192" step="512">
+        </div>
+
+        <div class="field">
+          <label for="seed">Seed</label>
+          <input id="seed" type="number" min="0" max="2147483647" placeholder="Random">
+        </div>
+      </details>
+    </aside>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const status = $("status");
+    const player = $("player");
+    const download = $("download");
+    const presets = [
+      ["Blank", ""],
+      ["Warm narrator", "Warm, natural narrator with clear diction, calm confidence, and a steady pace."],
+      ["Deep male", "Adult male narrator with a lower pitch, resonant tone, calm confidence, and clear diction."],
+      ["Bright female", "Adult female narrator with a bright tone, friendly energy, clear diction, and a natural conversational pace."],
+      ["News anchor", "Professional broadcast news anchor, neutral accent, crisp articulation, steady pacing, and composed delivery."],
+      ["Audiobook", "Expressive audiobook narrator with gentle character nuance, warm tone, measured pacing, and clear emotional phrasing."],
+      ["Podcast host", "Conversational podcast host, relaxed and engaging, medium pace, natural pauses, and friendly confidence."],
+      ["Calm bedtime", "Soft calming bedtime storyteller, low energy, slower pace, gentle warmth, and smooth phrasing."],
+      ["Executive", "Polished executive presenter, confident tone, precise diction, medium-low pitch, and concise professional delivery."],
+      ["Energetic promo", "Energetic promotional voice, upbeat delivery, bright tone, strong emphasis, and lively pacing."],
+      ["Documentary", "Serious documentary narrator, thoughtful tone, controlled pacing, subtle gravity, and clear articulation."],
+      ["Androgynous", "Androgynous adult voice with neutral pitch, balanced warmth, precise diction, and calm professional delivery."],
+    ];
+
+    const CUSTOM_PRESET_KEY = "readAloudCustomPresets";
+    function loadCustomPresets() {
+      try {
+        return JSON.parse(localStorage.getItem(CUSTOM_PRESET_KEY) || "[]");
+      } catch {
+        return [];
+      }
+    }
+    function saveCustomPresets(list) {
+      localStorage.setItem(CUSTOM_PRESET_KEY, JSON.stringify(list));
+    }
+    let customPresets = loadCustomPresets();
+
+    const presetSelect = $("preset");
+
+    function renderPresetOptions() {
+      presetSelect.innerHTML = "";
+      const blank = document.createElement("option");
+      blank.value = "";
+      blank.textContent = "Custom";
+      presetSelect.appendChild(blank);
+
+      presets.forEach(([label], index) => {
+        const option = document.createElement("option");
+        option.value = "b" + index;
+        option.textContent = label;
+        presetSelect.appendChild(option);
+      });
+
+      if (customPresets.length) {
+        const group = document.createElement("optgroup");
+        group.label = "My presets";
+        customPresets.forEach((preset, index) => {
+          const option = document.createElement("option");
+          option.value = "c" + index;
+          option.textContent = preset.label;
+          group.appendChild(option);
+        });
+        presetSelect.appendChild(group);
+      }
+    }
+    renderPresetOptions();
+
+    function updateDeleteButton() {
+      const deleteBtn = $("deletePreset");
+      if (presetSelect.value.startsWith("c")) {
+        deleteBtn.style.display = "";
+        deleteBtn.dataset.index = presetSelect.value.slice(1);
+      } else {
+        deleteBtn.style.display = "none";
+      }
+    }
+
+    presetSelect.addEventListener("change", () => {
+      const value = presetSelect.value;
+      if (value.startsWith("b")) {
+        const [, instruction] = presets[Number(value.slice(1))];
+        $("instruction").value = instruction;
+      } else if (value.startsWith("c")) {
+        const preset = customPresets[Number(value.slice(1))];
+        if (preset) $("instruction").value = preset.instruction;
+      }
+      updateDeleteButton();
+    });
+    $("instruction").addEventListener("input", () => {
+      presetSelect.value = "";
+      updateDeleteButton();
+    });
+
+    $("savePreset").addEventListener("click", () => {
+      const name = $("presetName").value.trim();
+      const instruction = $("instruction").value.trim();
+      if (!name || !instruction) {
+        status.textContent = "Enter a preset name and instruction first.";
+        return;
+      }
+      const existingIndex = customPresets.findIndex((preset) => preset.label === name);
+      const preset = { label: name, instruction };
+      if (existingIndex >= 0) customPresets[existingIndex] = preset;
+      else customPresets.push(preset);
+      saveCustomPresets(customPresets);
+      renderPresetOptions();
+      presetSelect.value = "c" + (existingIndex >= 0 ? existingIndex : customPresets.length - 1);
+      $("presetName").value = "";
+      updateDeleteButton();
+      status.textContent = `Saved preset "${name}".`;
+    });
+
+    $("deletePreset").addEventListener("click", () => {
+      const index = Number($("deletePreset").dataset.index);
+      const [removed] = customPresets.splice(index, 1);
+      saveCustomPresets(customPresets);
+      renderPresetOptions();
+      presetSelect.value = "";
+      updateDeleteButton();
+      status.textContent = removed ? `Deleted preset "${removed.label}".` : "Preset deleted.";
+    });
+
+    function pickRandomPreset() {
+      const index = Math.floor(Math.random() * presets.length);
+      const [label, instruction] = presets[index];
+      presetSelect.value = "b" + index;
+      $("instruction").value = instruction;
+      status.textContent = `Preset: ${label}`;
+      updateDeleteButton();
+      return instruction;
+    }
+
+    const sliders = [
+      ["temperature", "temperatureValue", 2],
+      ["topP", "topPValue", 2],
+      ["topK", "topKValue", 0],
+      ["repetition", "repetitionValue", 2],
+      ["maxTokens", "maxTokensValue", 0],
+    ];
+    for (const [inputId, outputId, digits] of sliders) {
+      const input = $(inputId);
+      const output = $(outputId);
+      input.addEventListener("input", () => {
+        const value = Number(input.value);
+        output.textContent = digits ? value.toFixed(digits) : String(value);
+      });
+    }
+
+    const TEXT_LIMIT = 10000;
+    function updateCounter() {
+      const text = $("text").value;
+      const chars = text.length;
+      const words = text.trim() ? text.trim().split(/\s+/).length : 0;
+      const counter = $("textCounter");
+      counter.textContent = `${words} word${words === 1 ? "" : "s"} · ${chars.toLocaleString()} / ${TEXT_LIMIT.toLocaleString()} characters`;
+      counter.classList.toggle("warn", chars > TEXT_LIMIT * 0.9);
+    }
+    $("text").addEventListener("input", updateCounter);
+    updateCounter();
+
+    const HISTORY_KEY = "readAloudHistory";
+    const HISTORY_LIMIT = 8;
+    function loadHistory() {
+      try {
+        return JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]");
+      } catch {
+        return [];
+      }
+    }
+    function saveHistory(list) {
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(list));
+    }
+    let history = loadHistory();
+
+    function truncate(text, max) {
+      const trimmed = text.trim().replace(/\s+/g, " ");
+      return trimmed.length > max ? trimmed.slice(0, max - 1) + "…" : trimmed;
+    }
+
+    function renderHistory() {
+      const list = $("historyList");
+      if (!history.length) {
+        list.textContent = "No renders yet.";
+        return;
+      }
+      list.innerHTML = "";
+      history.forEach((entry) => {
+        const item = document.createElement("div");
+        item.className = "history-item";
+        const title = document.createElement("div");
+        title.className = "title";
+        title.textContent = truncate(entry.text, 60) || "(empty)";
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = `${entry.duration_s.toFixed(1)}s audio · RTF ${entry.rtf.toFixed(2)} · ${new Date(entry.timestamp).toLocaleTimeString()}`;
+        item.appendChild(title);
+        item.appendChild(meta);
+        item.addEventListener("click", () => {
+          $("text").value = entry.text;
+          $("instruction").value = entry.instruction;
+          presetSelect.value = "";
+          updateDeleteButton();
+          updateCounter();
+          player.src = entry.url;
+          download.href = entry.url;
+          download.classList.remove("disabled");
+          $("duration").textContent = `${entry.duration_s.toFixed(2)}s`;
+          $("elapsed").textContent = `${entry.elapsed_s.toFixed(2)}s`;
+          $("rtf").textContent = entry.rtf.toFixed(2);
+          status.textContent = "Loaded from history.";
+        });
+        list.appendChild(item);
+      });
+    }
+    renderHistory();
+
+    function addToHistory(entry) {
+      history.unshift(entry);
+      history = history.slice(0, HISTORY_LIMIT);
+      saveHistory(history);
+      renderHistory();
+    }
+
+    $("clearHistory").addEventListener("click", () => {
+      history = [];
+      saveHistory(history);
+      renderHistory();
+      status.textContent = "History cleared.";
+    });
+
+    document.addEventListener("keydown", (event) => {
+      const isModEnter = (event.ctrlKey || event.metaKey) && event.key === "Enter";
+      if (!isModEnter) return;
+      const active = document.activeElement;
+      const inField = active && active.tagName === "TEXTAREA";
+      if (!inField) return;
+      event.preventDefault();
+      if (event.shiftKey) $("render").click();
+      else $("stream").click();
+    });
+
+    function authHeaders() {
+      const passcode = $("passcode").value;
+      return {
+        "Content-Type": "application/json",
+        "X-Read-Aloud-Passcode": passcode,
+      };
+    }
+
+    function payload() {
+      if ($("surprise").checked) {
+        pickRandomPreset();
+      }
+      const seedValue = $("seed").value.trim();
+      return {
+        text: $("text").value.trim(),
+        instruction: $("instruction").value.trim(),
+        dialogue_mode: $("dialogueMode").checked,
+        speaker_a_instruction: $("speakerA").value.trim(),
+        speaker_b_instruction: $("speakerB").value.trim(),
+        language: $("language").value,
+        temperature: Number($("temperature").value),
+        top_p: Number($("topP").value),
+        top_k: Number($("topK").value),
+        repetition_penalty: Number($("repetition").value),
+        max_new_tokens: Number($("maxTokens").value),
+        seed: seedValue ? Number(seedValue) : null,
+      };
+    }
+
+    function errorMessage(data, fallback) {
+      if (!data) return fallback;
+      if (typeof data.detail === "string") return data.detail;
+      if (Array.isArray(data.detail)) {
+        return data.detail.map((item) => {
+          const field = Array.isArray(item.loc) ? item.loc.filter((part) => part !== "body").join(".") : "";
+          const message = item.msg || JSON.stringify(item);
+          return field ? field + ": " + message : message;
+        }).join("; ");
+      }
+      if (data.detail) return JSON.stringify(data.detail);
+      if (typeof data === "string") return data;
+      return fallback;
+    }
+
+    let workingTimer = null;
+    let workingStarted = 0;
+    let workingLabel = "";
+
+    function formatElapsed(ms) {
+      const total = Math.floor(ms / 1000);
+      const minutes = Math.floor(total / 60);
+      const seconds = String(total % 60).padStart(2, "0");
+      return minutes + ":" + seconds;
+    }
+
+    function updateWorkingStatus() {
+      status.textContent = workingLabel + " " + formatElapsed(Date.now() - workingStarted) + " elapsed";
+    }
+
+    function startWorking(label, disableControls = true) {
+      if (workingTimer) clearInterval(workingTimer);
+      workingLabel = label;
+      workingStarted = Date.now();
+      $("stream").disabled = disableControls;
+      $("render").disabled = disableControls;
+      updateWorkingStatus();
+      workingTimer = setInterval(updateWorkingStatus, 1000);
+    }
+
+    function stopWorking(label) {
+      if (workingTimer) clearInterval(workingTimer);
+      workingTimer = null;
+      $("stream").disabled = false;
+      $("render").disabled = false;
+      status.textContent = label;
+    }
+
+    function setBusy(isBusy, label) {
+      if (isBusy) startWorking(label);
+      else stopWorking(label);
+    }
+
+    $("clear").addEventListener("click", () => {
+      $("text").value = "";
+      player.removeAttribute("src");
+      player.load();
+      download.href = "#";
+      download.classList.add("disabled");
+      $("duration").textContent = "-";
+      $("elapsed").textContent = "-";
+      $("rtf").textContent = "-";
+      status.textContent = "Text cleared.";
+      updateCounter();
+    });
+
+    $("paste").addEventListener("click", async () => {
+      if (!navigator.clipboard?.readText) {
+        status.textContent = "Clipboard read is not available in this browser context.";
+        return;
+      }
+      try {
+        const text = await navigator.clipboard.readText();
+        if (text) $("text").value = text;
+        status.textContent = text ? "Pasted from clipboard." : "Clipboard was empty.";
+        updateCounter();
+      } catch (error) {
+        status.textContent = "Clipboard permission was denied.";
+      }
+    });
+
+    $("stream").addEventListener("click", async () => {
+      const body = payload();
+      if (!body.text) {
+        status.textContent = "Enter text first.";
+        return;
+      }
+      startWorking("Starting stream...");
+      download.classList.add("disabled");
+      try {
+        const response = await fetch("/api/speak/stream-url", {
+          method: "POST",
+          headers: authHeaders(),
+          body: JSON.stringify(body),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(errorMessage(data, "Stream failed"));
+        player.src = data.url + "?cacheBust=" + Date.now();
+        await player.play().catch(() => {});
+        stopWorking("Streaming.");
+      } catch (error) {
+        stopWorking(`Stream failed: ${error.message}`);
+      }
+    });
+
+    $("render").addEventListener("click", async () => {
+      const body = payload();
+      if (!body.text) {
+        status.textContent = "Enter text first.";
+        return;
+      }
+      setBusy(true, "Rendering WAV...");
+      try {
+        const response = await fetch("/api/speak", {
+          method: "POST",
+          headers: authHeaders(),
+          body: JSON.stringify(body),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(errorMessage(data, "Render failed"));
+        player.src = data.url;
+        download.href = data.url;
+        download.classList.remove("disabled");
+        $("duration").textContent = `${data.duration_s.toFixed(2)}s`;
+        $("elapsed").textContent = `${data.elapsed_s.toFixed(2)}s`;
+        $("rtf").textContent = data.rtf.toFixed(2);
+        status.textContent = "WAV rendered.";
+        addToHistory({
+          text: body.text,
+          instruction: body.instruction,
+          url: data.url,
+          duration_s: data.duration_s,
+          elapsed_s: data.elapsed_s,
+          rtf: data.rtf,
+          timestamp: Date.now(),
+        });
+      } catch (error) {
+        status.textContent = `Render failed: ${error.message}`;
+      } finally {
+        setBusy(false, status.textContent);
+      }
+    });
+
+    fetch("/api/status")
+      .then((response) => response.json())
+      .then((data) => {
+        status.textContent = `${data.backend} / ${data.model.split("/").pop()}`;
+      })
+      .catch(() => {
+        status.textContent = "Server status unavailable.";
+      });
+  </script>
+</body>
+</html>
