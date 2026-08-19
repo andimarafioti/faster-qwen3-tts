@@ -216,16 +216,12 @@
       <textarea id="text" placeholder="Paste text here, or use the clipboard button if your browser allows it."></textarea>
       <div id="textCounter" class="hint">0 words · 0 / 10,000 characters</div>
 
-      <div class="field">
-        <label for="passcode">Passcode</label>
-        <input id="passcode" type="password" autocomplete="current-password" placeholder="Required for generation">
-      </div>
-
       <div class="actions">
         <button id="paste">Paste</button>
         <button id="clear">Clear text</button>
         <button id="stream">Stream</button>
         <button id="render" class="primary">Generate file</button>
+        <button id="batch">Add to batch</button>
         <a id="download" class="button disabled" href="#" download>Download WAV</a>
       </div>
       <div class="hint">Tip: Ctrl/Cmd+Enter to stream, add Shift to generate a file.</div>
@@ -240,10 +236,22 @@
 
       <div class="field">
         <div class="section-row">
-          <h2>History</h2>
-          <button id="clearHistory" class="small">Clear</button>
+          <h2>Audio library</h2>
+          <div>
+            <button id="refreshHistory" class="small">Refresh</button>
+            <button id="clearHistory" class="small">Clear</button>
+          </div>
         </div>
-        <div id="historyList" class="hint">No renders yet.</div>
+        <div id="historyList" class="hint">No saved audio yet.</div>
+      </div>
+
+      <div class="field">
+        <div class="section-row">
+          <h2>Quiet-time batch</h2>
+          <button id="refreshBatch" class="small">Refresh</button>
+        </div>
+        <div class="hint">Add selected requests here. Streams always move ahead of queued batch work.</div>
+        <div id="batchList" class="hint">No batched requests.</div>
       </div>
     </section>
 
@@ -360,6 +368,66 @@
     const status = $("status");
     const player = $("player");
     const download = $("download");
+    let streamAudioContext = null;
+    let streamNextStart = 0;
+
+    async function stopStreamAudio() {
+      const context = streamAudioContext;
+      streamAudioContext = null;
+      streamNextStart = 0;
+      if (context && context.state !== "closed") {
+        await context.close().catch(() => {});
+      }
+    }
+
+    function schedulePcm16(context, bytes, sampleRate) {
+      const samples = new Float32Array(bytes.length / 2);
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      for (let index = 0; index < samples.length; index += 1) {
+        samples[index] = view.getInt16(index * 2, true) / 32768;
+      }
+      const buffer = context.createBuffer(1, samples.length, sampleRate);
+      buffer.copyToChannel(samples, 0);
+      const source = context.createBufferSource();
+      source.buffer = buffer;
+      source.connect(context.destination);
+      streamNextStart = Math.max(streamNextStart, context.currentTime + 0.04);
+      source.start(streamNextStart);
+      streamNextStart += buffer.duration;
+    }
+
+    async function playPcmStream(response, context) {
+      if (!response.body) throw new Error("Streaming responses are not supported by this browser.");
+      const reader = response.body.getReader();
+      let pending = new Uint8Array(0);
+      let headerRead = false;
+      let sampleRate = 24000;
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (!value?.length) continue;
+
+        const combined = new Uint8Array(pending.length + value.length);
+        combined.set(pending);
+        combined.set(value, pending.length);
+        let audio = combined;
+
+        if (!headerRead) {
+          if (combined.length < 44) {
+            pending = combined;
+            continue;
+          }
+          sampleRate = new DataView(combined.buffer, combined.byteOffset, 44).getUint32(24, true) || 24000;
+          headerRead = true;
+          audio = combined.slice(44);
+        }
+
+        const evenLength = audio.length - (audio.length % 2);
+        if (evenLength) schedulePcm16(context, audio.slice(0, evenLength), sampleRate);
+        pending = audio.slice(evenLength);
+      }
+    }
     const presets = [
       ["Blank", ""],
       ["Warm narrator", "Warm, natural narrator with clear diction, calm confidence, and a steady pace."],
@@ -511,19 +579,13 @@
     $("text").addEventListener("input", updateCounter);
     updateCounter();
 
-    const HISTORY_KEY = "readAloudHistory";
-    const HISTORY_LIMIT = 8;
-    function loadHistory() {
-      try {
-        return JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]");
-      } catch {
-        return [];
-      }
+    let history = [];
+    async function refreshHistory() {
+      const response = await fetch("/api/history", { headers: authHeaders() });
+      if (!response.ok) return;
+      history = (await response.json()).items || [];
+      renderHistory();
     }
-    function saveHistory(list) {
-      localStorage.setItem(HISTORY_KEY, JSON.stringify(list));
-    }
-    let history = loadHistory();
 
     function truncate(text, max) {
       const trimmed = text.trim().replace(/\s+/g, " ");
@@ -533,7 +595,7 @@
     function renderHistory() {
       const list = $("historyList");
       if (!history.length) {
-        list.textContent = "No renders yet.";
+        list.textContent = "No saved audio yet.";
         return;
       }
       list.innerHTML = "";
@@ -542,15 +604,17 @@
         item.className = "history-item";
         const title = document.createElement("div");
         title.className = "title";
-        title.textContent = truncate(entry.text, 60) || "(empty)";
+        title.textContent = truncate(entry.text || "Prior generation", 60);
         const meta = document.createElement("div");
         meta.className = "meta";
-        meta.textContent = `${entry.duration_s.toFixed(1)}s audio · RTF ${entry.rtf.toFixed(2)} · ${new Date(entry.timestamp).toLocaleTimeString()}`;
+        const kind = entry.legacy ? "prior" : entry.streamed ? "stream" : "file";
+        const rtf = entry.rtf ? ` · RTF ${entry.rtf.toFixed(2)}` : "";
+        meta.textContent = `${kind} · ${entry.duration_s.toFixed(1)}s${rtf} · ${new Date(entry.timestamp).toLocaleString()}`;
         item.appendChild(title);
         item.appendChild(meta);
         item.addEventListener("click", () => {
-          $("text").value = entry.text;
-          $("instruction").value = entry.instruction;
+          $("text").value = entry.text || "";
+          $("instruction").value = entry.instruction || "";
           presetSelect.value = "";
           updateDeleteButton();
           updateCounter();
@@ -558,27 +622,20 @@
           download.href = entry.url;
           download.classList.remove("disabled");
           $("duration").textContent = `${entry.duration_s.toFixed(2)}s`;
-          $("elapsed").textContent = `${entry.elapsed_s.toFixed(2)}s`;
-          $("rtf").textContent = entry.rtf.toFixed(2);
-          status.textContent = "Loaded from history.";
+          $("elapsed").textContent = entry.elapsed_s ? `${entry.elapsed_s.toFixed(2)}s` : "-";
+          $("rtf").textContent = entry.rtf ? entry.rtf.toFixed(2) : "-";
+          status.textContent = "Loaded from audio library.";
         });
         list.appendChild(item);
       });
     }
     renderHistory();
 
-    function addToHistory(entry) {
-      history.unshift(entry);
-      history = history.slice(0, HISTORY_LIMIT);
-      saveHistory(history);
-      renderHistory();
-    }
-
-    $("clearHistory").addEventListener("click", () => {
-      history = [];
-      saveHistory(history);
-      renderHistory();
-      status.textContent = "History cleared.";
+    $("refreshHistory").addEventListener("click", refreshHistory);
+    $("clearHistory").addEventListener("click", async () => {
+      const response = await fetch("/api/history", { method: "DELETE", headers: authHeaders() });
+      if (!response.ok) { status.textContent = "Could not clear audio library."; return; }
+      history = []; renderHistory(); status.textContent = "Audio library cleared.";
     });
 
     document.addEventListener("keydown", (event) => {
@@ -593,10 +650,8 @@
     });
 
     function authHeaders() {
-      const passcode = $("passcode").value;
       return {
         "Content-Type": "application/json",
-        "X-Read-Aloud-Passcode": passcode,
       };
     }
 
@@ -620,6 +675,65 @@
         seed: seedValue ? Number(seedValue) : null,
       };
     }
+
+    let batchItems = [];
+    function renderBatch() {
+      const list = $("batchList");
+      if (!batchItems.length) {
+        list.textContent = "No batched requests.";
+        return;
+      }
+      list.innerHTML = "";
+      batchItems.forEach((job) => {
+        const item = document.createElement("div");
+        item.className = "history-item";
+        const title = document.createElement("div");
+        title.className = "title";
+        title.textContent = truncate(job.request.text, 60);
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = `${job.status} · batch ${job.batch_id.slice(0, 8)} · item ${job.position}`;
+        item.append(title, meta);
+        if (job.status === "queued") {
+          const remove = document.createElement("button");
+          remove.className = "small";
+          remove.textContent = "Remove";
+          remove.addEventListener("click", async (event) => {
+            event.stopPropagation();
+            await fetch(`/api/batch/${job.id}`, { method: "DELETE", headers: authHeaders() });
+            await refreshBatch();
+          });
+          item.appendChild(remove);
+        } else if (job.status === "completed" && job.result) {
+          item.addEventListener("click", () => {
+            player.src = job.result.url;
+            download.href = job.result.url;
+            download.classList.remove("disabled");
+          });
+        }
+        list.appendChild(item);
+      });
+    }
+
+    async function refreshBatch() {
+      const response = await fetch("/api/batch", { headers: authHeaders() });
+      if (!response.ok) return;
+      batchItems = (await response.json()).items || [];
+      renderBatch();
+    }
+
+    $("refreshBatch").addEventListener("click", refreshBatch);
+    $("batch").addEventListener("click", async () => {
+      const request = payload();
+      if (!request.text) { status.textContent = "Enter text first."; return; }
+      const response = await fetch("/api/batch", {
+        method: "POST", headers: authHeaders(), body: JSON.stringify({ items: [request] }),
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) { status.textContent = errorMessage(data, "Could not queue request"); return; }
+      status.textContent = "Added to quiet-time batch.";
+      await refreshBatch();
+    });
 
     function errorMessage(data, fallback) {
       if (!data) return fallback;
@@ -675,6 +789,7 @@
     }
 
     $("clear").addEventListener("click", () => {
+      stopStreamAudio();
       $("text").value = "";
       player.removeAttribute("src");
       player.load();
@@ -711,17 +826,33 @@
       startWorking("Starting stream...");
       download.classList.add("disabled");
       try {
-        const response = await fetch("/api/speak/stream-url", {
+        await stopStreamAudio();
+        streamAudioContext = new (window.AudioContext || window.webkitAudioContext)();
+        await streamAudioContext.resume();
+        const context = streamAudioContext;
+        const response = await fetch("/api/speak/stream", {
           method: "POST",
           headers: authHeaders(),
           body: JSON.stringify(body),
         });
-        const data = await response.json();
-        if (!response.ok) throw new Error(errorMessage(data, "Stream failed"));
-        player.src = data.url + "?cacheBust=" + Date.now();
-        await player.play().catch(() => {});
-        stopWorking("Streaming.");
+        if (!response.ok) {
+          const data = await response.json().catch(() => null);
+          throw new Error(errorMessage(data, "Stream failed"));
+        }
+        stopWorking("Streaming audio...");
+        await playPcmStream(response, context);
+        await refreshHistory();
+        if (streamAudioContext === context) {
+          const remaining = Math.max(0, streamNextStart - context.currentTime);
+          status.textContent = remaining > 0 ? "Finishing playback..." : "Stream complete.";
+          if (remaining > 0) {
+            setTimeout(() => {
+              if (streamAudioContext === context) status.textContent = "Stream complete.";
+            }, remaining * 1000);
+          }
+        }
       } catch (error) {
+        await stopStreamAudio();
         stopWorking(`Stream failed: ${error.message}`);
       }
     });
@@ -734,6 +865,7 @@
       }
       setBusy(true, "Rendering WAV...");
       try {
+        await stopStreamAudio();
         const response = await fetch("/api/speak", {
           method: "POST",
           headers: authHeaders(),
@@ -748,15 +880,7 @@
         $("elapsed").textContent = `${data.elapsed_s.toFixed(2)}s`;
         $("rtf").textContent = data.rtf.toFixed(2);
         status.textContent = "WAV rendered.";
-        addToHistory({
-          text: body.text,
-          instruction: body.instruction,
-          url: data.url,
-          duration_s: data.duration_s,
-          elapsed_s: data.elapsed_s,
-          rtf: data.rtf,
-          timestamp: Date.now(),
-        });
+        await refreshHistory();
       } catch (error) {
         status.textContent = `Render failed: ${error.message}`;
       } finally {
