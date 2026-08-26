@@ -6,6 +6,23 @@ from typing import Iterable, Optional
 import torch
 import torch.nn.functional as F
 
+_SUPPRESS_MASK_CACHE: dict = {}
+
+
+def build_suppress_mask(vocab_size: int, eos_id: int, device) -> torch.Tensor:
+    """Boolean mask over the suppressed special-token tail [vocab-1024, vocab), excluding EOS.
+
+    Cached per (vocab_size, eos_id, device); callers must not mutate the result.
+    """
+    key = (vocab_size, eos_id, str(device))
+    mask = _SUPPRESS_MASK_CACHE.get(key)
+    if mask is None:
+        mask = torch.zeros(vocab_size, dtype=torch.bool, device=device)
+        mask[max(0, vocab_size - 1024):] = True
+        mask[eos_id] = False
+        _SUPPRESS_MASK_CACHE[key] = mask
+    return mask
+
 
 def apply_repetition_penalty(
     logits: torch.Tensor,
@@ -37,17 +54,23 @@ def sample_logits(
     top_p: float,
     do_sample: bool,
     suppress_mask: Optional[torch.Tensor] = None,
-    suppress_tokens: Optional[Iterable[int]] = None,
+    suppress_tokens: Optional[Iterable[int] | torch.Tensor] = None,
 ) -> torch.Tensor:
     """Sample a token from logits.
 
     Mirrors HF order: suppress -> temperature -> top-k -> top-p -> sample.
+
+    suppress_tokens may be a 1-D index tensor (preferred in hot loops — avoids a
+    host-to-device copy per call) or any iterable of ints.
     """
     logits = logits.clone()
     if suppress_mask is not None:
         logits[..., suppress_mask] = float("-inf")
-    if suppress_tokens:
-        logits[..., list(suppress_tokens)] = float("-inf")
+    if suppress_tokens is not None:
+        if not isinstance(suppress_tokens, torch.Tensor):
+            suppress_tokens = torch.tensor(list(suppress_tokens), dtype=torch.long, device=logits.device)
+        if suppress_tokens.numel() > 0:
+            logits[..., suppress_tokens] = float("-inf")
     if not do_sample:
         return torch.argmax(logits, dim=-1)
     logits = logits / temperature
