@@ -5,6 +5,9 @@ OpenAI-compatible TTS API server for faster-qwen3-tts.
 Exposes POST /v1/audio/speech compatible with OpenAI's TTS API, enabling
 integration with OpenWebUI, llama-swap, and other OpenAI-compatible clients.
 
+Supported `response_format` values: wav, pcm, mp3, opus.
+(Upstream ships wav/pcm/mp3; this fork adds Ogg Opus via pydub+ffmpeg.)
+
 Usage:
     pip install "faster-qwen3-tts[demo]"
 
@@ -79,7 +82,7 @@ class SpeechRequest(BaseModel):
     model: str = "tts-1"
     input: str
     voice: str = "alloy"
-    response_format: str = "wav"  # wav | pcm | mp3
+    response_format: str = "wav"  # wav | pcm | mp3 | opus
     speed: float = 1.0           # accepted but not yet applied
 
 
@@ -118,23 +121,41 @@ def _to_wav_bytes(pcm: np.ndarray, sample_rate: int) -> bytes:
     return _wav_header(sample_rate, len(raw)) + raw
 
 
-def _to_mp3_bytes(pcm: np.ndarray, sample_rate: int) -> bytes:
-    """Convert float32 numpy array to MP3 bytes (requires pydub + ffmpeg)."""
+def _pcm_to_audiosegment(pcm: np.ndarray, sample_rate: int, fmt: str):
+    """Shared setup for pydub-based encoders (mp3, opus)."""
     try:
         from pydub import AudioSegment
     except ImportError:
         raise HTTPException(
             status_code=400,
-            detail="response_format='mp3' requires pydub: pip install pydub",
+            detail=f"response_format={fmt!r} requires pydub: pip install pydub",
         )
-    segment = AudioSegment(
+    return AudioSegment(
         _to_pcm16(pcm),
         frame_rate=sample_rate,
         sample_width=2,
         channels=1,
     )
+
+
+def _to_mp3_bytes(pcm: np.ndarray, sample_rate: int) -> bytes:
+    """Convert float32 numpy array to MP3 bytes (requires pydub + ffmpeg)."""
+    segment = _pcm_to_audiosegment(pcm, sample_rate, "mp3")
     buf = io.BytesIO()
     segment.export(buf, format="mp3")
+    return buf.getvalue()
+
+
+def _to_opus_bytes(pcm: np.ndarray, sample_rate: int) -> bytes:
+    """Convert float32 numpy array to OGG/Opus bytes (requires pydub + ffmpeg).
+
+    Opus's preferred sample rates are 8/12/16/24/48 kHz; the model already
+    emits 24 kHz so no resample is needed. Output is an Ogg-Opus container
+    (`audio/ogg; codecs=opus`), which is the most widely compatible form.
+    """
+    segment = _pcm_to_audiosegment(pcm, sample_rate, "opus")
+    buf = io.BytesIO()
+    segment.export(buf, format="opus")
     return buf.getvalue()
 
 
@@ -230,16 +251,19 @@ async def create_speech(req: SpeechRequest):
         "wav": "audio/wav",
         "pcm": "audio/pcm",
         "mp3": "audio/mpeg",
+        "opus": "audio/ogg",
     }
     if fmt not in _CONTENT_TYPES:
         raise HTTPException(
             status_code=400,
-            detail=f"response_format {fmt!r} not supported. Use: wav, pcm, mp3",
+            detail=f"response_format {fmt!r} not supported. Use: wav, pcm, mp3, opus",
         )
     content_type = _CONTENT_TYPES[fmt]
 
-    # --- MP3: generate all audio, then encode (non-streaming) ---
-    if fmt == "mp3":
+    # --- MP3 / Opus: generate all audio, then encode (non-streaming).
+    # Compressed codecs need the full PCM before they can produce a valid
+    # container, so these paths share the same generate-then-encode shape.
+    if fmt in ("mp3", "opus"):
         loop = asyncio.get_event_loop()
 
         def _generate():
@@ -253,7 +277,8 @@ async def create_speech(req: SpeechRequest):
 
         audio_arrays, sr = await loop.run_in_executor(None, _generate)
         audio = audio_arrays[0] if audio_arrays else np.zeros(1, dtype=np.float32)
-        return Response(content=_to_mp3_bytes(audio, sr), media_type=content_type)
+        encoder = _to_mp3_bytes if fmt == "mp3" else _to_opus_bytes
+        return Response(content=encoder(audio, sr), media_type=content_type)
 
     # --- WAV / PCM: stream chunks as they are generated ---
     async def audio_stream():
