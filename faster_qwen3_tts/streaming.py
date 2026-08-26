@@ -6,7 +6,7 @@ Yields codec ID chunks during generation instead of collecting all at once.
 CUDA graph usage is identical to non-streaming — same per-step performance.
 """
 import time
-from typing import Generator, Tuple
+from typing import Callable, Generator, Optional, Tuple
 
 import torch
 
@@ -33,6 +33,7 @@ def fast_generate_streaming(
     do_sample: bool = True,
     repetition_penalty: float = 1.05,
     chunk_size: int = 12,
+    should_stop: Optional[Callable[[], bool]] = None,
 ) -> Generator[Tuple[torch.Tensor, dict], None, None]:
     """
     Streaming autoregressive generation with CUDA-graphed predictor and talker.
@@ -40,6 +41,9 @@ def fast_generate_streaming(
     Yields (codec_chunk, timing_info) tuples every chunk_size steps.
     codec_chunk: [chunk_steps, 16] tensor of codec IDs.
     The final chunk may be shorter than chunk_size.
+
+        should_stop: Optional callable polled once per decode step (~tens of ms);
+            return True to abort generation early (e.g. client disconnected).
     """
     eos_id = config.codec_eos_token_id
     vocab_size = config.vocab_size
@@ -104,6 +108,8 @@ def fast_generate_streaming(
     chunk_start = time.time()
 
     for step_idx in range(max_new_tokens):
+        if should_stop is not None and should_stop():
+            break  # caller gone — abort at step granularity, not chunk granularity
         if token.item() == eos_id:
             break
 
@@ -204,11 +210,15 @@ def parity_generate_streaming(
     do_sample: bool = True,
     repetition_penalty: float = 1.05,
     chunk_size: int = 12,
+    should_stop: Optional[Callable[[], bool]] = None,
 ) -> Generator[Tuple[torch.Tensor, dict], None, None]:
     """
     Streaming generation without CUDA graphs (dynamic cache).
 
     Yields (codec_chunk, timing_info) tuples every chunk_size steps.
+
+        should_stop: Optional callable polled once per decode step (~tens of ms);
+            return True to abort generation early (e.g. client disconnected).
     """
     # NOTE: This function intentionally mirrors fast_generate_streaming. The core
     # decode loop is duplicated so we can swap CUDA graphs/static cache for the
@@ -270,6 +280,8 @@ def parity_generate_streaming(
     chunk_start = time.time()
 
     for _ in range(max_new_tokens):
+        if should_stop is not None and should_stop():
+            break  # caller gone — abort at step granularity, not chunk granularity
         if token.item() == eos_id:
             break
 
