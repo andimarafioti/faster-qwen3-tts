@@ -7,6 +7,8 @@ import html
 import json
 import os
 import re
+import random
+import numpy as np
 import tempfile
 import threading
 import time
@@ -21,12 +23,14 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 
 from chatterbox.tts_turbo import ChatterboxTurboTTS
+from chatterbox_settings import ChatterboxSettings
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = Path(os.environ.get("CHATTERBOX_HISTORY_DIR", BASE_DIR / "chatterbox_history"))
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 NOTES_API_BASE = os.environ.get("NOTES_API_BASE", "http://localhost:9999").rstrip("/")
+NOTES_PROJECT = os.environ.get("NOTES_PROJECT", "chatterbox-turbo")
 REFERENCE_PRESETS = {
     "clone_1": BASE_DIR / "ref_audio_3.wav",
     "clone_2": BASE_DIR / "ref_audio_2.wav",
@@ -41,7 +45,7 @@ PROGRESS: dict[str, dict] = {}
 
 def _post_note(text: str) -> None:
     try:
-        body = json.dumps({"channel": "app", "text": text[:500]}).encode()
+        body = json.dumps({"channel": "app", "project": NOTES_PROJECT, "text": text[:500]}).encode()
         request = urllib.request.Request(
             f"{NOTES_API_BASE}/note", data=body,
             headers={"Content-Type": "application/json"}, method="POST",
@@ -128,16 +132,16 @@ def index():
         f'({item["duration_s"]:.1f}s)</li>' for item in _history()
     ) or "<li>No generations yet.</li>"
     return HTMLResponse(f"""<!doctype html><html><head><meta charset="utf-8"><title>Chatterbox Turbo</title>
-<style>body{{font:16px system-ui;max-width:850px;margin:40px auto;padding:0 20px;background:#111;color:#eee}}
-textarea,input,select,button{{box-sizing:border-box;width:100%;padding:10px;margin:6px 0;background:#222;color:#eee;border:1px solid #555;border-radius:6px}}
-button{{cursor:pointer;background:#3858d8}} label{{display:block;margin-top:14px}} a{{color:#8ab4ff}}</style></head>
+<style>:root{{color-scheme:dark}} *{{box-sizing:border-box}} body{{font:15px/1.5 system-ui;max-width:850px;margin:40px auto;padding:0 20px;background:#09090b;color:#fafafa}}
+textarea,input,select,button{{width:100%;padding:11px 12px;margin:6px 0;background:#18181b;color:#fafafa;border:1px solid #3f3f46;border-radius:8px}}
+button{{cursor:pointer;background:#8b5cf6;font-weight:700}} .actions{{display:flex;gap:8px}} .actions button:first-child{{background:#27272a}} label{{display:block;margin-top:14px;color:#a1a1aa}} textarea:focus,input:focus,select:focus{{outline:2px solid #8b5cf6}} a{{color:#a78bfa}}</style></head>
 <body><h1>Chatterbox Turbo 350M</h1><p>English zero-shot voice cloning. Try tags such as <code>[laugh]</code>, <code>[chuckle]</code>, and <code>[cough]</code>.</p>
 <form id="form"><label>Sample voice<select name="preset"><option value="clone_1">Clone 1</option><option value="clone_2">Clone 2</option><option value="clone_3">Clone 3</option><option value="">Custom upload</option></select></label>
 <label>Custom reference WAV (optional)<input name="reference" type="file" accept="audio/*"></label>
-<label>Text<textarea name="text" rows="7" required>Hello from Chatterbox Turbo [chuckle]. This voice was cloned from your reference recording.</textarea></label>
-<label>Temperature<input name="temperature" type="number" min="0.1" max="2" step="0.05" value="0.8"></label><button>Generate WAV</button></form>
+<label>Text<textarea name="text" rows="7" required placeholder="Enter text to synthesize..."></textarea></label><div style="color:#a1a1aa;font-size:12px">Shift+Enter to generate</div>
+<label>Temperature<input name="temperature" type="number" min="0.1" max="2" step="0.05" value="0.8"></label><div class="actions"><button id="clearText" type="button">Clear</button><button>Chatterbox WAV</button></div></form>
 <p id="status"></p><progress id="bar" value="0" max="1" style="width:100%;display:none"></progress><audio id="player" controls style="width:100%"></audio><h2>Server history</h2><ul>{rows}</ul>
-<script>form.onsubmit=async(e)=>{{e.preventDefault();const jobId=crypto.randomUUID().replaceAll("-","");const data=new FormData(form);data.append("job_id",jobId);bar.style.display="block";bar.value=0;bar.max=1;status.textContent="Preparing voice...";const timer=setInterval(async()=>{{const p=await fetch("/progress/"+jobId).then(r=>r.ok?r.json():null).catch(()=>null);if(!p)return;bar.max=Math.max(1,p.total||1);bar.value=p.completed||0;status.textContent=p.stage==="queued"?"Waiting for generator...":"Generating chunk "+(p.completed||0)+" of "+(p.total||0)+"...";}},350);const r=await fetch("/generate",{{method:"POST",body:data}});clearInterval(timer);const d=await r.json();if(!r.ok){{status.textContent=d.detail||"Error";return}}bar.max=d.chunk_count;bar.value=d.chunk_count;player.src=d.url;player.play();status.textContent="Done: "+d.duration_s.toFixed(1)+"s audio in "+d.elapsed_s.toFixed(1)+"s across "+d.chunk_count+" chunk(s)";}};</script></body></html>""")
+<script>clearText.onclick=()=>{{form.elements.text.value="";form.elements.text.focus();}};async function runGeneration(endpoint){{const jobId=crypto.randomUUID().replaceAll("-","");const data=new FormData(form);data.append("job_id",jobId);bar.style.display="block";bar.value=0;bar.max=1;status.textContent="Preparing voice...";const timer=setInterval(async()=>{{const p=await fetch("/progress/"+jobId).then(r=>r.ok?r.json():null).catch(()=>null);if(!p)return;bar.max=Math.max(1,p.total||1);bar.value=p.completed||0;const model=p.endpoint?" on "+p.endpoint:"";status.textContent=p.stage==="queued"?"Waiting for generator...":"Rendering "+(p.completed||0)+" of "+(p.total||0)+model+"...";}},350);const r=await fetch(endpoint,{{method:"POST",body:data}});clearInterval(timer);const d=await r.json();if(!r.ok){{status.textContent=d.detail||"Error";return}}bar.max=d.chunk_count;bar.value=d.chunk_count;player.src=d.url;player.play();status.textContent="Done: "+d.duration_s.toFixed(1)+"s audio in "+d.elapsed_s.toFixed(1)+"s across "+d.chunk_count+" chapter(s)";}}form.elements.text.addEventListener("keydown",e=>{{if(e.shiftKey&&e.key==="Enter"){{e.preventDefault();runGeneration("/generate");}}}});form.onsubmit=e=>{{e.preventDefault();runGeneration("/generate");}};</script></body></html>""")
 
 
 @app.get("/status")
@@ -158,7 +162,10 @@ def generation_progress(job_id: str):
 
 @app.post("/generate")
 def generate(
-    text: str = Form(...), temperature: float = Form(0.8), preset: str = Form("clone_1"), job_id: str = Form(""),
+    text: str = Form(...), temperature: float = Form(0.8, ge=0.1, le=1.5), preset: str = Form("clone_1"), job_id: str = Form(""),
+    top_p: float = Form(0.95, ge=0.1, le=1.0), top_k: int = Form(1000, ge=1, le=2000),
+    repetition_penalty: float = Form(1.2, ge=1.0, le=2.0),
+    max_chars: int = Form(280, ge=100, le=500), seed: int | None = Form(None, ge=0, le=2147483647),
     reference: UploadFile | None = File(None),
 ):
     if not text.strip() or len(text) > 5000:
@@ -177,19 +184,26 @@ def generate(
         ref_path = str(preset_path)
     try:
         started = time.perf_counter()
-        chunks = _split_long_text(text.strip())
+        settings = ChatterboxSettings(temperature=temperature, top_p=top_p, top_k=top_k,
+            repetition_penalty=repetition_penalty, max_chars=max_chars, seed=seed)
+        chunks = _split_long_text(text.strip(), max_chars=max_chars)
         job_id = job_id if job_id.isalnum() else uuid.uuid4().hex
         _set_progress(job_id, stage="queued", completed=0, total=len(chunks))
         with GENERATE_LOCK:
             _set_progress(job_id, stage="conditioning", completed=0, total=len(chunks))
             model = _load_model()
+            if seed is not None:
+                random.seed(seed)
+                np.random.seed(seed)
+                torch.manual_seed(seed)
             model.prepare_conditionals(ref_path)
             sample_rate = int(model.sr)
             audio_parts = []
             _post_note(f"[chatterbox-turbo/generate] running -- long-form request split into {len(chunks)} chunks")
             for index, (chunk, pause_s) in enumerate(chunks):
                 _set_progress(job_id, stage="generating", completed=index, total=len(chunks))
-                wav = model.generate(chunk, temperature=float(temperature)).reshape(-1)
+                wav = model.generate(chunk, temperature=temperature, top_p=top_p,
+                    top_k=top_k, repetition_penalty=repetition_penalty).reshape(-1)
                 audio_parts.append(wav)
                 if pause_s:
                     audio_parts.append(torch.zeros(round(sample_rate * pause_s), dtype=wav.dtype))
@@ -206,7 +220,7 @@ def generate(
             "id": audio_id, "url": f"/audio/{audio_id}.wav", "text": text.strip(),
             "duration_s": len(audio) / sample_rate, "elapsed_s": elapsed,
             "timestamp": int(time.time() * 1000), "temperature": float(temperature),
-            "chunk_count": len(chunks),
+            "chunk_count": len(chunks), "settings": settings.model_dump(),
         }
         (OUTPUT_DIR / f"{audio_id}.json").write_text(json.dumps(item, indent=2), encoding="utf-8")
         _set_progress(job_id, stage="done", completed=len(chunks), total=len(chunks))

@@ -1,7 +1,8 @@
 [Unit]
-Description=TTS Side-by-Side Comparison UI
-After=network-online.target faster-qwen3-tts-read-aloud.service
+Description=Chatterbox Listening Room
+After=network-online.target chatterbox-turbo.service
 Wants=network-online.target
+PartOf=tts-stack.target
 
 [Service]
 Type=simple
