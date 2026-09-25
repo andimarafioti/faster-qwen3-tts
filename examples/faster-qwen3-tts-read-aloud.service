@@ -1,0 +1,15 @@
+[Unit]
+Description=Faster Qwen3-TTS Read Aloud Web Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/mjbernaski/projects/faster-qwen3-tts
+ExecStart=/home/mjbernaski/projects/faster-qwen3-tts/.venv/bin/python /home/mjbernaski/projects/faster-qwen3-tts/examples/read_aloud_server.py --host 0.0.0.0 --port 7861 --backend torch
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

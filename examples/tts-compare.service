@@ -1,0 +1,16 @@
+[Unit]
+Description=Chatterbox Listening Room
+After=network-online.target chatterbox-turbo.service
+Wants=network-online.target
+PartOf=tts-stack.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/mjbernaski/projects/faster-qwen3-tts
+ExecStart=/home/mjbernaski/projects/faster-qwen3-tts/.venv/bin/python /home/mjbernaski/projects/faster-qwen3-tts/examples/tts_compare_server.py --host 0.0.0.0 --port 7850
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

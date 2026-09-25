@@ -1,0 +1,16 @@
+[Unit]
+Description=Chatterbox Turbo Voice Clone Web Server
+After=network-online.target
+Wants=network-online.target
+PartOf=tts-stack.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/mjbernaski/projects/faster-qwen3-tts
+ExecStart=/home/mjbernaski/projects/faster-qwen3-tts/.venv-chatterbox/bin/python /home/mjbernaski/projects/faster-qwen3-tts/examples/chatterbox_turbo_server.py --host 0.0.0.0 --port 7862
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=tts-stack.target
