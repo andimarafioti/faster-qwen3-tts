@@ -244,6 +244,7 @@ class GGMLQwen3TTS:
         do_sample: bool = True,
         repetition_penalty: float = 1.05,
         chunk_size: int = 12,
+        should_stop: Optional[Callable[[], bool]] = None,
         xvec_only: bool = False,
         non_streaming_mode: Optional[bool] = None,
         append_silence: bool = True,
@@ -274,6 +275,7 @@ class GGMLQwen3TTS:
             ref_codes=ref_codes,
         )
         yield from self._stream_runtime(
+            should_stop=should_stop,
             text=text,
             lang=language,
             **ref_kwargs,
@@ -557,10 +559,12 @@ class GGMLQwen3TTS:
         do_sample: bool = True,
         repetition_penalty: float = 1.05,
         chunk_size: int = 12,
+        should_stop: Optional[Callable[[], bool]] = None,
     ) -> Generator[Tuple[np.ndarray, int, dict], None, None]:
         _warn_non_prefill_text_mode(non_streaming_mode)
         adapter_start = time.perf_counter()
         yield from self._stream_runtime(
+            should_stop=should_stop,
             text=text,
             lang=language,
             speaker=speaker,
@@ -617,10 +621,12 @@ class GGMLQwen3TTS:
         do_sample: bool = True,
         repetition_penalty: float = 1.05,
         chunk_size: int = 12,
+        should_stop: Optional[Callable[[], bool]] = None,
     ) -> Generator[Tuple[np.ndarray, int, dict], None, None]:
         _warn_non_prefill_text_mode(non_streaming_mode)
         adapter_start = time.perf_counter()
         yield from self._stream_runtime(
+            should_stop=should_stop,
             text=text,
             lang=language,
             instruct=instruct,
@@ -640,6 +646,7 @@ class GGMLQwen3TTS:
         chunk_size: int,
         adapter_prepare_ms: float = 0.0,
         adapter_profile: Optional[dict] = None,
+        should_stop: Optional[Callable[[], bool]] = None,
         **kwargs,
     ):
         chunk_sec = max(1, int(chunk_size)) / _QWEN_FRAME_RATE
@@ -648,6 +655,8 @@ class GGMLQwen3TTS:
         for idx, (chunk, sr) in enumerate(
             self.runtime.stream(codec_chunk_sec=chunk_sec, **kwargs)
         ):
+            if should_stop is not None and should_stop():
+                break  # caller gone — stop consuming the runtime stream (chunk granularity)
             now = time.perf_counter()
             native_profile = getattr(self.runtime, "last_stream_profile", None)
             yield chunk, sr, {
