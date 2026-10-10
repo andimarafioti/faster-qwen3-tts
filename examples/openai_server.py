@@ -36,11 +36,14 @@ API usage:
 """
 import argparse
 import asyncio
+import base64
+import hashlib
 import io
 import json
 import logging
 import os
 import queue
+import re
 import struct
 import sys
 import threading
@@ -81,6 +84,10 @@ class SpeechRequest(BaseModel):
     voice: str = "alloy"
     response_format: str = "wav"  # wav | pcm | mp3
     speed: float = 1.0           # accepted but not yet applied
+    language: Optional[str] = None      # override voice language for this request
+    ref_audio: Optional[str] = None     # inline reference (path or base64); bypasses pool
+    ref_text: Optional[str] = None      # inline reference transcript
+    x_vector_only: Optional[bool] = None  # speaker-identity-only cloning; else voice/default
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +150,57 @@ def _to_mp3_bytes(pcm: np.ndarray, sample_rate: int) -> bytes:
 # ---------------------------------------------------------------------------
 
 
+def _materialize_ref(value: str) -> str:
+    """Return a filesystem path for inline ref_audio (a path, or base64 / data-URI)."""
+    if os.path.isfile(value):
+        return value
+    m = re.match(r"data:[^,;]*;base64,(.*)$", value, re.DOTALL)
+    raw = m.group(1) if m else value
+    try:
+        data = base64.b64decode(raw)
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail="inline ref_audio must be a filesystem path or base64 (data URI or raw)",
+        )
+    path = "/tmp/ref_" + hashlib.md5(value.encode()).hexdigest()[:16] + ".wav"
+    if not os.path.exists(path):
+        with open(path, "wb") as fh:
+            fh.write(data)
+    return path
+
+
+def _coalesce_voice(voice_name: str, req: "SpeechRequest") -> tuple[dict, bool]:
+    """Per-field coalescing: request value -> voice config -> server default.
+
+    A request that supplies ref_audio is valid even if voice_name is unknown,
+    so callers can drive an ad-hoc voice entirely over HTTP.
+    """
+    try:
+        cfg = resolve_voice(voice_name)
+    except HTTPException:
+        if getattr(req, "ref_audio", None):
+            cfg = {}
+        else:
+            raise
+    eff = dict(cfg)
+    if req.language is not None:
+        eff["language"] = req.language
+    if req.ref_text is not None:
+        eff["ref_text"] = req.ref_text
+    xvec = bool(eff.get("x_vector_only", False))
+    if req.x_vector_only is not None:
+        xvec = bool(req.x_vector_only)
+    if getattr(req, "ref_audio", None):
+        eff["ref_audio"] = _materialize_ref(req.ref_audio)
+    if not eff.get("ref_audio"):
+        raise HTTPException(
+            status_code=400,
+            detail="no reference audio available: configure a voice or pass ref_audio",
+        )
+    return eff, xvec
+
+
 def resolve_voice(voice_name: str) -> dict:
     """Return voice config dict or fall back to default, else raise 400."""
     if voice_name in voices:
@@ -168,7 +226,7 @@ def resolve_voice(voice_name: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
-async def _stream_chunks(voice_cfg: dict, text: str) -> AsyncGenerator[bytes, None]:
+async def _stream_chunks(voice_cfg: dict, text: str, xvec_only: bool = False) -> AsyncGenerator[bytes, None]:
     """
     Run generate_voice_clone_streaming in a background thread and yield
     raw PCM bytes for each chunk as they arrive.
@@ -185,6 +243,7 @@ async def _stream_chunks(voice_cfg: dict, text: str) -> AsyncGenerator[bytes, No
                     ref_audio=voice_cfg["ref_audio"],
                     ref_text=voice_cfg.get("ref_text", ""),
                     chunk_size=voice_cfg.get("chunk_size", 12),
+                    xvec_only=xvec_only,
                     non_streaming_mode=False,
                 ):
                     q.put(chunk)
@@ -223,7 +282,7 @@ async def create_speech(req: SpeechRequest):
     if not req.input.strip():
         raise HTTPException(status_code=400, detail="'input' text is empty")
 
-    voice_cfg = resolve_voice(req.voice)
+    voice_cfg, _xvec = _coalesce_voice(req.voice, req)
     fmt = req.response_format.lower()
 
     _CONTENT_TYPES = {
@@ -249,6 +308,7 @@ async def create_speech(req: SpeechRequest):
                     language=voice_cfg.get("language", "Auto"),
                     ref_audio=voice_cfg["ref_audio"],
                     ref_text=voice_cfg.get("ref_text", ""),
+                    xvec_only=_xvec,
                 )
 
         audio_arrays, sr = await loop.run_in_executor(None, _generate)
@@ -259,7 +319,7 @@ async def create_speech(req: SpeechRequest):
     async def audio_stream():
         if fmt == "wav":
             yield _wav_header(SAMPLE_RATE)  # stream with unknown data length
-        async for raw_chunk in _stream_chunks(voice_cfg, req.input):
+        async for raw_chunk in _stream_chunks(voice_cfg, req.input, _xvec):
             yield raw_chunk
 
     return StreamingResponse(audio_stream(), media_type=content_type)
