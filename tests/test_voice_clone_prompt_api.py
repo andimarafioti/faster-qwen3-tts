@@ -145,6 +145,77 @@ def test_public_api_uses_none_sentinel_for_non_streaming_overrides():
     assert sig_design_stream.parameters["non_streaming_mode"].default is None
 
 
+def test_voice_design_streaming_exposes_decoder_context_frames():
+    signature = inspect.signature(FasterQwen3TTS.generate_voice_design_streaming)
+
+    assert signature.parameters["decoder_context_frames"].default == 25
+    assert list(signature.parameters)[-1] == "decoder_context_frames"
+
+
+@pytest.mark.parametrize("invalid_value", [True, 0, -1, 25.0])
+def test_voice_design_streaming_rejects_invalid_decoder_context_frames(invalid_value):
+    model = _build_dummy_model()
+    model.model.model.tts_model_type = "voice_design"
+
+    with pytest.raises(ValueError, match="positive integer"):
+        next(
+            model.generate_voice_design_streaming(
+                text="hello",
+                instruct="bright radio voice",
+                language="English",
+                decoder_context_frames=invalid_value,
+            )
+        )
+
+
+def test_voice_design_streaming_uses_requested_decoder_context(monkeypatch):
+    import faster_qwen3_tts.streaming as streaming
+
+    model = _build_dummy_model()
+    model.model.model.tts_model_type = "voice_design"
+    decoded_frame_counts = []
+
+    class RecordingSpeechTokenizer:
+        def decode(self, payload):
+            frame_count = int(payload["audio_codes"].shape[1])
+            decoded_frame_counts.append(frame_count)
+            return [torch.zeros(frame_count * 2, dtype=torch.float32)], 24_000
+
+    prepared_model = types.SimpleNamespace(speech_tokenizer=RecordingSpeechTokenizer())
+    monkeypatch.setattr(
+        model,
+        "_prepare_generation_custom",
+        lambda **_kwargs: (
+            prepared_model,
+            object(),
+            object(),
+            object(),
+            object(),
+            object(),
+            object(),
+        ),
+    )
+
+    def fake_stream(**_kwargs):
+        for _ in range(10):
+            yield torch.zeros(12, 16, dtype=torch.long), {}
+
+    monkeypatch.setattr(streaming, "fast_generate_streaming", fake_stream)
+
+    chunks = list(
+        model.generate_voice_design_streaming(
+            text="hello",
+            instruct="bright radio voice",
+            language="English",
+            chunk_size=12,
+            decoder_context_frames=100,
+        )
+    )
+
+    assert len(chunks) == 10
+    assert decoded_frame_counts == [12, 24, 36, 48, 60, 72, 84, 96, 108, 112]
+
+
 @pytest.mark.parametrize(
     ("method_name", "kwargs", "expected_default"),
     [
