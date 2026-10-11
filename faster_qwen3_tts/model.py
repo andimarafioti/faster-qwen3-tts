@@ -45,6 +45,7 @@ class FasterQwen3TTS:
         self.sample_rate = self._infer_sample_rate(base_model)
         self._warmed_up = False
         self._voice_prompt_cache = {}  # Cache (ref_audio, ref_text) -> (vcp, ref_ids)
+        self._batched = None  # BatchedEngine, created on the first batched voice clone
 
     @staticmethod
     def _get_speech_tokenizer(base_model):
@@ -328,7 +329,7 @@ class FasterQwen3TTS:
     def _resolve_precomputed_voice_clone_prompt(
         self,
         input_ids,
-        ref_text: str,
+        ref_text: Union[str, List[str]],
         voice_clone_prompt: Union[Dict[str, Any], List[Any]],
     ) -> Tuple[Dict[str, Any], list, bool]:
         if isinstance(voice_clone_prompt, list):
@@ -405,14 +406,17 @@ class FasterQwen3TTS:
         using_icl_mode = any(vcp["icl_mode"])
 
         if using_icl_mode:
-            if not ref_text:
-                raise ValueError(
-                    "ref_text is required when voice_clone_prompt uses ICL mode."
-                )
-            ref_texts = [self.model._build_ref_text(ref_text)]
-            # NOTE: single ref_text is shared across all ICL items in the batch.
-            ref_id = self.model._tokenize_texts(ref_texts)[0]
-            ref_ids = [ref_id if is_icl else None for is_icl in vcp["icl_mode"]]
+            ref_texts = list(ref_text) if isinstance(ref_text, (list, tuple)) else [ref_text] * len(input_ids)
+            if len(ref_texts) != len(input_ids):
+                raise ValueError(f"ref_text must have length {len(input_ids)}, got {len(ref_texts)}")
+            ref_ids = []
+            for rt, is_icl in zip(ref_texts, vcp["icl_mode"]):
+                if not is_icl:
+                    ref_ids.append(None)
+                    continue
+                if not rt:
+                    raise ValueError("ref_text is required when voice_clone_prompt uses ICL mode.")
+                ref_ids.append(self.model._tokenize_texts([self.model._build_ref_text(rt)])[0])
         else:
             ref_ids = [None] * len(input_ids)
 
@@ -813,10 +817,10 @@ class FasterQwen3TTS:
     @torch.inference_mode()
     def generate_voice_clone(
         self,
-        text: str,
-        language: str,
-        ref_audio: Optional[Union[str, Path]] = None,
-        ref_text: str = "",
+        text: Union[str, List[str]],
+        language: Union[str, List[str]],
+        ref_audio: Optional[Union[str, Path, List[Union[str, Path]]]] = None,
+        ref_text: Union[str, List[str]] = "",
         max_new_tokens: int = 2048,
         min_new_tokens: int = 2,
         temperature: float = 0.9,
@@ -838,7 +842,10 @@ class FasterQwen3TTS:
         Generate speech with voice cloning using reference audio.
 
         Args:
-            text: Text to synthesize
+            text: Text to synthesize. A list of texts is generated as one batch with batched CUDA
+                graphs (see `batched.py`); `language`, `ref_audio` and `ref_text` may then be lists too,
+                one entry per text. The batched path supports the torch backend without `instruct`;
+                `min_new_tokens` is applied to both graph decoding and the upstream fallback.
             language: Target language
             ref_audio: Path to reference audio file. Required when `voice_clone_prompt` is not provided.
             ref_text: Transcription of reference audio.
@@ -877,6 +884,26 @@ class FasterQwen3TTS:
             ref_spk_emb=ref_spk_emb,
             ref_codes=ref_codes,
         )
+
+        if isinstance(text, (list, tuple)):
+            return self._generate_voice_clone_batch(
+                list(text),
+                language,
+                ref_audio=ref_audio,
+                ref_text=ref_text,
+                xvec_only=xvec_only,
+                non_streaming_mode=non_streaming_mode,
+                append_silence=append_silence,
+                instruct=instruct,
+                voice_clone_prompt=voice_clone_prompt,
+                max_new_tokens=max_new_tokens,
+                min_new_tokens=min_new_tokens,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+                do_sample=do_sample,
+                repetition_penalty=repetition_penalty,
+            )
 
         from .generate import fast_generate
 
@@ -954,6 +981,79 @@ class FasterQwen3TTS:
         )
         
         return audio_arrays, sr
+
+    def _generate_voice_clone_batch(
+        self,
+        texts: List[str],
+        language: Union[str, List[str]],
+        ref_audio,
+        ref_text,
+        xvec_only: bool,
+        non_streaming_mode: Optional[bool],
+        append_silence: bool,
+        instruct: Optional[str],
+        voice_clone_prompt,
+        min_new_tokens: int = 2,
+        **sampling,
+    ) -> Tuple[list, int]:
+        """Voice clone for a list of texts in one batch.
+
+        Upstream `generate_voice_clone` builds the prompts, trims at EOS and decodes the audio; the
+        `BatchedEngine` replaces its talker decode loop with batched CUDA graphs for the whole batch.
+        """
+        from .batched import BatchedEngine
+
+        if instruct:
+            raise NotImplementedError("instruct is not supported for batched voice cloning")
+        n = len(texts)
+        if voice_clone_prompt is None:
+            if ref_audio is None:
+                raise ValueError("ref_audio is required when voice_clone_prompt is not provided")
+            refs = list(ref_audio) if isinstance(ref_audio, (list, tuple)) else [ref_audio] * n
+            ref_texts = list(ref_text) if isinstance(ref_text, (list, tuple)) else [ref_text] * n
+            if len(refs) != n or len(ref_texts) != n:
+                raise ValueError(f"ref_audio and ref_text need one entry per text ({n})")
+            items = {}
+            for ref, rt in zip(refs, ref_texts):
+                if (str(ref), rt) not in items:
+                    # same silence padding as the single-text ICL path; x-vector prompts have no codes
+                    silence = 0.5 if append_silence and not xvec_only else 0.0
+                    audio = self._load_ref_audio_with_silence(ref, silence_secs=silence)
+                    items[(str(ref), rt)] = self.model.create_voice_clone_prompt(
+                        ref_audio=audio, ref_text=rt or None, x_vector_only_mode=xvec_only
+                    )[0]
+            voice_clone_prompt = [items[(str(ref), rt)] for ref, rt in zip(refs, ref_texts)]
+        elif isinstance(voice_clone_prompt, dict):
+            from qwen_tts import VoiceClonePromptItem
+
+            vcp, _, _ = self._resolve_precomputed_voice_clone_prompt(
+                input_ids=[None] * n, ref_text=ref_text, voice_clone_prompt=voice_clone_prompt
+            )
+            ref_texts = list(ref_text) if isinstance(ref_text, (list, tuple)) else [ref_text] * n
+            voice_clone_prompt = [
+                VoiceClonePromptItem(
+                    ref_code=vcp["ref_code"][i],
+                    ref_spk_embedding=vcp["ref_spk_embedding"][i],
+                    x_vector_only_mode=vcp["x_vector_only_mode"][i],
+                    icl_mode=vcp["icl_mode"][i],
+                    ref_text=ref_texts[i] if vcp["icl_mode"][i] else None,
+                )
+                for i in range(n)
+            ]
+        languages = list(language) if isinstance(language, (list, tuple)) else [language] * n
+
+        if self._batched is None:
+            self._batched = BatchedEngine(self.model, max_seq_len=self.max_seq_len)
+        self._batched.min_new_tokens = min_new_tokens
+        with self._batched:
+            return self.model.generate_voice_clone(
+                text=texts,
+                language=languages,
+                voice_clone_prompt=voice_clone_prompt,
+                non_streaming_mode=self._resolve_non_streaming_mode(non_streaming_mode, default=False),
+                min_new_tokens=min_new_tokens,
+                **sampling,
+            )
 
     @torch.inference_mode()
     def generate_voice_clone_streaming(
