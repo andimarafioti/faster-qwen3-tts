@@ -28,7 +28,7 @@ classifiers = [
 requires-python = ">=3.10"
 dependencies = [
     "qwen-tts-hf>=0.1.1.post1,<0.2",
-    "transformers>=5.15.1,<6",
+    "transformers>=5.15.1,<5.17.0",
     "torch>=2.5.1",
     "numpy",
     "soundfile",
